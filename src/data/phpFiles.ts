@@ -1664,10 +1664,18 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                         <i class="fa-solid fa-file-import"></i>
                         <span>Bulk Import</span>
                     </button>
-                    <button onclick="document.getElementById('smartSortModal').classList.remove('hidden')" 
-                            class="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-md shadow-xs flex items-center space-x-1.5 transition cursor-pointer">
-                        <i class="fa-solid fa-wand-magic-sparkles text-amber-300"></i>
-                        <span>Smart Sort &amp; Import</span>
+                    <!-- Split Smart Sort Buttons: Allowed and Blocked -->
+                    <button type="button" onclick="openSmartSortModal('allowed')" 
+                            class="px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-semibold rounded-md shadow-xs flex items-center space-x-1.5 transition cursor-pointer"
+                            title="Auto-sort mixed senders &amp; domains directly into Allowed tables">
+                        <i class="fa-solid fa-shield-halved text-emerald-200"></i>
+                        <span>Smart Sort Allowed</span>
+                    </button>
+                    <button type="button" onclick="openSmartSortModal('blocked')" 
+                            class="px-3 py-1.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white text-xs font-semibold rounded-md shadow-xs flex items-center space-x-1.5 transition cursor-pointer"
+                            title="Auto-sort mixed senders &amp; domains directly into Blocked tables">
+                        <i class="fa-solid fa-ban text-rose-200"></i>
+                        <span>Smart Sort Blocked</span>
                     </button>
                     <a href="actions.php?action=export_csv&list=<?= $currentTab ?>&policy=<?= urlencode($selectedPolicy) ?>&csrf=<?= $csrfToken ?>" 
                        class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold rounded-md flex items-center space-x-1.5 transition">
@@ -2384,12 +2392,12 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
         <div class="bg-white dark:bg-slate-900 rounded-xl shadow-xl max-w-xl w-full p-6 border border-slate-200 dark:border-slate-800">
             <div class="flex items-center justify-between mb-4">
                 <div class="flex items-center space-x-2">
-                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 text-white flex items-center justify-center text-xs">
-                        <i class="fa-solid fa-wand-magic-sparkles text-amber-300"></i>
+                    <div id="smartSortModalIcon" class="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-600 to-teal-600 text-white flex items-center justify-center text-xs">
+                        <i class="fa-solid fa-shield-halved text-emerald-200"></i>
                     </div>
                     <div>
-                        <h3 class="text-base font-bold text-slate-900 dark:text-white">Smart Sort: Senders &amp; Domains</h3>
-                        <p class="text-xs text-slate-500 dark:text-slate-400">Auto-routes emails to Senders table and domains to Domains table</p>
+                        <h3 id="smartSortModalTitle" class="text-base font-bold text-slate-900 dark:text-white">Smart Sort: Allowed Items</h3>
+                        <p id="smartSortModalDesc" class="text-xs text-slate-500 dark:text-slate-400">Auto-routes emails to Senders table and domains to Domains table</p>
                     </div>
                 </div>
                 <button onclick="document.getElementById('smartSortModal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
@@ -2434,7 +2442,7 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
 
                 <div class="flex items-center justify-end space-x-2">
                     <button type="button" onclick="document.getElementById('smartSortModal').classList.add('hidden')" class="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">Cancel</button>
-                    <button type="submit" class="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 cursor-pointer">
+                    <button id="smartSortSubmitBtn" type="submit" class="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 cursor-pointer">
                         <i class="fa-solid fa-wand-magic-sparkles text-amber-300"></i>
                         <span>Sort &amp; Import Items</span>
                     </button>
@@ -2641,6 +2649,42 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
 
     <!-- Theme Switcher Script -->
     <script>
+        function openSmartSortModal(mode) {
+            const modal = document.getElementById('smartSortModal');
+            if (!modal) return;
+            const targetInput = document.querySelector('input[name="target_mode"][value="' + mode + '"]');
+            if (targetInput) targetInput.checked = true;
+            
+            const titleEl = document.getElementById('smartSortModalTitle');
+            const descEl = document.getElementById('smartSortModalDesc');
+            const iconEl = document.getElementById('smartSortModalIcon');
+            const submitBtn = document.getElementById('smartSortSubmitBtn');
+            
+            if (mode === 'allowed') {
+                if (titleEl) titleEl.textContent = 'Smart Sort: Allowed Senders & Domains';
+                if (descEl) descEl.textContent = 'Auto-routes into eop_allowed_senders and eop_allowed_domains';
+                if (iconEl) {
+                    iconEl.className = 'w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-600 to-teal-600 text-white flex items-center justify-center text-xs';
+                    iconEl.innerHTML = '<i class="fa-solid fa-shield-halved text-emerald-200"></i>';
+                }
+                if (submitBtn) {
+                    submitBtn.className = 'px-5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 cursor-pointer';
+                    submitBtn.innerHTML = '<i class="fa-solid fa-shield-halved text-emerald-200"></i><span>Sort &amp; Import to Allowed Lists</span>';
+                }
+            } else {
+                if (titleEl) titleEl.textContent = 'Smart Sort: Blocked Senders & Domains';
+                if (descEl) descEl.textContent = 'Auto-routes into eop_blocked_senders and eop_blocked_domains';
+                if (iconEl) {
+                    iconEl.className = 'w-8 h-8 rounded-lg bg-gradient-to-br from-rose-600 to-red-600 text-white flex items-center justify-center text-xs';
+                    iconEl.innerHTML = '<i class="fa-solid fa-ban text-rose-200"></i>';
+                }
+                if (submitBtn) {
+                    submitBtn.className = 'px-5 py-2 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 cursor-pointer';
+                    submitBtn.innerHTML = '<i class="fa-solid fa-ban text-rose-200"></i><span>Sort &amp; Import to Blocked Lists</span>';
+                }
+            }
+            modal.classList.remove('hidden');
+        }
         function updateThemeUI() {
             const isDark = document.documentElement.classList.contains('dark');
             const icon = document.getElementById('themeIcon');
@@ -4694,11 +4738,12 @@ The application includes a standard page-by-page setup wizard that runs during f
 
 2. **Unified Configuration Page**:
    - **Exchange Online Private Key Management**: Upload private key files (\`.pem\`, \`.key\`, \`.pfx\`) or paste PEM text, specify passphrase (automatically encrypted using AES-256-GCM before writing to the database), and configure Azure AD Tenant ID, Client ID, and Certificate Thumbprint.
-   - **LDAP Settings Modification**: View and edit LDAP host, port, protocol (Plain LDAP port 389 / LDAPS 636 / StartTLS), Base DN, Authorized Group DN, and service account credentials.
-   - Real-time connection testing for both Exchange Online certificate signing and Active Directory authentication.
+   - **LDAP Settings Modification**: View and edit LDAP host, port, protocol (Plain LDAP port 389 / LDAPS 636 / StartTLS), Base DN, Authorized Group DN, Service Account Bind DN, and Bind Password for LDAP authorization.
+   - Real-time connection testing for both Exchange Online certificate signing and Active Directory LDAP authorization.
 
 3. **Active Directory LDAP Connection Stored in Database (LDAPS Not Required)**:
-   - **Database-Stored Configuration**: LDAP host, port, protocol, Base DN, Group DN, and bind credentials are stored directly in the MariaDB table \`eop_ldap_config\` and can be viewed or updated via the Web UI.
+   - **Database-Stored Configuration**: LDAP host, port, protocol, Base DN, Group DN, Bind DN, and Bind Password are stored directly in the MariaDB table \`eop_ldap_config\` and can be viewed or updated via the Web UI.
+   - **Bind Password Authorization**: Securely authenticates using the service account Bind DN and Bind Password to query group membership and authorize administrative access.
    - **Plain LDAP (port 389) is supported out of the box**: LDAPS is **not required**. Connects directly to any Windows Domain Controller without certificate hassles.
    - Also supports **LDAPS (port 636)** and **StartTLS (port 389)** if desired.
    - Enforces access control via **Group Distinguished Name (Group DN)**:

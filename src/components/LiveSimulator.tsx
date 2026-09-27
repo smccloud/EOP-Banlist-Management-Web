@@ -198,6 +198,8 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [ldapEditBaseDn, setLdapEditBaseDn] = useState(config.ldapBaseDn);
   const [ldapEditGroupDn, setLdapEditGroupDn] = useState(config.ldapGroupDn);
   const [ldapEditBindDn, setLdapEditBindDn] = useState(config.ldapBindDn);
+  const [ldapEditBindPass, setLdapEditBindPass] = useState(config.ldapBindPass || '');
+  const [showLdapBindPass, setShowLdapBindPass] = useState(false);
   const [ldapTestStatus, setLdapTestStatus] = useState<string | null>(null);
   const [ldapSaveMessage, setLdapSaveMessage] = useState<string | null>(null);
 
@@ -1220,7 +1222,7 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
       base_dn: ldapEditBaseDn,
       authorized_group_dn: ldapEditGroupDn,
       bind_dn: ldapEditBindDn,
-      bind_password: '••••••••••••',
+      bind_password: ldapEditBindPass,
       account_suffix: `@${config.ldapDomain.toLowerCase()}.example.com`,
       netbios_domain: config.ldapDomain,
       timeout_seconds: 5,
@@ -1229,18 +1231,32 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
       updated_at: now,
     };
 
+    config.ldapHost = ldapEditHost;
+    config.ldapPort = ldapEditPort;
+    config.ldapProtocol = ldapEditProto;
+    config.ldapBaseDn = ldapEditBaseDn;
+    config.ldapGroupDn = ldapEditGroupDn;
+    config.ldapBindDn = ldapEditBindDn;
+    config.ldapBindPass = ldapEditBindPass;
+
     setLdapDbRows((prev) => [newRow, ...prev.map((r) => ({ ...r, is_active: false }))]);
-    logAction('UPDATE', 'SYSTEM', ldapEditHost, `Updated LDAP connection settings stored in database table eop_ldap_config (Record #${newId})`);
-    setLdapSaveMessage(`Saved new active configuration (Record #${newId}) into MariaDB table 'eop_ldap_config'!`);
+    logAction('UPDATE', 'SYSTEM', ldapEditHost, `Updated LDAP connection settings and bind password stored in database table eop_ldap_config (Record #${newId})`);
+    setLdapSaveMessage(`Saved new active configuration with LDAP bind credentials (Record #${newId}) into MariaDB table 'eop_ldap_config'!`);
     setTimeout(() => setLdapSaveMessage(null), 4000);
   };
 
-  // Test LDAP Connection
+  // Test LDAP Connection & Authorization
   const handleTestLdap = () => {
     setLdapTestStatus('probing');
     setTimeout(() => {
-      setLdapTestStatus(`Connection verified to ${ldapEditHost}:${ldapEditPort} [${ldapEditProto.toUpperCase()}]. Group DN verified.`);
-      setTimeout(() => setLdapTestStatus(null), 6000);
+      if (ldapEditBindDn && ldapEditBindPass) {
+        setLdapTestStatus(`Active Directory bind authorization successful using service account (${ldapEditBindDn}). Group DN "${ldapEditGroupDn}" verified on ${ldapEditHost}:${ldapEditPort} [${ldapEditProto.toUpperCase()}].`);
+      } else if (ldapEditBindDn && !ldapEditBindPass) {
+        setLdapTestStatus(`Connection verified to ${ldapEditHost}:${ldapEditPort} [${ldapEditProto.toUpperCase()}]. Notice: Service account Bind DN specified without bind password; attempting anonymous bind.`);
+      } else {
+        setLdapTestStatus(`Connection verified to ${ldapEditHost}:${ldapEditPort} [${ldapEditProto.toUpperCase()}]. Group DN verified (Anonymous / Default bind).`);
+      }
+      setTimeout(() => setLdapTestStatus(null), 7000);
     }, 700);
   };
 
@@ -1815,17 +1831,31 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 <span>Bulk Import</span>
               </button>
 
+              {/* Split Smart Sort & Import Buttons: Allowed & Blocked */}
               <button
                 onClick={() => {
-                  setSmartSortTarget(activeTab.includes('blocked') ? 'blocked' : 'allowed');
+                  setSmartSortTarget('allowed');
                   setSmartSortError(null);
                   setShowSmartSortModal(true);
                 }}
-                className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer"
-                title="Paste a mixed list of emails and domains to auto-sort into Senders and Domains tables"
+                className="px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer"
+                title="Paste mixed list of emails and domains to auto-sort directly into Allowed Senders & Allowed Domains tables"
               >
-                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                <span>Smart Sort &amp; Import</span>
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-200" />
+                <span>Smart Sort Allowed</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setSmartSortTarget('blocked');
+                  setSmartSortError(null);
+                  setShowSmartSortModal(true);
+                }}
+                className="px-3 py-1.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer"
+                title="Paste mixed list of emails and domains to auto-sort directly into Blocked Senders & Blocked Domains tables"
+              >
+                <Ban className="w-3.5 h-3.5 text-rose-200" />
+                <span>Smart Sort Blocked</span>
               </button>
 
               <button
@@ -2516,17 +2546,53 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                         />
                       </div>
 
-                      <div className="md:col-span-2">
-                        <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                          Service Account Bind DN (Optional):
-                        </label>
-                        <input
-                          type="text"
-                          value={ldapEditBindDn}
-                          onChange={(e) => setLdapEditBindDn(e.target.value)}
-                          className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
-                          placeholder="CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com"
-                        />
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs md:col-span-2">
+                        <div>
+                          <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Service Account Bind DN (Optional):
+                          </label>
+                          <input
+                            type="text"
+                            value={ldapEditBindDn}
+                            onChange={(e) => setLdapEditBindDn(e.target.value)}
+                            className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
+                            placeholder="CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com"
+                          />
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                            Active Directory service account Distinguished Name used to query LDAP.
+                          </p>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block font-medium text-slate-700 dark:text-slate-300">
+                              Bind Password for LDAP Authorization:
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => setShowLdapBindPass(!showLdapBindPass)}
+                              className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline flex items-center gap-1 cursor-pointer"
+                            >
+                              {showLdapBindPass ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                              <span>{showLdapBindPass ? 'Hide' : 'Show'}</span>
+                            </button>
+                          </div>
+                          <div className="relative">
+                            <input
+                              type={showLdapBindPass ? 'text' : 'password'}
+                              value={ldapEditBindPass}
+                              onChange={(e) => setLdapEditBindPass(e.target.value)}
+                              className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-purple-500 focus:outline-hidden pr-9"
+                              placeholder="••••••••••••"
+                            />
+                            <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-slate-400">
+                              <Lock className="w-3.5 h-3.5" />
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                            Active Directory service account password used for LDAP authorization and group verification.
+                          </p>
+                        </div>
                       </div>
                     </div>
 
@@ -2576,6 +2642,8 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                             <th className="py-2.5 px-3">Protocol</th>
                             <th className="py-2.5 px-3">Base DN</th>
                             <th className="py-2.5 px-3">Group DN</th>
+                            <th className="py-2.5 px-3">Bind DN</th>
+                            <th className="py-2.5 px-3">Bind Password</th>
                             <th className="py-2.5 px-3">Status</th>
                             <th className="py-2.5 px-3">Updated At</th>
                             <th className="py-2.5 px-3">By</th>
@@ -2594,6 +2662,18 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                               </td>
                               <td className="py-2.5 px-3 truncate max-w-[130px]" title={row.base_dn}>{row.base_dn}</td>
                               <td className="py-2.5 px-3 truncate max-w-[130px]" title={row.authorized_group_dn}>{row.authorized_group_dn}</td>
+                              <td className="py-2.5 px-3 truncate max-w-[120px]" title={row.bind_dn || 'None (Anonymous)'}>
+                                {row.bind_dn ? row.bind_dn : <span className="text-slate-400 italic">Anonymous</span>}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                {row.bind_password ? (
+                                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-[10px] flex items-center gap-1 font-sans">
+                                    <Lock className="w-3 h-3" /> Configured
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 italic text-[10px] font-sans">None</span>
+                                )}
+                              </td>
                               <td className="py-2.5 px-3">
                                 {row.is_active ? (
                                   <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-[10px] flex items-center gap-1 font-sans">
@@ -2911,22 +2991,46 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
             {/* Modal Header */}
             <div className="flex items-start justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center space-x-2.5">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white flex items-center justify-center shadow-xs">
-                  <Sparkles className="w-4 h-4 text-amber-300" />
+                <div className={`w-8 h-8 rounded-xl text-white flex items-center justify-center shadow-xs ${
+                  smartSortTarget === 'allowed'
+                    ? 'bg-gradient-to-br from-emerald-600 to-teal-600'
+                    : 'bg-gradient-to-br from-rose-600 to-red-600'
+                }`}>
+                  {smartSortTarget === 'allowed' ? (
+                    <ShieldCheck className="w-4 h-4 text-emerald-200" />
+                  ) : (
+                    <Ban className="w-4 h-4 text-rose-200" />
+                  )}
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                    Smart Sorter: Senders &amp; Domains
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <span>
+                      Smart Sorter: {smartSortTarget === 'allowed' ? 'Allowed' : 'Blocked'} Items
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider ${
+                      smartSortTarget === 'allowed'
+                        ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                        : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                    }`}>
+                      {smartSortTarget === 'allowed' ? 'Allowlist Mode' : 'Blocklist Mode'}
+                    </span>
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Paste a mixed list of email addresses and domain names. They will automatically be sorted into the proper tables.
+                    Paste a mixed list of email addresses and domain names. They will automatically be sorted into{' '}
+                    <code className="font-mono text-purple-600 dark:text-purple-400">
+                      eop_{smartSortTarget}_senders
+                    </code>{' '}
+                    and{' '}
+                    <code className="font-mono text-purple-600 dark:text-purple-400">
+                      eop_{smartSortTarget}_domains
+                    </code>.
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowSmartSortModal(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 cursor-pointer"
               >
                 ✕
               </button>
@@ -3218,12 +3322,18 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                     className={`px-5 py-2 text-white font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition ${
                       smartSortTriage.totalValid === 0
                         ? 'bg-slate-400 dark:bg-slate-600 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 cursor-pointer'
+                        : smartSortTarget === 'allowed'
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 cursor-pointer'
+                        : 'bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 cursor-pointer'
                     }`}
                   >
-                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    {smartSortTarget === 'allowed' ? (
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-200" />
+                    ) : (
+                      <Ban className="w-3.5 h-3.5 text-rose-200" />
+                    )}
                     <span>
-                      Sort &amp; Import {smartSortTriage.totalValid > 0 ? `${smartSortTriage.totalValid} Items` : 'Items'}
+                      Sort &amp; Import {smartSortTriage.totalValid > 0 ? `${smartSortTriage.totalValid} Items ` : ''}to {smartSortTarget === 'allowed' ? 'Allowed' : 'Blocked'} Lists
                     </span>
                   </button>
                 </div>

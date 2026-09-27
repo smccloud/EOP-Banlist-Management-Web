@@ -73,6 +73,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
   const [ldapGroupDn, setLdapGroupDn] = useState(config.ldapGroupDn || 'CN=EOP-SpamAdmins,OU=Security Groups,DC=corp,DC=example,DC=com');
   const [ldapBindDn, setLdapBindDn] = useState(config.ldapBindDn || 'CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com');
   const [ldapBindPass, setLdapBindPass] = useState(config.ldapBindPass || 'ServiceAccountP@ss2026!');
+  const [showWizardBindPass, setShowWizardBindPass] = useState(false);
   const [ldapDomain, setLdapDomain] = useState(config.ldapDomain || 'CORP');
   const [ldapTesting, setLdapTesting] = useState(false);
   const [ldapTestResult, setLdapTestResult] = useState<{
@@ -175,7 +176,9 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
       setLdapTestResult({
         success: true,
         message: `Active Directory LDAP connection successful on ${ldapHost}:${ldapPort} (${ldapProtocol.toUpperCase()})!`,
-        details: `Successfully validated Base DN "${ldapBaseDn}" and confirmed authorized Group DN: "${ldapGroupDn}".`
+        details: ldapBindDn
+          ? `Successfully authenticated with Bind DN "${ldapBindDn}" using LDAP bind password authorization, validated Base DN "${ldapBaseDn}", and confirmed authorized Group DN: "${ldapGroupDn}".`
+          : `Successfully validated Base DN "${ldapBaseDn}" and confirmed authorized Group DN: "${ldapGroupDn}" (Anonymous bind).`
       });
 
       setConfig(prev => ({
@@ -700,17 +703,35 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                   placeholder="CN=svc-eop,OU=Service Accounts,DC=corp,DC=example,DC=com"
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                 />
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                  Active Directory service account Distinguished Name used to query LDAP.
+                </p>
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Service Account Password:</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300">
+                    Bind Password for LDAP Authorization:
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowWizardBindPass(!showWizardBindPass)}
+                    className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    {showWizardBindPass ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                    <span>{showWizardBindPass ? 'Hide' : 'Show'}</span>
+                  </button>
+                </div>
                 <input
-                  type="password"
+                  type={showWizardBindPass ? 'text' : 'password'}
                   value={ldapBindPass}
                   onChange={(e) => setLdapBindPass(e.target.value)}
                   placeholder="••••••••••••"
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                 />
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                  Active Directory service account password used for LDAP bind authorization and group membership lookups.
+                </p>
               </div>
             </div>
 

@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AppConfig } from '../types';
-import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight } from 'lucide-react';
+import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { defaultAppConfig } from '../data/phpFiles';
 
 interface ConfigGeneratorProps {
@@ -10,6 +10,8 @@ interface ConfigGeneratorProps {
 }
 
 export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setConfig, onOpenConfigPage }) => {
+  const [showConfigBindPass, setShowConfigBindPass] = useState(false);
+
   const handleChange = (field: keyof AppConfig, value: any) => {
     setConfig((prev) => ({
       ...prev,
@@ -302,9 +304,9 @@ export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setCon
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Service Account Bind DN</label>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Service Account Bind DN (Optional)</label>
                 <input
                   type="text"
                   value={config.ldapBindDn}
@@ -312,16 +314,28 @@ export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setCon
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono text-[11px] focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                   placeholder="CN=svc-eop,OU=Service Accounts,DC=corp..."
                 />
+                <p className="text-[10px] text-slate-400 mt-1">Service account DN for querying Active Directory</p>
               </div>
               <div>
-                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Service Account Password</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300">Bind Password for LDAP Authorization</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowConfigBindPass(!showConfigBindPass)}
+                    className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    {showConfigBindPass ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                    <span>{showConfigBindPass ? 'Hide' : 'Show'}</span>
+                  </button>
+                </div>
                 <input
-                  type="password"
+                  type={showConfigBindPass ? 'text' : 'password'}
                   value={config.ldapBindPass}
                   onChange={(e) => handleChange('ldapBindPass', e.target.value)}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono text-[11px] focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                   placeholder="••••••••••••"
                 />
+                <p className="text-[10px] text-slate-400 mt-1">Active Directory service account password for LDAP authorization</p>
               </div>
             </div>
           </div>
