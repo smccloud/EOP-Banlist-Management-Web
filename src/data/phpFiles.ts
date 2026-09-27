@@ -4232,6 +4232,30 @@ The application includes a standard page-by-page setup wizard that runs during f
 
 ---
 
+## Project File Structure & Inventory
+
+\`\`\`text
+eop-antispam-php-mariadb/
+├── config.php            # Primary application configuration (DB, LDAP, Policy options)
+├── database.php          # PDO database wrapper & individual table CRUD operations
+├── ldap.php              # Active Directory LDAP Group DN authentication engine
+├── functions.php         # CSRF verification, input sanitization, and helper utilities
+├── schema.sql            # MariaDB database table definitions & 9-table schema
+├── index.php             # Main management dashboard (Dark mode, tables, cards, modal UI)
+├── setup.php             # 5-step initial run setup wizard with permanent lock
+├── login.php             # Active Directory LDAP authentication portal (Dark mode)
+├── logout.php            # Session termination & security cleanup
+├── actions.php           # REST-style handler for add, delete, import, export, and sync
+├── sync-exchange.ps1     # Linux PowerShell sync automation script (Pull & Push modes)
+├── cron-sync.php         # Scheduled Pull-Only background CLI sync daemon
+├── install-debian.sh     # Automated Debian 11/12 deployment script
+├── eop-apache.conf       # Hardened Apache2 VirtualHost configuration
+├── .env.example          # Environment variable template
+└── README.md             # Complete technical and deployment documentation
+\`\`\`
+
+---
+
 ## Quick Start on Debian Linux
 
 ### Step 1: Initialize Database on Remote MariaDB Server

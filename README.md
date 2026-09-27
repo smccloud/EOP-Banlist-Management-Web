@@ -1,6 +1,8 @@
 # Exchange Online Protection (EOP) Anti-Spam Policy Manager
 
-A production-ready **PHP 8** web application designed to run on **Debian Linux**, storing policy lists in a **remote MariaDB server** across individual dedicated tables, authenticated via **Microsoft Active Directory (AD) LDAP Group Distinguished Name (Group DN)**, featuring **Dark Mode** and **Exchange Online PowerShell / Cron automation**.
+A production-ready **PHP 8** web application designed for **Debian Linux** and backed by a **remote MariaDB server** across individual dedicated tables, authenticated via **Microsoft Active Directory (AD) LDAP Group Distinguished Name (Group DN)**, featuring **Dark Mode**, **App-Only Certificate-Based Authentication (CBA)**, and an **Exchange Online PowerShell / Cron automation engine**.
+
+This repository contains both the **production PHP 8 / Debian deployment codebase** and an interactive **React & TypeScript workbench / simulator** for testing, generating configuration files, and exporting complete deployment archives.
 
 ---
 
@@ -8,20 +10,26 @@ A production-ready **PHP 8** web application designed to run on **Debian Linux**
 
 - [Overview & Architecture](#overview--architecture)
 - [Key Features](#key-features)
-- [Database Schema (Individual Table Per List)](#database-schema-individual-table-per-list)
+- [Initial Run Setup Routine (`setup.php`)](#initial-run-setup-routine-setupphp)
+- [Database Schema (Dedicated Table Per List)](#database-schema-dedicated-table-per-list)
 - [Active Directory LDAP Authentication](#active-directory-ldap-authentication)
-- [Dark Mode & UI Design](#dark-mode--ui-design)
+- [Exchange Online Protection Sync Engine](#exchange-online-protection-sync-engine)
+  - [Scheduled Cron Daemon (Pull-Only)](#scheduled-cron-daemon-pull-only)
+  - [Manual Admin Push (Exchange Online)](#manual-admin-push-exchange-online)
+  - [Certificate-Based Authentication (CBA)](#certificate-based-authentication-cba)
+- [Web Interface & UX Capabilities](#web-interface--ux-capabilities)
+  - [Smart Domain Sorting & Hierarchy](#smart-domain-sorting--hierarchy)
+  - [In-App Confirmation Safeguards](#in-app-confirmation-safeguards)
+  - [Dark Mode & Audit Trail](#dark-mode--audit-trail)
 - [Debian Linux Server Deployment](#debian-linux-server-deployment)
   - [Prerequisites](#prerequisites)
   - [Step 1: Remote MariaDB Database Setup](#step-1-remote-mariadb-database-setup)
   - [Step 2: Automated Installation on Debian](#step-2-automated-installation-on-debian)
   - [Step 3: Manual Debian Setup (Alternative)](#step-3-manual-debian-setup-alternative)
   - [Step 4: Apache VirtualHost Configuration](#step-4-apache-virtualhost-configuration)
-- [Exchange Online Synchronization](#exchange-online-synchronization)
-  - [PowerShell Automation Script (`sync-exchange.ps1`)](#powershell-automation-script-sync-exchangeps1)
-  - [Cron Daemon (`cron-sync.php`)](#cron-daemon-cron-syncphp)
-- [Project File Structure](#project-file-structure)
-- [Configuration Reference (`config.php` & `.env`)](#configuration-reference-configphp--env)
+  - [Step 5: Exchange Online Management on Linux](#step-5-exchange-online-management-on-linux)
+- [Project File Structure & Inventory](#project-file-structure--inventory)
+- [Configuration Reference (`config.php`, `.env`, & Database Tables)](#configuration-reference-configphp-env--database-tables)
 - [Troubleshooting & FAQ](#troubleshooting--faq)
 - [License](#license)
 
@@ -29,13 +37,17 @@ A production-ready **PHP 8** web application designed to run on **Debian Linux**
 
 ## Overview & Architecture
 
-Microsoft 365 Exchange Online Protection (EOP) allows administrators to configure anti-spam policies (`Set-HostedContentFilterPolicy`) with custom lists of allowed senders, blocked senders, allowed domains, and blocked domains. In enterprise environments, managing these entries directly in PowerShell or the Microsoft Defender Portal can lead to lack of auditability, accidental overwrites, or bottlenecks.
+Microsoft 365 Exchange Online Protection (EOP) allows administrators to configure anti-spam policies (`Set-HostedContentFilterPolicy`) with custom lists of allowed senders, blocked senders, allowed domains, and blocked domains. In enterprise environments, managing these entries directly in PowerShell or the Microsoft Defender Portal can lead to lack of auditability, accidental overwrites, or administrative bottlenecks.
 
 This solution provides:
-1. **Centralized Web Portal**: Secure, multi-user web dashboard with dark mode and search/filter capabilities.
+1. **Centralized Web Portal**: Secure, multi-user web dashboard with dark mode, full search/filter capabilities, smart domain clustering, and CSV export.
 2. **Dedicated MariaDB Tables**: Uses an **individual MariaDB table per list** on a remote database server for strict data isolation, indexing, and transactional integrity.
-3. **Active Directory Security**: Restricts system login strictly to members of an authorized **Active Directory Group Distinguished Name (Group DN)** using standard **plain LDAP (Port 389)**. **LDAPS is NOT required**, removing certificate hassles while optionally supporting LDAPS (Port 636) and StartTLS.
-4. **Exchange Online Sync**: Automatically pulls entries from MariaDB and runs `Set-HostedContentFilterPolicy` targeting the specified anti-spam policy name.
+3. **Database-Stored Configuration**: LDAP directory connection settings (`eop_ldap_config`) and Exchange Online authentication credentials (`eop_auth_config`) can be safely modified through the UI without editing server configuration files.
+4. **Active Directory Security**: Restricts system login strictly to members of an authorized **Active Directory Group Distinguished Name (Group DN)** using standard **plain LDAP (Port 389)**. **LDAPS is NOT required**, removing certificate hassles while optionally supporting LDAPS (Port 636) and StartTLS.
+5. **Exchange Online Sync Safeguards**:
+   - **Scheduled Cron is strictly Pull-Only**: Never blindly overwrites Microsoft 365 in the background; only pulls remote changes into MariaDB.
+   - **Manual Admin Push**: Pushing MariaDB lists to Microsoft 365 requires an intentional administrator action with built-in confirmation modals.
+6. **Initial Run Setup Routine (`setup.php`)**: A 5-step deployment wizard that validates database and directory connectivity, builds the schema, and permanently locks itself against re-execution.
 
 ---
 
@@ -48,28 +60,52 @@ This solution provides:
   - `eop_blocked_domains`: Blacklisted domains.
   - `eop_audit_log`: Complete audit trail recording who made the change, action type, IP address, timestamp, and notes/ticket numbers.
   - `eop_policies`: Stores policy metadata and last sync timestamps.
+  - `eop_ldap_config`: Database-backed LDAP host, port, protocol, Base DN, Group DN, and bind credentials.
+  - `eop_auth_config`: Database-backed Azure AD Tenant ID, Client App ID, Certificate Thumbprint, and encrypted RSA Private Key.
+  - `eop_setup_lock`: Cryptographic lock tracking first-run completion.
 - **Active Directory LDAP Group Authorization (LDAPS Not Required)**:
   - Connects to Windows Server Domain Controllers via standard **LDAP (port 389)** by default.
   - No need to configure internal CA root certificates or OpenLDAP TLS keystores on Debian.
   - Enforces access control via exact **Group Distinguished Name (Group DN)**.
   - Supports **nested/recursive Active Directory groups** using LDAP matching rule OID `1.2.840.113556.1.4.1941` (`LDAP_MATCHING_RULE_IN_CHAIN`).
+- **Safe UX with In-App Modals**:
+  - Non-blocking in-app modal confirmations for record deletion and Exchange Online pushes.
+  - Displays user profile badge (e.g. `John Smith AD Authorized`) while tracking underlying account identifiers (`jsmith`).
 - **Dark Mode Support**:
   - Built-in Dark and Light themes with a one-click toggle in the header.
-  - Automatically respects `prefers-color-scheme` and stores user preference in `localStorage`.
+  - Respects system `prefers-color-scheme` and remembers preference in `localStorage`.
 - **Policy Switcher**:
-  - Specify and switch between any anti-spam policy (e.g. `Default`, `Strict Anti-Spam Policy`, `Executive Inbound Policy`).
-- **Bulk Import & CSV Export**:
-  - Rapidly paste hundred-item bulk lists with duplicate suppression.
-  - Export filtered lists directly to CSV.
-- **PowerShell & Cron Sync Engine**:
-  - Linux PowerShell (`pwsh`) script to update Exchange Online.
-  - Includes crontab automation to keep Exchange Online synced on a scheduled basis.
+  - Seamlessly switch between any anti-spam policy (e.g., `Default`, `Strict Anti-Spam Policy`, `Executive Inbound Policy`).
+- **Smart Sorting & Bulk Import**:
+  - RFC-compliant domain grouping, subdomain hierarchy tree, and TLD clustering.
+  - Rapidly paste hundred-item bulk lists with duplicate suppression and CSV export.
 
 ---
 
-## Database Schema (Individual Table Per List)
+## Initial Run Setup Routine (`setup.php`)
 
-All lists are stored in individual tables on your remote MariaDB server:
+The application features an automated initial setup routine (`setup.php`) executed upon first deployment:
+
+1. **Step 1 - Requirements & Environment Check**:
+   - Verifies PHP 8.1+, PDO MySQL extension, OpenSSL, and LDAP module (`php-ldap`).
+2. **Step 2 - Remote MariaDB Database Setup**:
+   - Collects host, port, database name, and credentials.
+   - Tests remote database connectivity and populates all 9 required schema tables.
+3. **Step 3 - Active Directory / OpenLDAP Configuration**:
+   - Configures Domain Controller host, port, protocol (Plain LDAP 389, LDAPS 636, or StartTLS), Base DN, service account, and the mandatory **Authorized Group DN**.
+   - Performs a live bind test and validates group membership query syntax.
+4. **Step 4 - Microsoft 365 Exchange Online Protection (EOP)**:
+   - Configures Tenant ID, Client App ID, Certificate Thumbprint, Organization Domain, target anti-spam policy name, and RSA Private Key with AES-256-GCM encrypted passphrase.
+5. **Step 5 - Review & Permanent Security Lock**:
+   - Summarizes all configured parameters.
+   - Writes `config.php` and creates a filesystem lock file (`installed.lock`) alongside the MariaDB `eop_setup_lock` table.
+   - **Permanent Re-Run Prevention**: Subsequent requests to `setup.php` immediately respond with **403 Forbidden** and cannot be re-executed without deliberate root-level intervention.
+
+---
+
+## Database Schema (Dedicated Table Per List)
+
+All policy lists and system configurations are stored across individual dedicated tables on your remote MariaDB server:
 
 ```sql
 CREATE DATABASE IF NOT EXISTS `eop_antispam_db` 
@@ -78,7 +114,7 @@ CREATE DATABASE IF NOT EXISTS `eop_antispam_db`
 
 USE `eop_antispam_db`;
 
--- 1. Allowed Senders
+-- 1. Allowed Senders Table
 CREATE TABLE IF NOT EXISTS `eop_allowed_senders` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `policy_name` VARCHAR(128) NOT NULL,
@@ -91,7 +127,7 @@ CREATE TABLE IF NOT EXISTS `eop_allowed_senders` (
   INDEX `idx_sender_email` (`sender_email`)
 ) ENGINE=InnoDB;
 
--- 2. Blocked Senders
+-- 2. Blocked Senders Table
 CREATE TABLE IF NOT EXISTS `eop_blocked_senders` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `policy_name` VARCHAR(128) NOT NULL,
@@ -104,7 +140,7 @@ CREATE TABLE IF NOT EXISTS `eop_blocked_senders` (
   INDEX `idx_blocked_sender` (`sender_email`)
 ) ENGINE=InnoDB;
 
--- 3. Allowed Domains
+-- 3. Allowed Domains Table
 CREATE TABLE IF NOT EXISTS `eop_allowed_domains` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `policy_name` VARCHAR(128) NOT NULL,
@@ -117,7 +153,7 @@ CREATE TABLE IF NOT EXISTS `eop_allowed_domains` (
   INDEX `idx_domain_name` (`domain_name`)
 ) ENGINE=InnoDB;
 
--- 4. Blocked Domains
+-- 4. Blocked Domains Table
 CREATE TABLE IF NOT EXISTS `eop_blocked_domains` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `policy_name` VARCHAR(128) NOT NULL,
@@ -130,7 +166,7 @@ CREATE TABLE IF NOT EXISTS `eop_blocked_domains` (
   INDEX `idx_blocked_domain` (`domain_name`)
 ) ENGINE=InnoDB;
 
--- 5. Audit Trail
+-- 5. Audit Trail Log Table
 CREATE TABLE IF NOT EXISTS `eop_audit_log` (
   `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `action` VARCHAR(32) NOT NULL,
@@ -144,7 +180,7 @@ CREATE TABLE IF NOT EXISTS `eop_audit_log` (
   INDEX `idx_policy_timestamp` (`policy_name`, `timestamp`)
 ) ENGINE=InnoDB;
 
--- 6. Policy Registry
+-- 6. Anti-Spam Policy Registry Table
 CREATE TABLE IF NOT EXISTS `eop_policies` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `policy_name` VARCHAR(128) NOT NULL UNIQUE,
@@ -154,7 +190,7 @@ CREATE TABLE IF NOT EXISTS `eop_policies` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
--- 7. Database-Stored LDAP Connection Configuration
+-- 7. Database-Stored LDAP Connection Configuration Table
 CREATE TABLE IF NOT EXISTS `eop_ldap_config` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `host` VARCHAR(255) NOT NULL,
@@ -175,42 +211,115 @@ CREATE TABLE IF NOT EXISTS `eop_ldap_config` (
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX `idx_ldap_active` (`is_active`)
 ) ENGINE=InnoDB;
+
+-- 8. Database-Stored Exchange Online CBA Credentials Table
+CREATE TABLE IF NOT EXISTS `eop_auth_config` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `tenant_id` VARCHAR(100) NOT NULL,
+  `client_id` VARCHAR(100) NOT NULL,
+  `certificate_thumbprint` VARCHAR(100) NOT NULL,
+  `organization` VARCHAR(255) NOT NULL,
+  `key_filename` VARCHAR(255) NOT NULL DEFAULT 'eop-cert-private.key',
+  `private_key_pem` MEDIUMTEXT NOT NULL,
+  `encrypted_passphrase` TEXT NULL,
+  `auth_type` VARCHAR(50) NOT NULL DEFAULT 'CertificateThumbprint',
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `updated_by` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- 9. Setup Wizard Lockout Table
+CREATE TABLE IF NOT EXISTS `eop_setup_lock` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `is_locked` TINYINT(1) NOT NULL DEFAULT 1,
+  `locked_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `locked_by_ip` VARCHAR(45) NOT NULL,
+  `install_version` VARCHAR(20) NOT NULL DEFAULT '1.0.0'
+) ENGINE=InnoDB;
 ```
 
 ---
 
-## Active Directory LDAP Authentication & Database Storage
+## Active Directory LDAP Authentication
 
-The application dynamically stores and retrieves LDAP connection settings directly from the MariaDB database table `eop_ldap_config`:
+The application queries Active Directory connection parameters directly from the `eop_ldap_config` table:
 
-1. **Database-Stored Connection Parameters**:
-   - The LDAP server address (`host`), port (`port`), protocol (`ldap`, `ldaps`, `starttls`), `base_dn`, `authorized_group_dn`, and optional service credentials are stored in `eop_ldap_config`.
-   - Settings can be updated directly from the **LDAP Config (DB Table)** tab in the web interface or via SQL.
-   - Any runtime changes to the database table take effect immediately without restarting Apache or editing server files.
-
+1. **Database-Stored Parameters**:
+   - LDAP server address (`host`), port (`port`), protocol (`ldap`, `ldaps`, `starttls`), `base_dn`, `authorized_group_dn`, and bind credentials can be viewed or updated in the **Configuration Page** without touching server files.
 2. **User Authentication**:
-   - The user inputs their Windows Active Directory username (`sAMAccountName` or UPN `user@corp.example.com`) and domain password.
-   - Binds directly against `ldap://<DC_FQDN>:389` (or `ldaps://<DC_FQDN>:636` if desired).
+   - Users provide their Windows Active Directory username (`sAMAccountName` or UPN `user@corp.example.com`) and domain password.
+   - Binds directly against `ldap://<DC_FQDN>:389` (or `ldaps://<DC_FQDN>:636`).
    - Plain LDAP does **not** require any SSL/TLS certificates or enterprise CA trust configurations on Debian.
 3. **Access Control via Group Distinguished Name**:
-   - Once authenticated, the user's distinguished name (DN) is resolved.
-   - A search query evaluates whether the user belongs to the required `LDAP_AUTHORIZED_GROUP_DN`:
+   - Upon successful bind, the user's distinguished name (DN) is resolved.
+   - Evaluates whether the user belongs to the required `authorized_group_dn`:
      ```ldap
      (&(objectCategory=user)(sAMAccountName=<USER>)(memberOf:1.2.840.113556.1.4.1941:=<GROUP_DN>))
      ```
-   - If the user is a direct or nested member, access is granted. Otherwise, login is denied with an authorization error.
-3. **Session Hardening**:
+   - Supports **nested/recursive Active Directory groups** using LDAP matching rule OID `1.2.840.113556.1.4.1941` (`LDAP_MATCHING_RULE_IN_CHAIN`).
+4. **Session Hardening**:
    - `session_regenerate_id(true)` on login to prevent session fixation.
    - Inactivity timeout (default: 60 minutes).
-   - HttpOnly, SameSite cookies and CSRF tokens across all form actions.
+   - `HttpOnly`, `SameSite=Lax`, and `Secure` cookie attributes.
+   - Strict CSRF token validation on every POST/action request.
 
 ---
 
-## Dark Mode & UI Design
+## Exchange Online Protection Sync Engine
 
-- **Tailwind CSS Engine**: Full dark mode styling (`dark:`) for headers, metric cards, data tables, modals, and input fields.
-- **Theme Switcher**: An icon button in the top navigation bar toggles between dark and light themes instantly without page reload.
-- **Persistence**: Remembers the selected theme in the browser's `localStorage` and falls back to system preferences (`prefers-color-scheme: dark`).
+### Scheduled Cron Daemon (Pull-Only)
+
+To prevent unintended overwrites of Microsoft 365 policies, the background cron daemon (`cron-sync.php --action=pull`) is **strictly pull-only**:
+- It pulls remote entries from Microsoft 365 using `Get-HostedContentFilterPolicy`.
+- Discovered entries are reconciled into the corresponding MariaDB tables without modifying Exchange Online.
+
+```powershell
+# Scheduled Cron (Pull Only): Reconcile remote changes into MariaDB
+Get-HostedContentFilterPolicy -Identity "Default"
+```
+
+### Manual Admin Push (Exchange Online)
+
+Pushing local MariaDB changes to Microsoft 365 is an intentional administrative action requiring confirmation in the UI:
+- When confirmed, the application executes `sync-exchange.ps1` with `-Action Push`.
+- Gathers all records from `eop_allowed_senders`, `eop_blocked_senders`, `eop_allowed_domains`, and `eop_blocked_domains`.
+- Executes:
+  ```powershell
+  Connect-ExchangeOnline -AppId $ClientId -CertificateThumbprint $CertThumbprint -Organization $Organization
+  Set-HostedContentFilterPolicy -Identity $PolicyName `
+    -AllowedSenders $AllowedSenders `
+    -BlockedSenders $BlockedSenders `
+    -AllowedSenderDomains $AllowedDomains `
+    -BlockedSenderDomains $BlockedDomains
+  ```
+
+### Certificate-Based Authentication (CBA)
+
+The application supports modern, secure **App-Only Certificate-Based Authentication (CBA)** for Microsoft 365 Exchange Online:
+- RSA private key (`.pem`, `.key`, or `.pfx`) stored in MariaDB `eop_auth_config`.
+- Passphrase encrypted with **AES-256-GCM** before saving to the database.
+- Completely passwordless and client-secret-free authentication to Exchange Online PowerShell.
+
+---
+
+## Web Interface & UX Capabilities
+
+### Smart Domain Sorting & Hierarchy
+The web interface features multi-mode intelligent sorting:
+- **Domain Cluster**: Groups subdomains under their parent domain (e.g., `api.service.corp.com` under `corp.com`).
+- **Subdomain Tree**: Visual tree-nested display showing root domain and branch subdomains.
+- **TLD Group**: Organizes entries by Top-Level Domain (`.com`, `.net`, `.io`, `.gov`).
+- **Standard A-Z**: Alphabetical sorting by entry value or date added.
+
+### In-App Confirmation Safeguards
+To comply with modern browser sandboxes and iframe restrictions (where browser-native `alert()` or `confirm()` are blocked), all destructive actions use in-app modals:
+- **Delete Confirmation Modal**: Shows the exact email or domain, target table, and warns that it will be removed on the next push.
+- **Exchange Online Push Modal**: Outlines the policy name and record counts before triggering `Set-HostedContentFilterPolicy`.
+
+### Dark Mode & Audit Trail
+- High-contrast **Dark Mode** and clean **Light Mode** toggled with a single click.
+- Real-time **Audit Log** tab tracking additions, deletions, bulk imports, and sync runs with user identity, timestamp, and client IP address.
 
 ---
 
@@ -297,8 +406,8 @@ Create `/etc/apache2/sites-available/eop-antispam.conf`:
         AllowOverride None
         Require all granted
 
-        # Block direct browser access to config, scripts, and SQL files
-        <FilesMatch "^(\..*|.*\.sql|.*\.ps1|.*\.sh|config\.php)$">
+        # Block direct browser access to config, scripts, keys, and SQL files
+        <FilesMatch "^(\..*|.*\.sql|.*\.ps1|.*\.sh|.*\.key|.*\.pem|config\.php)$">
             Require all denied
         </FilesMatch>
     </Directory>
@@ -316,15 +425,11 @@ sudo a2ensite eop-antispam.conf
 sudo systemctl restart apache2
 ```
 
----
+### Step 5: Exchange Online Management on Linux
 
-## Exchange Online Synchronization
+To enable automated Exchange Online synchronization via PowerShell on Debian:
 
-### PowerShell Automation Script (`sync-exchange.ps1`)
-
-To push list entries into Microsoft 365 Exchange Online Protection:
-
-1. Install PowerShell on Debian:
+1. Install PowerShell (`pwsh`) on Debian:
    ```bash
    sudo apt-get install -y powershell
    ```
@@ -332,95 +437,81 @@ To push list entries into Microsoft 365 Exchange Online Protection:
    ```bash
    sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUsers -Force"
    ```
-3. Run the sync script:
+3. Set up the Pull-Only cron schedule for user `www-data`:
    ```bash
-   pwsh /var/www/eop-antispam/sync-exchange.ps1 -PolicyName "Strict Anti-Spam Policy"
+   sudo crontab -u www-data -e
    ```
-
-The script pulls current lists from `eop_allowed_senders`, `eop_blocked_senders`, `eop_allowed_domains`, and `eop_blocked_domains`, then runs:
-
-```powershell
-Set-HostedContentFilterPolicy -Identity $PolicyName `
-  -AllowedSenders $AllowedSenders `
-  -BlockedSenders $BlockedSenders `
-  -AllowedSenderDomains $AllowedDomains `
-  -BlockedSenderDomains $BlockedDomains
-```
-
-### Cron Daemon (`cron-sync.php`)
-
-To keep Exchange Online automatically synced every 15 minutes, add a crontab entry for `www-data`:
-
-```bash
-sudo crontab -u www-data -e
-```
-
-Add the following line:
-
-```cron
-*/15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default" >> /var/log/eop-sync.log 2>&1
-```
+   Add:
+   ```cron
+   */15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --action=pull --policy="Default" >> /var/log/eop-sync.log 2>&1
+   ```
 
 ---
 
-## Project File Structure
+## Project File Structure & Inventory
 
 ```text
 eop-antispam-php-mariadb/
-├── config.php            # Primary configuration file (DB, LDAP, Policy options)
+├── config.php            # Primary application configuration (DB, LDAP, Policy options)
 ├── database.php          # PDO database wrapper & individual table CRUD operations
 ├── ldap.php              # Active Directory LDAP Group DN authentication engine
 ├── functions.php         # CSRF verification, input sanitization, and helper utilities
+├── schema.sql            # MariaDB database table definitions & indices
 ├── index.php             # Main management dashboard (Dark mode, tables, cards, modal UI)
+├── setup.php             # 5-step initial run setup wizard with permanent lock
 ├── login.php             # Active Directory LDAP authentication portal (Dark mode)
 ├── logout.php            # Session termination & security cleanup
 ├── actions.php           # REST-style handler for add, delete, import, export, and sync
-├── schema.sql            # MariaDB database table definition & indices
-├── sync-exchange.ps1     # Linux PowerShell sync automation script
-├── cron-sync.php         # Automated background CLI sync daemon
-├── apache.conf           # Hardened Apache2 VirtualHost configuration
-├── install-debian.sh     # One-click Debian installation & deployment script
+├── sync-exchange.ps1     # Linux PowerShell sync automation script (Pull & Push modes)
+├── cron-sync.php         # Scheduled Pull-Only background CLI sync daemon
+├── install-debian.sh     # Automated Debian 11/12 deployment script
+├── eop-apache.conf       # Hardened Apache2 VirtualHost configuration
 ├── .env.example          # Environment variable template
 └── README.md             # Complete technical and deployment documentation
 ```
 
 ---
 
-## Configuration Reference (`config.php` & `.env`)
+## Configuration Reference (`config.php`, `.env`, & Database Tables)
 
-Key settings in `config.php`:
+Key application parameters:
 
-| Constant | Description | Default |
-|---|---|---|
-| `DB_HOST` | Remote MariaDB server hostname or IP | `192.168.10.50` |
-| `DB_PORT` | Remote MariaDB server port | `3306` |
-| `DB_NAME` | Database name | `eop_antispam_db` |
-| `DB_USER` | MariaDB username with remote permissions | `eop_app_user` |
-| `DB_PASS` | MariaDB password | *Configured* |
-| `LDAP_PROTOCOL` | Connection protocol (`'ldap'`, `'ldaps'`, or `'starttls'`) | `'ldap'` |
-| `LDAP_HOST` | Active Directory Domain Controller FQDN | `dc01.corp.example.com` |
-| `LDAP_PORT` | LDAP port (389 for plain LDAP, 636 for LDAPS) | `389` |
-| `LDAP_USE_SSL` | Enable SSL (`ldaps://`) | `false` |
-| `LDAP_BASE_DN` | Search Base DN for directory queries | `DC=corp,DC=example,DC=com` |
-| `LDAP_AUTHORIZED_GROUP_DN` | Mandatory Group DN required for login | `CN=Exchange-Admins,OU=Security Groups,DC=corp...` |
-| `DEFAULT_POLICY_NAME` | Target Exchange Online Protection policy | `Default` |
-| `SESSION_TIMEOUT` | Seconds before inactivity timeout | `3600` (60 min) |
+| Parameter | Location | Description | Default |
+|---|---|---|---|
+| `DB_HOST` | `config.php` / `.env` | Remote MariaDB server hostname or IP | `192.168.10.50` |
+| `DB_PORT` | `config.php` / `.env` | Remote MariaDB server port | `3306` |
+| `DB_NAME` | `config.php` / `.env` | Database name | `eop_antispam_db` |
+| `DB_USER` | `config.php` / `.env` | MariaDB username with remote permissions | `eop_app_user` |
+| `DB_PASS` | `config.php` / `.env` | MariaDB password | *Configured* |
+| `host` | `eop_ldap_config` (DB) | Domain Controller FQDN | `dc01.corp.example.com` |
+| `port` | `eop_ldap_config` (DB) | LDAP port (389 plain LDAP, 636 LDAPS) | `389` |
+| `protocol` | `eop_ldap_config` (DB) | Protocol (`ldap`, `ldaps`, `starttls`) | `ldap` |
+| `base_dn` | `eop_ldap_config` (DB) | Search Base DN for directory queries | `DC=corp,DC=example,DC=com` |
+| `authorized_group_dn` | `eop_ldap_config` (DB) | Mandatory Group DN required for login | `CN=Exchange-Admins,OU=Groups,DC=...` |
+| `tenant_id` | `eop_auth_config` (DB) | Microsoft 365 / Azure AD Tenant ID | GUID |
+| `client_id` | `eop_auth_config` (DB) | App Registration Client ID | GUID |
+| `certificate_thumbprint` | `eop_auth_config` (DB) | App-Only Certificate Thumbprint | SHA1 Hex |
+| `DEFAULT_POLICY_NAME` | `config.php` | Target Exchange Online Protection policy | `Default` |
+| `SESSION_TIMEOUT` | `config.php` | Seconds before inactivity timeout | `3600` (60 min) |
 
 ---
 
 ## Troubleshooting & FAQ
 
-#### Q: Do I need LDAPS (port 636) or SSL certificates?
-**No.** The application is built to support standard plain LDAP on port 389 by default. You do **not** need to install internal CA certificates or generate keystores. LDAPS (port 636) and StartTLS (port 389) are optional features if your corporate policy requires encryption in transit.
+#### Q: Do I need LDAPS (port 636) or SSL certificates for Active Directory?
+**No.** The application is built to support standard plain LDAP on port 389 by default. You do **not** need to install internal CA certificates or generate keystores. LDAPS (port 636) and StartTLS (port 389) are fully supported options if your corporate policy requires encryption in transit.
 
 #### Q: How does nested Active Directory group membership work?
-The `ldap.php` authentication class utilizes the LDAP matching rule OID `1.2.840.113556.1.4.1941` (`LDAP_MATCHING_RULE_IN_CHAIN`). If an administrator belongs to a group nested inside `LDAP_AUTHORIZED_GROUP_DN`, Active Directory automatically resolves membership without requiring manual group assignments.
+The `ldap.php` authentication class utilizes the LDAP matching rule OID `1.2.840.113556.1.4.1941` (`LDAP_MATCHING_RULE_IN_CHAIN`). If an administrator belongs to a group nested inside `authorized_group_dn`, Active Directory automatically resolves membership without requiring manual individual group assignments.
+
+#### Q: Why is the scheduled Cron job "Pull-Only"?
+To prevent accidental policy overwrites or race conditions in Microsoft 365, automated background synchronization only pulls updates into MariaDB. Pushing MariaDB lists to Microsoft 365 is restricted to intentional manual administrator actions via the web portal or explicitly triggered administrator scripts.
 
 #### Q: Remote MariaDB returns `Host 'xxx' is not allowed to connect`
-1. On your remote MariaDB server, check `/etc/mysql/mariadb.conf.d/50-server.cnf` and verify `bind-address = 0.0.0.0`.
+1. On your remote MariaDB server, check `/etc/mysql/mariadb.conf.d/50-server.cnf` and verify `bind-address = 0.0.0.0` (or your internal LAN subnet IP).
 2. Ensure you executed `GRANT ALL PRIVILEGES ON eop_antispam_db.* TO 'eop_app_user'@'DEBIAN_IP'; FLUSH PRIVILEGES;`.
 
-#### Q: Can I run this behind an HTTPS reverse proxy (e.g. Nginx, Cloudflare)?
+#### Q: Can I run this behind an HTTPS reverse proxy (e.g. Nginx, Cloudflare, Traefik)?
 Yes. Configure your reverse proxy to forward requests to Apache with `X-Forwarded-Proto https` and `X-Forwarded-For`. The application includes security headers (`X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`) to protect your deployment.
 
 ---
