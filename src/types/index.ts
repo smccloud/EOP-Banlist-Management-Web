@@ -30,6 +30,12 @@ export interface AppConfig {
   privateKeyPem?: string;
   keyFilename?: string;
   organization?: string;
+
+  // Emergency / Non-LDAP Fallback Admin Credentials (used if LDAP connection fails)
+  fallbackAdminUsername?: string;
+  fallbackAdminPassword?: string;
+  fallbackAdminPasswordHash?: string;
+  fallbackAdminEnabled?: boolean;
 }
 
 export interface EopAuthConfig {

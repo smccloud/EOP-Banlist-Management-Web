@@ -21,7 +21,10 @@ import {
   RotateCcw,
   Sliders,
   Terminal,
-  FileCheck
+  FileCheck,
+  UserX,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 interface SetupWizardProps {
@@ -78,6 +81,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
     details?: string;
   } | null>(null);
 
+  // Step 3 Fallback Non-LDAP Admin state
+  const [fallbackAdminEnabled, setFallbackAdminEnabled] = useState(config.fallbackAdminEnabled ?? true);
+  const [fallbackAdminUsername, setFallbackAdminUsername] = useState(config.fallbackAdminUsername || 'eopadmin');
+  const [fallbackAdminPassword, setFallbackAdminPassword] = useState(config.fallbackAdminPassword || 'Emergency#Admin2026!');
+  const [showFallbackPass, setShowFallbackPass] = useState(false);
+
   // Step 4: EOP connection state
   const [tenantId, setTenantId] = useState(config.tenantId || '72f988bf-86f1-41af-91ab-2d7cd011db47');
   const [clientId, setClientId] = useState(config.clientId || '3a2b4c5d-6e7f-8a9b-0c1d-2e3f4a5b6c7d');
@@ -98,6 +107,26 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
 
   // Step 5: Finalizing lock state
   const [finalizing, setFinalizing] = useState(false);
+
+  // Validate fallback admin password (12+ chars, 3 of 4: uppercase, lowercase, numbers, symbols)
+  const validateFallbackPassword = (pwd: string) => {
+    const minLength = pwd.length >= 12;
+    const hasUpper = /[A-Z]/.test(pwd);
+    const hasLower = /[a-z]/.test(pwd);
+    const hasNumber = /[0-9]/.test(pwd);
+    const hasSymbol = /[^A-Za-z0-9]/.test(pwd);
+    const passedCategories = [hasUpper, hasLower, hasNumber, hasSymbol].filter(Boolean).length;
+    const isValid = minLength && passedCategories >= 3;
+    return {
+      minLength,
+      hasUpper,
+      hasLower,
+      hasNumber,
+      hasSymbol,
+      passedCategories,
+      isValid,
+    };
+  };
 
   // Step 2 handler: test and populate schema
   const handleTestAndPopulateDb = () => {
@@ -157,7 +186,10 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
         ldapGroupDn,
         ldapBindDn,
         ldapBindPass,
-        ldapDomain
+        ldapDomain,
+        fallbackAdminEnabled,
+        fallbackAdminUsername,
+        fallbackAdminPassword
       }));
     }, 1000);
   };
@@ -712,6 +744,120 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
               </div>
             )}
 
+            {/* Non-LDAP Fallback Administrator Account Setup */}
+            <div className="p-5 bg-gradient-to-br from-slate-50 to-amber-50/50 dark:from-slate-800/80 dark:to-amber-950/20 rounded-2xl border border-amber-200/80 dark:border-amber-800/60 space-y-4">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 flex items-center justify-center font-bold">
+                    <Shield className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <span>Emergency Non-LDAP Fallback Administrator</span>
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60">
+                        Disaster Recovery
+                      </span>
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Allows authorized sign-in directly through MariaDB if the Active Directory Domain Controller is unreachable or offline.
+                    </p>
+                  </div>
+                </div>
+
+                <label className="flex items-center space-x-2 cursor-pointer text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={fallbackAdminEnabled}
+                    onChange={(e) => setFallbackAdminEnabled(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded border-slate-300 focus:ring-amber-500"
+                  />
+                  <span>Enable Fallback Account</span>
+                </label>
+              </div>
+
+              {fallbackAdminEnabled && (
+                <div className="pt-2 border-t border-amber-200/60 dark:border-amber-800/40 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Fallback Username:
+                      </label>
+                      <input
+                        type="text"
+                        value={fallbackAdminUsername}
+                        onChange={(e) => setFallbackAdminUsername(e.target.value)}
+                        placeholder="eopadmin"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-semibold text-slate-700 dark:text-slate-300">
+                          Fallback Password:
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setShowFallbackPass(!showFallbackPass)}
+                          className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-700 flex items-center gap-1"
+                        >
+                          {showFallbackPass ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                          <span>{showFallbackPass ? 'Hide' : 'Show'}</span>
+                        </button>
+                      </div>
+                      <input
+                        type={showFallbackPass ? 'text' : 'password'}
+                        value={fallbackAdminPassword}
+                        onChange={(e) => setFallbackAdminPassword(e.target.value)}
+                        placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Password Requirement Checklist */}
+                  {(() => {
+                    const check = validateFallbackPassword(fallbackAdminPassword);
+                    return (
+                      <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 space-y-1.5 text-[11px]">
+                        <div className="flex items-center justify-between font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          <span>Password Complexity Requirement:</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            check.isValid
+                              ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800'
+                              : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-800'
+                          }`}>
+                            {check.isValid ? 'REQUIREMENTS SATISFIED' : 'COMPLEXITY UNMET'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
+                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.minLength ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
+                            {check.minLength ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
+                            <span>12+ Characters ({fallbackAdminPassword.length})</span>
+                          </div>
+                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.hasUpper ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
+                            {check.hasUpper ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
+                            <span>Uppercase Letters (A-Z)</span>
+                          </div>
+                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.hasLower ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
+                            {check.hasLower ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
+                            <span>Lowercase Letters (a-z)</span>
+                          </div>
+                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.hasNumber || check.hasSymbol ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
+                            {(check.hasNumber && check.hasSymbol) || (check.hasNumber || check.hasSymbol) ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
+                            <span>Numbers &amp; Symbols</span>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 italic pt-1">
+                          Rule: Must be at least 12 characters and contain at least 3 of 4 categories: Uppercase, Lowercase, Numbers, and Symbols. Passed: <strong>{check.passedCategories} of 4</strong> categories.
+                        </p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+
             {/* Step 3 Navigation */}
             <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-slate-800">
               <button
@@ -724,7 +870,34 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
               </button>
               <button
                 type="button"
-                onClick={() => setCurrentStep(4)}
+                onClick={() => {
+                  if (fallbackAdminEnabled) {
+                    const check = validateFallbackPassword(fallbackAdminPassword);
+                    if (!check.isValid) {
+                      alert('Please specify a valid fallback administrator password: at least 12 characters with at least three of the following: uppercase letters, lowercase letters, numbers, and symbols.');
+                      return;
+                    }
+                    if (!fallbackAdminUsername.trim()) {
+                      alert('Please provide a fallback administrator username.');
+                      return;
+                    }
+                  }
+                  setConfig((prev) => ({
+                    ...prev,
+                    ldapHost,
+                    ldapPort: Number(ldapPort),
+                    ldapProtocol,
+                    ldapBaseDn,
+                    ldapGroupDn,
+                    ldapBindDn,
+                    ldapBindPass,
+                    ldapDomain,
+                    fallbackAdminEnabled,
+                    fallbackAdminUsername,
+                    fallbackAdminPassword,
+                  }));
+                  setCurrentStep(4);
+                }}
                 className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center gap-1.5 transition cursor-pointer"
               >
                 <span>Proceed to EOP Setup</span>
@@ -909,13 +1082,15 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
 
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
                   <div className="font-sans font-bold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-1">
-                    <UserCheck className="w-3.5 h-3.5" /> AD LDAP Auth
+                    <UserCheck className="w-3.5 h-3.5" /> AD LDAP &amp; Fallback
                   </div>
                   <div className="text-[11px] space-y-0.5 text-slate-600 dark:text-slate-300">
                     <div>Host: {ldapHost}:{ldapPort}</div>
                     <div>Proto: {ldapProtocol.toUpperCase()}</div>
                     <div className="truncate">Group: {ldapGroupDn.substring(0, 20)}...</div>
-                    <div className="text-emerald-600 font-sans font-semibold mt-1">Plain LDAP Ready</div>
+                    <div className="text-amber-600 dark:text-amber-400 font-sans font-semibold mt-1">
+                      {fallbackAdminEnabled ? `Fallback Admin: ${fallbackAdminUsername}` : 'Fallback Admin: Disabled'}
+                    </div>
                   </div>
                 </div>
 

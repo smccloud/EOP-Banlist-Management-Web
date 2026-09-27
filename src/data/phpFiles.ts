@@ -37,6 +37,12 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
 4N5O6P7Q8R9S0T1U2V3W4X5Y6Z7a8b9c0d1e2f3g4h5i6j7k8l9m0n1o2p3q4r5s
 6t7u8v9w0x1y2z3A4B5C6D7E8F9G0H1I2J3K4L5M6N7O8P9Q0R1S2T3U4V5W6X7Y
 -----END RSA PRIVATE KEY-----`,
+
+  // Non-LDAP Fallback Admin Credentials (meets 12+ chars, 3 of 4 complexity types: uppercase, lowercase, numbers, symbols)
+  fallbackAdminUsername: 'eopadmin',
+  fallbackAdminPassword: 'Emergency#Admin2026!',
+  fallbackAdminPasswordHash: '$2y$12$eopEmergencyAdminFallbackHashPlaceholder2026XyZ',
+  fallbackAdminEnabled: true,
 };
 
 export const phpFileTemplates: PhpFileTemplate[] = [
