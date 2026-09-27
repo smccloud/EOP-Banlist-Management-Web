@@ -1,0 +1,6 @@
+{
+  "name": "EOP Anti-Spam Manager (PHP & MariaDB)",
+  "description": "Production PHP web application to manage Exchange Online Protection anti-spam policies with remote MariaDB, Active Directory LDAP group authentication, and automated sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
