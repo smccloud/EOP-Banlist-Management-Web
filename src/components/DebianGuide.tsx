@@ -92,11 +92,12 @@ sudo apt-get install -y powershell
 sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUsers -Force"`,
     },
     {
-      title: 'Step 6: Setup Crontab for Automated Background Sync',
+      title: 'Step 6: Setup Crontab for Automated Background Sync (Pull-Only from EOP)',
       icon: <Clock className="w-5 h-5 text-indigo-500" />,
-      description: 'Automate synchronization between MariaDB and Microsoft 365 EOP every 15 minutes.',
+      description: 'Automate pulling changes from Microsoft 365 Exchange Online Protection into MariaDB every 15 minutes. Note: The cron job only pulls changes from EOP; it never pushes local MariaDB changes.',
       command: `# Add scheduled task to /etc/crontab or www-data crontab:
-(sudo crontab -u www-data -l 2>/dev/null; echo "*/15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy=\\"${config.defaultPolicyName}\\" >> /var/log/eop-sync.log 2>&1") | sudo crontab -u www-data -`,
+# Note: --action=pull ensures the cron daemon strictly pulls from EOP and never pushes
+(sudo crontab -u www-data -l 2>/dev/null; echo "*/15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy=\\"${config.defaultPolicyName}\\" --action=pull >> /var/log/eop-sync.log 2>&1") | sudo crontab -u www-data -`,
     },
   ];
 

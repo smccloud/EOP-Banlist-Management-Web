@@ -166,14 +166,17 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
 
   // Sync execution simulation
   const [syncLoading, setSyncLoading] = useState(false);
+  const [syncActionType, setSyncActionType] = useState<'pull' | 'push'>('pull');
   const [lastSyncResult, setLastSyncResult] = useState<{
     timestamp: string;
     status: 'success' | 'failed';
+    direction: 'pull' | 'push';
     message: string;
   } | null>({
     timestamp: '2026-09-26 14:30:12',
     status: 'success',
-    message: 'Set-HostedContentFilterPolicy executed successfully on Exchange Online',
+    direction: 'pull',
+    message: 'Cron Pull executed successfully: Retrieved remote entries from Exchange Online into MariaDB (Pull-Only).',
   });
 
   // State for the 4 separate individual tables
@@ -763,19 +766,31 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     logAction('REMOVE', activeTab as ListType, val, `Deleted from eop_${activeTab}`);
   };
 
-  // Trigger simulated Exchange sync
-  const handleTriggerSync = () => {
+  // Trigger simulated Exchange sync (Pull-Only for Cron or Manual Push for Admin)
+  const handleTriggerSync = (direction: 'pull' | 'push' = 'pull') => {
     setSyncLoading(true);
+    setSyncActionType(direction);
     setTimeout(() => {
       setSyncLoading(false);
       const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
-      setLastSyncResult({
-        timestamp,
-        status: 'success',
-        message: `Set-HostedContentFilterPolicy completed successfully for policy '${activePolicy}'. Applied ${allowedSendersCount} allowed senders, ${blockedSendersCount} blocked senders, ${allowedDomainsCount} allowed domains, and ${blockedDomainsCount} blocked domains.`,
-      });
-      logAction('SYNC', 'SYSTEM', activePolicy, 'Full Exchange Online synchronization executed');
-    }, 1200);
+      if (direction === 'pull') {
+        setLastSyncResult({
+          timestamp,
+          status: 'success',
+          direction: 'pull',
+          message: `Cron Pull completed successfully for policy '${activePolicy}'. Retrieved remote configuration via Get-HostedContentFilterPolicy and reconciled MariaDB tables. Note: Local entries were not pushed to EOP (Cron job is strictly Pull-Only).`,
+        });
+        logAction('SYNC', 'SYSTEM', activePolicy, 'Automated cron pull from EOP completed (Pull-Only)');
+      } else {
+        setLastSyncResult({
+          timestamp,
+          status: 'success',
+          direction: 'push',
+          message: `Manual Admin Push completed successfully for policy '${activePolicy}'. Set-HostedContentFilterPolicy applied ${allowedSendersCount} allowed senders, ${blockedSendersCount} blocked senders, ${allowedDomainsCount} allowed domains, and ${blockedDomainsCount} blocked domains to Exchange Online.`,
+        });
+        logAction('SYNC', 'SYSTEM', activePolicy, 'Manual push to Exchange Online executed');
+      }
+    }, 1100);
   };
 
   // CSV export
@@ -1372,49 +1387,90 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </p>
               </div>
 
+              {/* Cron Policy Enforcement Notice Banner */}
+              <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/60 text-xs text-amber-900 dark:text-amber-200 space-y-1.5 leading-relaxed">
+                <div className="font-bold flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
+                  <ShieldCheck className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>Cron Job Policy: Pull-Only from Exchange Online Protection</span>
+                </div>
+                <p>
+                  The scheduled Linux cron job (<code>cron-sync.php --action=pull</code>) runs every 15 minutes and <strong>only pulls changes from Exchange Online into MariaDB</strong>.
+                  It does <strong>not</strong> push local changes to EOP. Pushing local MariaDB modifications to Microsoft 365 requires an intentional administrator action.
+                </p>
+              </div>
+
               {/* Status card */}
               {lastSyncResult && (
                 <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 flex items-start space-x-3 text-xs">
                   <CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                   <div>
-                    <div className="font-bold text-emerald-900 dark:text-emerald-200">Last Sync: {lastSyncResult.timestamp}</div>
-                    <div className="text-emerald-800 dark:text-emerald-300 mt-0.5">{lastSyncResult.message}</div>
+                    <div className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
+                      <span>Last Sync: {lastSyncResult.timestamp}</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase ${
+                        lastSyncResult.direction === 'pull'
+                          ? 'bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300'
+                          : 'bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300'
+                      }`}>
+                        {lastSyncResult.direction === 'pull' ? 'Cron Pull (EOP -> MariaDB)' : 'Manual Admin Push (MariaDB -> EOP)'}
+                      </span>
+                    </div>
+                    <div className="text-emerald-800 dark:text-emerald-300 mt-1">{lastSyncResult.message}</div>
                   </div>
                 </div>
               )}
 
-              {/* Generated PowerShell Code */}
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-200 overflow-x-auto shadow-inner">
-                <div className="text-slate-400 text-[11px] mb-2"># Generated PowerShell Command executed on Debian:</div>
-                <div className="text-emerald-400">Set-HostedContentFilterPolicy `</div>
-                <div className="pl-4 text-slate-100">-Identity "{activePolicy}" `</div>
-                <div className="pl-4 text-blue-300">
-                  -AllowedSenders @({allowedSenders.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'}) `
+              {/* Generated PowerShell Code Previews */}
+              <div className="space-y-4">
+                {/* 1. Cron Job Command */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-200 overflow-x-auto shadow-inner">
+                  <div className="text-amber-400 font-bold mb-1"># 1. Scheduled Linux Cron Job (Runs every 15m - PULL ONLY from EOP):</div>
+                  <div className="text-slate-300">Get-HostedContentFilterPolicy -Identity "{activePolicy}"</div>
+                  <div className="text-slate-500 text-[11px] mt-1"># Ingests external additions or removals made in Microsoft 365 into MariaDB. Does NOT push local changes.</div>
                 </div>
-                <div className="pl-4 text-rose-300">
-                  -BlockedSenders @({blockedSenders.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'}) `
-                </div>
-                <div className="pl-4 text-cyan-300">
-                  -AllowedSenderDomains @({allowedDomains.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'}) `
-                </div>
-                <div className="pl-4 text-amber-300">
-                  -BlockedSenderDomains @({blockedDomains.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'})
+
+                {/* 2. Manual Admin Push Command */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-slate-200 overflow-x-auto shadow-inner">
+                  <div className="text-indigo-400 font-bold mb-1"># 2. Manual Administrator Push (Applies MariaDB lists to Microsoft 365):</div>
+                  <div className="text-emerald-400">Set-HostedContentFilterPolicy `</div>
+                  <div className="pl-4 text-slate-100">-Identity "{activePolicy}" `</div>
+                  <div className="pl-4 text-blue-300">
+                    -AllowedSenders @({allowedSenders.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'}) `
+                  </div>
+                  <div className="pl-4 text-rose-300">
+                    -BlockedSenders @({blockedSenders.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'}) `
+                  </div>
+                  <div className="pl-4 text-cyan-300">
+                    -AllowedSenderDomains @({allowedDomains.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'}) `
+                  </div>
+                  <div className="pl-4 text-amber-300">
+                    -BlockedSenderDomains @({blockedDomains.filter((i) => i.policy_name === activePolicy).map((i) => `'${i.value}'`).join(', ') || '@()'})
+                  </div>
                 </div>
               </div>
 
-              {/* Sync Trigger button */}
-              <div className="flex items-center space-x-4">
+              {/* Dual Sync Trigger Buttons */}
+              <div className="flex flex-wrap items-center gap-3 pt-2">
                 <button
-                  onClick={handleTriggerSync}
+                  onClick={() => handleTriggerSync('pull')}
                   disabled={syncLoading}
-                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition disabled:opacity-50"
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition disabled:opacity-50 cursor-pointer"
                 >
-                  <RefreshCw className={`w-4 h-4 ${syncLoading ? 'animate-spin' : ''}`} />
-                  <span>{syncLoading ? 'Executing PowerShell on Debian...' : 'Execute Sync to Exchange Online'}</span>
+                  <RefreshCw className={`w-4 h-4 ${syncLoading && syncActionType === 'pull' ? 'animate-spin' : ''}`} />
+                  <span>{syncLoading && syncActionType === 'pull' ? 'Executing Cron Pull...' : 'Simulate Cron Pull from EOP (Pull Only)'}</span>
                 </button>
-                <span className="text-xs text-slate-500 dark:text-slate-400">
-                  Runs <code>sync-exchange.ps1</code> or crontab daemon on Debian Linux
-                </span>
+
+                <button
+                  onClick={() => {
+                    if (confirm('Are you sure you want to push all MariaDB entries to Microsoft 365 Exchange Online Protection?')) {
+                      handleTriggerSync('push');
+                    }
+                  }}
+                  disabled={syncLoading}
+                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition disabled:opacity-50 cursor-pointer"
+                >
+                  <Download className={`w-4 h-4 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
+                  <span>{syncLoading && syncActionType === 'push' ? 'Pushing to EOP...' : 'Manual Push to Exchange Online (Admin)'}</span>
+                </button>
               </div>
             </div>
           </div>

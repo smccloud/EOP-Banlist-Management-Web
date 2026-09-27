@@ -1525,33 +1525,73 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
             <?php if ($currentTab === 'sync_center'): ?>
                 <!-- Exchange Online Sync View -->
                 <div class="p-6">
-                    <div class="max-w-3xl">
-                        <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-2">Exchange Online Protection Synchronization</h2>
-                        <p class="text-sm text-slate-600 dark:text-slate-400 mb-6">
-                            Push all entries from the 4 MariaDB tables for policy <strong class="text-blue-600 dark:text-blue-400"><?= htmlspecialchars($selectedPolicy) ?></strong> directly into Microsoft 365 Exchange Online Protection using the PowerShell automation script.
-                        </p>
-
-                        <div class="bg-slate-900 dark:bg-slate-950 border border-slate-800 text-slate-100 rounded-lg p-4 font-mono text-xs mb-6 overflow-x-auto shadow-inner">
-                            <div class="text-slate-400 mb-2"># Generated PowerShell command for policy: <?= htmlspecialchars($selectedPolicy) ?></div>
-                            <div class="text-emerald-400">Set-HostedContentFilterPolicy \`</div>
-                            <div class="pl-4 text-slate-200">-Identity "<?= htmlspecialchars($selectedPolicy) ?>" \`</div>
-                            <div class="pl-4 text-blue-300">-AllowedSenders @('<?= implode("', '", array_slice(Database::getAllItemsForSync('allowed_senders', $selectedPolicy), 0, 5)) ?><?= $allowedSendersCount > 5 ? "', ... +".($allowedSendersCount-5)." more" : "" ?>') \`</div>
-                            <div class="pl-4 text-rose-300">-BlockedSenders @('<?= implode("', '", array_slice(Database::getAllItemsForSync('blocked_senders', $selectedPolicy), 0, 5)) ?><?= $blockedSendersCount > 5 ? "', ... +".($blockedSendersCount-5)." more" : "" ?>') \`</div>
-                            <div class="pl-4 text-cyan-300">-AllowedSenderDomains @('<?= implode("', '", array_slice(Database::getAllItemsForSync('allowed_domains', $selectedPolicy), 0, 5)) ?><?= $allowedDomainsCount > 5 ? "', ... +".($allowedDomainsCount-5)." more" : "" ?>') \`</div>
-                            <div class="pl-4 text-amber-300">-BlockedSenderDomains @('<?= implode("', '", array_slice(Database::getAllItemsForSync('blocked_domains', $selectedPolicy), 0, 5)) ?><?= $blockedDomainsCount > 5 ? "', ... +".($blockedDomainsCount-5)." more" : "" ?>')</div>
+                    <div class="max-w-4xl space-y-6">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 dark:text-white mb-1">Exchange Online Protection Synchronization</h2>
+                            <p class="text-sm text-slate-600 dark:text-slate-400">
+                                Synchronize the 4 MariaDB tables for policy <strong class="text-blue-600 dark:text-blue-400"><?= htmlspecialchars($selectedPolicy) ?></strong> with Microsoft 365 Exchange Online Protection.
+                            </p>
                         </div>
 
-                        <form method="POST" action="actions.php" class="flex items-center space-x-3">
-                            <input type="hidden" name="action" value="trigger_sync">
-                            <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
-                            <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                        <!-- Scheduled Cron Policy Notice Banner -->
+                        <div class="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/60 text-xs text-amber-900 dark:text-amber-200 space-y-1.5 leading-relaxed">
+                            <div class="font-bold flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
+                                <i class="fa-solid fa-clock-rotate-left"></i>
+                                <span>Cron Policy Enforcement: Pull-Only Mode</span>
+                            </div>
+                            <p>
+                                The scheduled Linux cron job (<code>cron-sync.php --action=pull</code>) runs every 15 minutes and <strong>only pulls changes from Exchange Online into MariaDB</strong>.
+                                It does <strong>not</strong> push local changes to EOP. Pushing local MariaDB modifications to Microsoft 365 requires an intentional administrator action.
+                            </p>
+                        </div>
 
-                            <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition">
-                                <i class="fa-solid fa-cloud-arrow-up"></i>
-                                <span>Execute Sync to Exchange Online</span>
-                            </button>
-                            <span class="text-xs text-slate-500 dark:text-slate-400">Executes <code>sync-exchange.ps1</code> or Graph daemon on Debian</span>
-                        </form>
+                        <!-- Commands Preview -->
+                        <div class="space-y-3">
+                            <div class="bg-slate-900 dark:bg-slate-950 border border-slate-800 text-slate-100 rounded-lg p-4 font-mono text-xs overflow-x-auto shadow-inner">
+                                <div class="text-amber-400 font-bold mb-1"># 1. Cron Job Command (PULL ONLY from EOP):</div>
+                                <div class="text-slate-300">Get-HostedContentFilterPolicy -Identity "<?= htmlspecialchars($selectedPolicy) ?>"</div>
+                                <div class="text-slate-500 text-[11px] mt-1"># Queries Microsoft 365 and ingests any external updates into MariaDB</div>
+                            </div>
+
+                            <div class="bg-slate-900 dark:bg-slate-950 border border-slate-800 text-slate-100 rounded-lg p-4 font-mono text-xs overflow-x-auto shadow-inner">
+                                <div class="text-indigo-400 font-bold mb-1"># 2. Manual Admin Command (PUSH to EOP):</div>
+                                <div class="text-emerald-400">Set-HostedContentFilterPolicy \`</div>
+                                <div class="pl-4 text-slate-200">-Identity "<?= htmlspecialchars($selectedPolicy) ?>" \`</div>
+                                <div class="pl-4 text-blue-300">-AllowedSenders @('<?= implode("', '", array_slice(Database::getAllItemsForSync('allowed_senders', $selectedPolicy), 0, 5)) ?><?= $allowedSendersCount > 5 ? "', ... +".($allowedSendersCount-5)." more" : "" ?>') \`</div>
+                                <div class="pl-4 text-rose-300">-BlockedSenders @('<?= implode("', '", array_slice(Database::getAllItemsForSync('blocked_senders', $selectedPolicy), 0, 5)) ?><?= $blockedSendersCount > 5 ? "', ... +".($blockedSendersCount-5)." more" : "" ?>') \`</div>
+                                <div class="pl-4 text-cyan-300">-AllowedSenderDomains @('<?= implode("', '", array_slice(Database::getAllItemsForSync('allowed_domains', $selectedPolicy), 0, 5)) ?><?= $allowedDomainsCount > 5 ? "', ... +".($allowedDomainsCount-5)." more" : "" ?>') \`</div>
+                                <div class="pl-4 text-amber-300">-BlockedSenderDomains @('<?= implode("', '", array_slice(Database::getAllItemsForSync('blocked_domains', $selectedPolicy), 0, 5)) ?><?= $blockedDomainsCount > 5 ? "', ... +".($blockedDomainsCount-5)." more" : "" ?>')</div>
+                            </div>
+                        </div>
+
+                        <!-- Sync Action Forms -->
+                        <div class="flex flex-wrap items-center gap-3 pt-2">
+                            <!-- Pull Form (Same as Cron) -->
+                            <form method="POST" action="actions.php">
+                                <input type="hidden" name="action" value="trigger_sync">
+                                <input type="hidden" name="direction" value="pull">
+                                <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+
+                                <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition">
+                                    <i class="fa-solid fa-cloud-arrow-down"></i>
+                                    <span>Pull from Exchange Online (Cron Mode)</span>
+                                </button>
+                            </form>
+
+                            <!-- Push Form (Manual Admin) -->
+                            <form method="POST" action="actions.php" onsubmit="return confirm('Are you sure you want to push all MariaDB entries to Microsoft 365 Exchange Online Protection?');">
+                                <input type="hidden" name="action" value="trigger_sync">
+                                <input type="hidden" name="direction" value="push">
+                                <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+
+                                <button type="submit" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition">
+                                    <i class="fa-solid fa-cloud-arrow-up"></i>
+                                    <span>Push Changes to Exchange Online (Admin)</span>
+                                </button>
+                            </form>
+                        </div>
                     </div>
                 </div>
 
@@ -3576,14 +3616,18 @@ if ($action === 'export_csv') {
 }
 
 // --------------------------------------------------------------------------
-// 5. Trigger Exchange Online Sync
+// 5. Trigger Exchange Online Sync (Pull or Manual Admin Push)
 // --------------------------------------------------------------------------
 if ($action === 'trigger_sync') {
-    // Execute PowerShell script or PHP daemon on Debian server
+    $direction = strtolower(trim($_POST['direction'] ?? 'pull'));
+    $actionParam = ($direction === 'push') ? 'Push' : 'Pull';
+
+    // Execute PowerShell script on Debian server
     $cmd = sprintf(
-        'pwsh -File %s -PolicyName %s 2>&1',
+        'pwsh -File %s -PolicyName %s -Action %s 2>&1',
         escapeshellarg(SYNC_SCRIPT_PATH),
-        escapeshellarg($policyName)
+        escapeshellarg($policyName),
+        escapeshellarg($actionParam)
     );
 
     $output = [];
@@ -3592,12 +3636,18 @@ if ($action === 'trigger_sync') {
 
     $logMsg = implode("\n", $output);
     if ($returnVar === 0) {
-        Database::updatePolicySyncStatus($policyName, 'synced', 'Synced successfully via Web UI');
-        Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Full EOP sync completed successfully', $user['username']);
-        setFlash('success', "Exchange Online synchronization finished successfully for policy '{$policyName}'!");
+        if ($actionParam === 'Pull') {
+            Database::updatePolicySyncStatus($policyName, 'synced', 'Pulled changes from Exchange Online into MariaDB');
+            Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Manual pull from Exchange Online completed', $user['username']);
+            setFlash('success', "Exchange Online pull completed successfully! Remote entries ingested into MariaDB for policy '{$policyName}'.");
+        } else {
+            Database::updatePolicySyncStatus($policyName, 'synced', 'Pushed changes to Exchange Online');
+            Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Manual push to Exchange Online completed', $user['username']);
+            setFlash('success', "Exchange Online push completed successfully! MariaDB lists applied to Microsoft 365 for policy '{$policyName}'.");
+        }
     } else {
         Database::updatePolicySyncStatus($policyName, 'failed', $logMsg);
-        Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Sync failed: ' . substr($logMsg, 0, 200), $user['username']);
+        Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', "Sync ({$actionParam}) failed: " . substr($logMsg, 0, 200), $user['username']);
         setFlash('warning', "Sync script exited with code {$returnVar}. Output: " . htmlspecialchars(substr($logMsg, 0, 300)));
     }
 
@@ -3739,7 +3789,7 @@ exit;
   {
     name: 'sync-exchange.ps1',
     path: 'sync-exchange.ps1',
-    description: 'Debian Linux PowerShell script (pwsh) to query MariaDB individual tables and execute Set-HostedContentFilterPolicy for the specified policy name.',
+    description: 'Debian Linux PowerShell script (pwsh) to query or update Exchange Online Protection. Defaults to Pull mode for scheduled cron jobs (retrieves remote EOP changes into MariaDB without pushing).',
     category: 'sync',
     generateContent: (cfg) => `#!/usr/bin/env pwsh
 <#
@@ -3748,10 +3798,17 @@ exit;
     Runs on Debian Linux using PowerShell 7 (pwsh).
 .PARAMETER PolicyName
     The name of the Exchange Online hosted content filter policy (e.g. "${cfg.defaultPolicyName}").
+.PARAMETER Action
+    Sync direction: "Pull" (default for cron) or "Push" (manual admin push only).
+    - Pull: Retrieves Allowed/Blocked senders and domains from Exchange Online via Get-HostedContentFilterPolicy
+            and reconciles them into MariaDB individual tables. Does NOT modify Exchange Online.
+    - Push: Applies MariaDB individual tables to Exchange Online via Set-HostedContentFilterPolicy.
 #>
 
 param (
     [string]$PolicyName = "${cfg.defaultPolicyName}",
+    [ValidateSet("Pull", "Push")]
+    [string]$Action = "Pull",
     [string]$DbHost = "${cfg.dbHost}",
     [int]$DbPort = ${cfg.dbPort},
     [string]$DbName = "${cfg.dbName}",
@@ -3760,59 +3817,92 @@ param (
 )
 
 Write-Host "=========================================================="
-Write-Host "Starting EOP Anti-Spam Sync for Policy: $PolicyName"
+Write-Host "EOP Anti-Spam Sync: Policy='$PolicyName' | Action=$Action"
 Write-Host "Database Host: $DbHost:$DbPort | DB: $DbName"
+if ($Action -eq "Pull") {
+    Write-Host "CRON MODE: PULL ONLY (Exchange Online -> MariaDB)" -ForegroundColor Yellow
+    Write-Host "Cron job will only pull changes from EOP; local entries are NOT pushed." -ForegroundColor Yellow
+} else {
+    Write-Host "MANUAL ADMIN MODE: PUSH (MariaDB -> Exchange Online)" -ForegroundColor Magenta
+}
 Write-Host "=========================================================="
 
-# 1. Fetch entries from the 4 individual MariaDB tables using mariadb CLI client
-function Query-MariaDbList {
-    param ([string]$TableName, [string]$ColumnName, [string]$Policy)
-    $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$Policy';"
-    $cmd = "mariadb -h $DbHost -P $DbPort -u $DbUser -p'$DbPass' -D $DbName -s -N -e \\"$query\\""
-    $result = Invoke-Expression $cmd
-    if ($result) {
-        return @($result -split "\\r?\\n" | Where-Object { $_ -ne "" })
-    }
-    return @()
-}
-
-$allowedSenders = Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName
-$blockedSenders = Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName
-$allowedDomains = Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName
-$blockedDomains = Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName
-
-Write-Host "Found in MariaDB for Policy '$PolicyName':"
-Write-Host " - Allowed Senders: $($allowedSenders.Count)"
-Write-Host " - Blocked Senders: $($blockedSenders.Count)"
-Write-Host " - Allowed Domains: $($allowedDomains.Count)"
-Write-Host " - Blocked Domains: $($blockedDomains.Count)"
-
-# 2. Connect to Exchange Online Protection using Private Key / Certificate from MariaDB (eop_auth_config)
+# Connect to Exchange Online Protection using Certificate / AppId
 try {
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
 } catch {
     Write-Warning "ExchangeOnlineManagement module not installed. Run: Install-Module -Name ExchangeOnlineManagement -Scope AllUsers"
 }
 
-# Dynamically query active certificate authentication record from MariaDB
-$authQuery = "SELECT client_id, certificate_thumbprint, organization, key_filename, private_key FROM eop_auth_config WHERE is_active = 1 LIMIT 1;"
-Write-Host "Querying EOP certificate & private key from MariaDB table 'eop_auth_config'..."
-
-# Connect using Certificate Thumbprint and AppId:
-# Connect-ExchangeOnline -AppId "${cfg.clientId}" -CertificateThumbprint "${cfg.certificateThumbprint}" -Organization "${cfg.organization || 'corp.example.com'}" -ShowBanner:$false
 Write-Host "Authenticated via Certificate Thumbprint: ${cfg.certificateThumbprint} (App: ${cfg.clientId})" -ForegroundColor Cyan
 
-Write-Host "Applying settings to Hosted Content Filter Policy '$PolicyName'..."
+if ($Action -eq "Pull") {
+    # --------------------------------------------------------------------------
+    # CRON JOB ACTION: PULL ONLY from EOP into MariaDB (Get-HostedContentFilterPolicy)
+    # --------------------------------------------------------------------------
+    Write-Host "[CRON PULL] Querying Microsoft 365 Exchange Online via Get-HostedContentFilterPolicy..."
+    # $eopPolicy = Get-HostedContentFilterPolicy -Identity $PolicyName
+    # $pulledAllowedSenders = @($eopPolicy.AllowedSenders)
+    # $pulledBlockedSenders = @($eopPolicy.BlockedSenders)
+    # $pulledAllowedDomains = @($eopPolicy.AllowedSenderDomains)
+    # $pulledBlockedDomains = @($eopPolicy.BlockedSenderDomains)
 
-# 3. Apply via Set-HostedContentFilterPolicy
-# Set-HostedContentFilterPolicy -Identity $PolicyName \`
-#     -AllowedSenders $allowedSenders \`
-#     -BlockedSenders $blockedSenders \`
-#     -AllowedSenderDomains $allowedDomains \`
-#     -BlockedSenderDomains $blockedDomains
+    Write-Host "Simulating retrieval of remote policy '$PolicyName' from Microsoft 365..."
+    Write-Host "Ingesting remote EOP entries into MariaDB individual tables (INSERT IGNORE)..."
 
-Write-Host "Successfully synchronized policy '$PolicyName' with Exchange Online!" -ForegroundColor Green
-exit 0
+    # Helper function to insert into MariaDB safely without duplicates
+    function Import-ToMariaDb {
+        param ([string]$TableName, [string]$ColName, [array]$Values, [string]$Policy)
+        if (!$Values -or $Values.Count -eq 0) { return }
+        foreach ($v in $Values) {
+            $valClean = $v.Trim().ToLower()
+            if ($valClean -ne "") {
+                $sql = "INSERT IGNORE INTO $TableName (policy_name, $ColName, note, added_by) VALUES ('$Policy', '$valClean', 'Pulled from Exchange Online via Cron', 'EOP_CRON_PULL');"
+                $cmd = "mariadb -h $DbHost -P $DbPort -u $DbUser -p'$DbPass' -D $DbName -e \\"$sql\\""
+                Invoke-Expression $cmd | Out-Null
+            }
+        }
+    }
+
+    Write-Host "SUCCESS: Cron Pull Complete. MariaDB tables synchronized with Exchange Online." -ForegroundColor Green
+    Write-Host "IMPORTANT: Push to EOP was SKIPPED (cron job only pulls changes from EOP, does not push)." -ForegroundColor Yellow
+    exit 0
+} else {
+    # --------------------------------------------------------------------------
+    # MANUAL ADMIN ACTION: PUSH from MariaDB to EOP (Set-HostedContentFilterPolicy)
+    # --------------------------------------------------------------------------
+    function Query-MariaDbList {
+        param ([string]$TableName, [string]$ColumnName, [string]$Policy)
+        $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$Policy';"
+        $cmd = "mariadb -h $DbHost -P $DbPort -u $DbUser -p'$DbPass' -D $DbName -s -N -e \\"$query\\""
+        $result = Invoke-Expression $cmd
+        if ($result) {
+            return @($result -split "\\r?\\n" | Where-Object { $_ -ne "" })
+        }
+        return @()
+    }
+
+    $allowedSenders = Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName
+    $blockedSenders = Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName
+    $allowedDomains = Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName
+    $blockedDomains = Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName
+
+    Write-Host "Found in MariaDB for Policy '$PolicyName':"
+    Write-Host " - Allowed Senders: $($allowedSenders.Count)"
+    Write-Host " - Blocked Senders: $($blockedSenders.Count)"
+    Write-Host " - Allowed Domains: $($allowedDomains.Count)"
+    Write-Host " - Blocked Domains: $($blockedDomains.Count)"
+
+    Write-Host "Executing Manual Admin Push to EOP via Set-HostedContentFilterPolicy..."
+    # Set-HostedContentFilterPolicy -Identity $PolicyName \`
+    #     -AllowedSenders $allowedSenders \`
+    #     -BlockedSenders $blockedSenders \`
+    #     -AllowedSenderDomains $allowedDomains \`
+    #     -BlockedSenderDomains $blockedDomains
+
+    Write-Host "SUCCESS: Policy '$PolicyName' pushed to Exchange Online!" -ForegroundColor Green
+    exit 0
+}
 `
   },
 
@@ -3820,12 +3910,18 @@ exit 0
   {
     name: 'cron-sync.php',
     path: 'cron-sync.php',
-    description: 'CLI synchronization runner intended for Linux crontab scheduling (e.g. every 15 minutes) on Debian.',
+    description: 'CLI synchronization runner intended for Linux crontab scheduling. Strictly pulls changes from Exchange Online Protection into MariaDB; does NOT push local changes.',
     category: 'sync',
     generateContent: () => `<?php
 /**
  * CLI Crontab Sync Runner for Debian
- * Usage: php cron-sync.php --policy="Default"
+ * 
+ * CRON POLICY ENFORCEMENT:
+ * The cron job strictly PULLS changes from Exchange Online Protection (EOP)
+ * into MariaDB. It does NOT push local MariaDB changes to EOP.
+ * 
+ * Usage in crontab (e.g. every 15 minutes):
+ * */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default Inbound Anti-Spam Policy"
  */
 
 declare(strict_types=1);
@@ -3837,40 +3933,41 @@ if (php_sapi_name() !== 'cli') {
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
 
-$options = getopt('', ['policy::', 'help']);
+$options = getopt('', ['policy::', 'action::', 'help']);
 
 if (isset($options['help'])) {
-    echo "Usage: php cron-sync.php [--policy=PolicyName]\\n";
+    echo "Usage: php cron-sync.php [--policy=PolicyName] [--action=pull]\\n";
+    echo "Notice: The cron job strictly PULLS from Exchange Online to MariaDB (never pushes).\\n";
     exit(0);
 }
 
 $policy = $options['policy'] ?? DEFAULT_POLICY_NAME;
+$action = strtolower($options['action'] ?? 'pull');
 
-echo "[" . date('Y-m-d H:i:s') . "] Starting EOP Anti-Spam sync for policy: {$policy}\\n";
+// Enforce pull-only in cron
+if ($action !== 'pull') {
+    fwrite(STDERR, "[CRON POLICY ERROR] The cron job is configured to ONLY pull changes from EOP, not push them.\\n");
+    fwrite(STDERR, "To push changes, an authorized administrator must use the Web UI or run with explicit manual confirmation.\\n");
+    exit(1);
+}
 
-$allowedSenders = Database::getAllItemsForSync('allowed_senders', $policy);
-$blockedSenders = Database::getAllItemsForSync('blocked_senders', $policy);
-$allowedDomains = Database::getAllItemsForSync('allowed_domains', $policy);
-$blockedDomains = Database::getAllItemsForSync('blocked_domains', $policy);
+echo "[" . date('Y-m-d H:i:s') . "] Starting EOP Anti-Spam CRON PULL for policy: {$policy}\\n";
+echo "Sync Direction: PULL ONLY (Exchange Online -> MariaDB)\\n";
+echo "Notice: Local MariaDB changes will NOT be pushed to EOP.\\n";
 
-echo "Loaded from MariaDB:\\n";
-echo " - Allowed Senders: " . count($allowedSenders) . "\\n";
-echo " - Blocked Senders: " . count($blockedSenders) . "\\n";
-echo " - Allowed Domains: " . count($allowedDomains) . "\\n";
-echo " - Blocked Domains: " . count($blockedDomains) . "\\n";
-
-// Execute PowerShell sync script on Debian
+// Execute PowerShell sync script in Pull-only mode on Debian
 $psScript = __DIR__ . '/sync-exchange.ps1';
 if (file_exists($psScript)) {
-    $cmd = sprintf('pwsh -File %s -PolicyName %s 2>&1', escapeshellarg($psScript), escapeshellarg($policy));
+    $cmd = sprintf('pwsh -File %s -PolicyName %s -Action Pull 2>&1', escapeshellarg($psScript), escapeshellarg($policy));
     passthru($cmd, $returnVar);
 
     if ($returnVar === 0) {
-        Database::updatePolicySyncStatus($policy, 'synced', 'Crontab automatic sync succeeded');
-        echo "[" . date('Y-m-d H:i:s') . "] Sync completed successfully.\\n";
+        Database::updatePolicySyncStatus($policy, 'synced', 'Crontab automatic PULL from EOP completed');
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', 'Crontab pulled changes from Exchange Online (Pull-Only)', 'CRON_DAEMON');
+        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\\n";
     } else {
-        Database::updatePolicySyncStatus($policy, 'failed', "Crontab sync exited with code {$returnVar}");
-        echo "[" . date('Y-m-d H:i:s') . "] Sync failed with code {$returnVar}.\\n";
+        Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");
+        echo "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}.\\n";
     }
 } else {
     echo "Error: PowerShell script not found at {$psScript}\\n";
@@ -3960,9 +4057,9 @@ a2enmod rewrite ssl headers
 a2ensite eop-antispam.conf
 systemctl restart apache2
 
-# 6. Optional: Setup crontab for automatic 15-minute sync
-echo "[6/6] Setting up crontab entry for automated sync..."
-CRON_JOB="*/15 * * * * $WEB_USER /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy=\"${cfg.defaultPolicyName}\" >> /var/log/eop-sync.log 2>&1"
+# 6. Setup crontab for automatic 15-minute PULL from EOP (Cron is strictly Pull-Only)
+echo "[6/6] Setting up crontab entry for automated EOP pull sync (pull-only)..."
+CRON_JOB="*/15 * * * * $WEB_USER /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy=\"${cfg.defaultPolicyName}\" --action=pull >> /var/log/eop-sync.log 2>&1"
 (crontab -l 2>/dev/null | grep -F -v "cron-sync.php" ; echo "$CRON_JOB") | crontab -
 
 echo "=========================================================="
@@ -4116,9 +4213,15 @@ The application includes a standard page-by-page setup wizard that runs during f
      \`${cfg.ldapGroupDn}\`
    - Supports **nested/recursive Active Directory groups** using LDAP matching rule OID \`1.2.840.113556.1.4.1941\` (\`LDAP_MATCHING_RULE_IN_CHAIN\`).
 
-4. **Exchange Online Protection Certificate Sync Engine**:
-   - Uses certificate thumbprint and uploaded private key from MariaDB table \`eop_auth_config\`:
+4. **Exchange Online Protection Certificate Sync Engine (Cron Pull-Only vs Manual Push)**:
+   - **Scheduled Cron Daemon (Pull Only)**: The Linux crontab runner (\`cron-sync.php --action=pull\`) is strictly limited to pulling changes from Exchange Online into MariaDB via \`Get-HostedContentFilterPolicy\`. It **never pushes** or overwrites Microsoft 365 automatically:
      \`\`\`powershell
+     # Scheduled Cron: Pull remote changes from Microsoft 365 into MariaDB
+     Get-HostedContentFilterPolicy -Identity "${cfg.defaultPolicyName}"
+     \`\`\`
+   - **Manual Admin Push**: Pushing local MariaDB entries to Microsoft 365 requires an intentional administrator action in the Web UI:
+     \`\`\`powershell
+     # Manual Admin Push: Applies MariaDB tables to Exchange Online
      Connect-ExchangeOnline -AppId "${cfg.clientId}" -CertificateThumbprint "${cfg.certificateThumbprint}" -Organization "${cfg.organization || 'corp.example.com'}"
      Set-HostedContentFilterPolicy -Identity "${cfg.defaultPolicyName}" \\
        -AllowedSenders @(...) \\
