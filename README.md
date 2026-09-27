@@ -68,8 +68,9 @@ This solution provides:
   - No need to configure internal CA root certificates or OpenLDAP TLS keystores on Debian.
   - Enforces access control via exact **Group Distinguished Name (Group DN)**.
   - Supports **nested/recursive Active Directory groups** using LDAP matching rule OID `1.2.840.113556.1.4.1941` (`LDAP_MATCHING_RULE_IN_CHAIN`).
-- **Safe UX with In-App Modals**:
+- **Safe UX with In-App Modals & Duplicate Prevention**:
   - Non-blocking in-app modal confirmations for record deletion and Exchange Online pushes.
+  - **Duplicate Entry Warning Popup**: Immediately triggers an informative warning modal when an administrator attempts to add an email address or domain that is already present in the active policy list or conflicts across allowed/blocked tables.
   - Displays user profile badge (e.g. `John Smith AD Authorized`) while tracking underlying account identifiers (`jsmith`).
 - **One-Click Push from MariaDB to EOP**:
   - Immediate **"Push to EOP"** quick button in the header and **"Push Changes to EOP"** button in each policy list toolbar to apply staged MariaDB entries directly to Microsoft 365 without navigating through submenus.
@@ -325,6 +326,11 @@ The web interface features multi-mode intelligent sorting:
 
 ### In-App Confirmation Safeguards & Push Verification
 To comply with modern browser sandboxes and iframe restrictions (where browser-native `alert()` or `confirm()` are blocked), all destructive and high-impact actions use in-app modals:
+- **Duplicate Entry Warning Popup**: When a user attempts to add an address or domain that already exists in the current list or causes a cross-list conflict (e.g. attempting to whitelist an address that is currently blacklisted), an informative modal immediately alerts the user with:
+  - The duplicated or conflicting entry value.
+  - The target policy name and MariaDB table (`eop_allowed_senders`, `eop_blocked_senders`, etc.).
+  - The existing entry's creator (`added_by`), creation timestamp, and justification note.
+  - Explanation of the database unique constraints (`uk_policy_sender`, `uk_policy_domain`) that protect Exchange Online from redundant entries.
 - **Delete Confirmation Modal**: Shows the exact email or domain, target table, and warns that it will be removed on the next push.
 - **Exchange Online Push Modal**: Outlines the policy name and record counts before triggering `Set-HostedContentFilterPolicy`.
 - **Post-Push List Summary Popup**: A comprehensive completion dialog that pops up immediately following a push to Microsoft 365, verifying and listing all configured entries across:

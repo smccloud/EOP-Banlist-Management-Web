@@ -178,6 +178,16 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     allowedDomains: string[];
     blockedDomains: string[];
   } | null>(null);
+  const [duplicateWarningPopup, setDuplicateWarningPopup] = useState<{
+    value: string;
+    listLabel: string;
+    policy: string;
+    existingNote?: string;
+    addedBy?: string;
+    createdAt?: string;
+    isConflict?: boolean;
+    conflictList?: string;
+  } | null>(null);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<{ id: number; value: string; tab: ListType } | null>(null);
   const [lastSyncResult, setLastSyncResult] = useState<{
     timestamp: string;
@@ -391,59 +401,109 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
 
     // 1. Strict Duplicate Check within current list for active policy
     const currentItems = getCurrentList();
-    const isDuplicate = currentItems.some(
+    const existingItem = currentItems.find(
       (item) => item.value.toLowerCase() === val
     );
 
     const listLabel = activeTab.replace('_', ' ');
 
-    if (isDuplicate) {
+    if (existingItem) {
       setAddError(
         `Duplicate Entry: "${val}" already exists in ${listLabel} for policy "${activePolicy}". Duplicate entries are not allowed.`
       );
+      // Trigger user-facing popup detailing the duplicate
+      setDuplicateWarningPopup({
+        value: val,
+        listLabel: listLabel.toUpperCase(),
+        policy: activePolicy,
+        existingNote: existingItem.note,
+        addedBy: existingItem.added_by,
+        createdAt: existingItem.created_at,
+        isConflict: false,
+      });
       return;
     }
 
     // 2. Cross-list duplicate/conflict check:
     // If adding to Allowed Senders, verify it's not in Blocked Senders (and vice versa)
     if (activeTab === 'allowed_senders') {
-      const inBlocked = blockedSenders.some(
+      const conflictItem = blockedSenders.find(
         (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
       );
-      if (inBlocked) {
+      if (conflictItem) {
         setAddError(
           `Conflict: "${val}" is already in Blocked Senders for policy "${activePolicy}". Remove it from Blocked Senders before adding it to Allowed Senders.`
         );
+        setDuplicateWarningPopup({
+          value: val,
+          listLabel: 'ALLOWED SENDERS',
+          policy: activePolicy,
+          existingNote: conflictItem.note,
+          addedBy: conflictItem.added_by,
+          createdAt: conflictItem.created_at,
+          isConflict: true,
+          conflictList: 'BLOCKED SENDERS (eop_blocked_senders)',
+        });
         return;
       }
     } else if (activeTab === 'blocked_senders') {
-      const inAllowed = allowedSenders.some(
+      const conflictItem = allowedSenders.find(
         (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
       );
-      if (inAllowed) {
+      if (conflictItem) {
         setAddError(
           `Conflict: "${val}" is already in Allowed Senders for policy "${activePolicy}". Remove it from Allowed Senders before adding it to Blocked Senders.`
         );
+        setDuplicateWarningPopup({
+          value: val,
+          listLabel: 'BLOCKED SENDERS',
+          policy: activePolicy,
+          existingNote: conflictItem.note,
+          addedBy: conflictItem.added_by,
+          createdAt: conflictItem.created_at,
+          isConflict: true,
+          conflictList: 'ALLOWED SENDERS (eop_allowed_senders)',
+        });
         return;
       }
     } else if (activeTab === 'allowed_domains') {
-      const inBlocked = blockedDomains.some(
+      const conflictItem = blockedDomains.find(
         (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
       );
-      if (inBlocked) {
+      if (conflictItem) {
         setAddError(
           `Conflict: "${val}" is already in Blocked Domains for policy "${activePolicy}". Remove it from Blocked Domains before adding it to Allowed Domains.`
         );
+        setDuplicateWarningPopup({
+          value: val,
+          listLabel: 'ALLOWED DOMAINS',
+          policy: activePolicy,
+          existingNote: conflictItem.note,
+          addedBy: conflictItem.added_by,
+          createdAt: conflictItem.created_at,
+          isConflict: true,
+          conflictList: 'BLOCKED DOMAINS (eop_blocked_domains)',
+        });
         return;
       }
     } else if (activeTab === 'blocked_domains') {
-      const inAllowed = allowedDomains.some(
+      const conflictItem = allowedDomains.find(
         (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
       );
-      if (inAllowed) {
+      if (conflictItem) {
         setAddError(
           `Conflict: "${val}" is already in Allowed Domains for policy "${activePolicy}". Remove it from Allowed Domains before adding it to Blocked Domains.`
         );
+        setDuplicateWarningPopup({
+          value: val,
+          listLabel: 'BLOCKED DOMAINS',
+          policy: activePolicy,
+          existingNote: conflictItem.note,
+          addedBy: conflictItem.added_by,
+          createdAt: conflictItem.created_at,
+          isConflict: true,
+          conflictList: 'ALLOWED DOMAINS (eop_allowed_domains)',
+        });
         return;
       }
     }
@@ -2365,12 +2425,7 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </button>
                 <button
                   type="submit"
-                  disabled={Boolean(singleValue.trim() && getCurrentList().some((i) => i.value.toLowerCase() === singleValue.trim().toLowerCase()))}
-                  className={`px-4 py-2 text-white font-semibold rounded-lg shadow-sm transition ${
-                    singleValue.trim() && getCurrentList().some((i) => i.value.toLowerCase() === singleValue.trim().toLowerCase())
-                      ? 'bg-slate-400 dark:bg-slate-600 cursor-not-allowed'
-                      : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
-                  }`}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm transition cursor-pointer"
                 >
                   Save to MariaDB
                 </button>
@@ -2996,6 +3051,82 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
               >
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate / Existing Item Warning Popup */}
+      {duplicateWarningPopup && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full p-6 border border-amber-200 dark:border-amber-800/80">
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    {duplicateWarningPopup.isConflict ? 'Cross-List Policy Conflict' : 'Entry Already in List'}
+                  </h3>
+                  <span className="text-[11px] font-semibold uppercase px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/50">
+                    Duplicate Rejected
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDuplicateWarningPopup(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="my-4 text-xs text-slate-600 dark:text-slate-300 space-y-3">
+              <p className="leading-relaxed">
+                The entry <strong className="font-mono text-slate-900 dark:text-white px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">{duplicateWarningPopup.value}</strong> cannot be added because it already exists in policy <strong className="text-slate-900 dark:text-white font-semibold">"{duplicateWarningPopup.policy}"</strong>.
+              </p>
+
+              {duplicateWarningPopup.isConflict ? (
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-rose-800 dark:text-rose-200">
+                  <div className="font-semibold text-xs mb-1">Conflicting Table:</div>
+                  <div className="text-[11px] leading-relaxed">
+                    This value is currently configured in <strong className="font-mono">{duplicateWarningPopup.conflictList}</strong>. An address or domain cannot be simultaneously allowed and blocked in the same policy.
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-amber-900 dark:text-amber-200">
+                  <div className="font-semibold text-xs mb-1">Existing Record Details:</div>
+                  <div className="space-y-1 text-[11px]">
+                    <div><span className="text-slate-500 dark:text-slate-400">Target List:</span> <strong className="font-mono">{duplicateWarningPopup.listLabel}</strong></div>
+                    {duplicateWarningPopup.addedBy && (
+                      <div><span className="text-slate-500 dark:text-slate-400">Added By:</span> <span className="font-mono">{duplicateWarningPopup.addedBy}</span></div>
+                    )}
+                    {duplicateWarningPopup.createdAt && (
+                      <div><span className="text-slate-500 dark:text-slate-400">Date Added:</span> <span>{duplicateWarningPopup.createdAt}</span></div>
+                    )}
+                    {duplicateWarningPopup.existingNote && (
+                      <div><span className="text-slate-500 dark:text-slate-400">Note:</span> <span className="italic">{duplicateWarningPopup.existingNote}</span></div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">
+                MariaDB enforces a unique constraint <code>uk_policy_sender</code> / <code>uk_policy_domain</code> to ensure data integrity and prevent redundant entries in Exchange Online.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end pt-3 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setDuplicateWarningPopup(null)}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+              >
+                Understood
               </button>
             </div>
           </div>

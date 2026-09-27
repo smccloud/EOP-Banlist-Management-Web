@@ -1254,6 +1254,10 @@ $flash = getFlash();
 $pushSummary = $_SESSION['push_summary'] ?? null;
 unset($_SESSION['push_summary']);
 
+// Duplicate rejected popup data
+$duplicatePopup = $_SESSION['duplicate_popup'] ?? null;
+unset($_SESSION['duplicate_popup']);
+
 // Current active policy
 $selectedPolicy = $_GET['policy'] ?? ($_SESSION['active_policy'] ?? DEFAULT_POLICY_NAME);
 $_SESSION['active_policy'] = $selectedPolicy;
@@ -2448,6 +2452,53 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
     </div>
     <?php endif; ?>
 
+    <!-- Duplicate Entry Warning Popup -->
+    <?php if ($duplicatePopup): ?>
+    <div id="duplicatePopupModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full p-6 border border-amber-200 dark:border-amber-800/80">
+            <div class="flex items-start justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                        <i class="fa-solid fa-triangle-exclamation text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-slate-900 dark:text-white">Entry Already in List</h3>
+                        <span class="text-[11px] font-semibold uppercase px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/50">
+                            Duplicate Rejected
+                        </span>
+                    </div>
+                </div>
+                <button type="button" onclick="document.getElementById('duplicatePopupModal').remove()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <div class="my-4 text-xs text-slate-600 dark:text-slate-300 space-y-3">
+                <p class="leading-relaxed">
+                    The entry <strong class="font-mono text-slate-900 dark:text-white px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"><?= htmlspecialchars($duplicatePopup['value']) ?></strong> cannot be added because it already exists in policy <strong class="text-slate-900 dark:text-white font-semibold">"<?= htmlspecialchars($duplicatePopup['policy']) ?>"</strong>.
+                </p>
+
+                <div class="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-amber-900 dark:text-amber-200">
+                    <div class="font-semibold text-xs mb-1">Target Table:</div>
+                    <div class="text-[11px]">
+                        <code>eop_<?= htmlspecialchars($duplicatePopup['listType']) ?></code>
+                    </div>
+                </div>
+
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 italic">
+                    MariaDB enforces a unique constraint (<code>uk_policy_sender</code> / <code>uk_policy_domain</code>) on this table to prevent redundant and conflicting entries in Microsoft 365.
+                </p>
+            </div>
+
+            <div class="flex items-center justify-end pt-3 border-t border-slate-100 dark:border-slate-800">
+                <button type="button" onclick="document.getElementById('duplicatePopupModal').remove()" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer">
+                    Understood
+                </button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- Footer -->
     <footer class="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-4 mt-auto text-center text-xs text-slate-400 dark:text-slate-500 transition-colors duration-200">
         Exchange Online Protection Policy Manager &bull; Host: Debian Linux &bull; Storage: Remote MariaDB &bull; Auth: Active Directory LDAP (Port 389/636)
@@ -3597,6 +3648,12 @@ if ($action === 'add_single') {
 
     // Check if entry already exists (duplicate prevention)
     if (Database::itemExists($listType, $policyName, $value)) {
+        $_SESSION['duplicate_popup'] = [
+            'value'     => $value,
+            'listType'  => $listType,
+            'policy'    => $policyName,
+            'timestamp' => date('Y-m-d H:i:s'),
+        ];
         setFlash('error', "Duplicate entry rejected: '{$value}' already exists in {$listType} for policy '{$policyName}'.");
         header("Location: index.php?policy=" . urlencode($policyName) . "&tab=" . urlencode($listType));
         exit;
