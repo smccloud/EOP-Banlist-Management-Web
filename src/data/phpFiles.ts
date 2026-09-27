@@ -1250,6 +1250,10 @@ $user = requireAuth();
 $csrfToken = getCsrfToken();
 $flash = getFlash();
 
+// Post-push summary popup data
+$pushSummary = $_SESSION['push_summary'] ?? null;
+unset($_SESSION['push_summary']);
+
 // Current active policy
 $selectedPolicy = $_GET['policy'] ?? ($_SESSION['active_policy'] ?? DEFAULT_POLICY_NAME);
 $_SESSION['active_policy'] = $selectedPolicy;
@@ -2299,6 +2303,150 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
             </form>
         </div>
     </div>
+
+    <!-- Push Summary Result Modal (Showing what was added to each list) -->
+    <?php if ($pushSummary): ?>
+    <div id="pushSummaryModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-2xl w-full p-6 border border-slate-200 dark:border-slate-800 flex flex-col max-h-[90vh]">
+            <div class="flex items-start justify-between pb-4 border-b border-slate-200 dark:border-slate-800">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                        <i class="fa-solid fa-circle-check text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                            <span>Pushed to Exchange Online Protection</span>
+                            <span class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">Success</span>
+                        </h3>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            Policy: <strong class="text-slate-700 dark:text-slate-200"><?= htmlspecialchars($pushSummary['policy']) ?></strong> &bull; Synced at: <span class="font-mono"><?= htmlspecialchars($pushSummary['timestamp']) ?></span>
+                        </p>
+                    </div>
+                </div>
+                <button type="button" onclick="document.getElementById('pushSummaryModal').remove()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <div class="py-3 text-xs text-slate-600 dark:text-slate-300">
+                <p class="mb-2 text-xs">
+                    The following entries from your remote MariaDB tables were successfully pushed and configured in Microsoft 365 Exchange Online via <code class="text-indigo-600 dark:text-indigo-400 font-bold">Set-HostedContentFilterPolicy</code>:
+                </p>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                    <div class="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-2 rounded-lg">
+                        <span class="block text-emerald-800 dark:text-emerald-300 font-bold text-sm"><?= count($pushSummary['allowedSenders']) ?></span>
+                        <span class="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Senders</span>
+                    </div>
+                    <div class="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/50 p-2 rounded-lg">
+                        <span class="block text-rose-800 dark:text-rose-300 font-bold text-sm"><?= count($pushSummary['blockedSenders']) ?></span>
+                        <span class="text-[11px] text-rose-700 dark:text-rose-400">Blocked Senders</span>
+                    </div>
+                    <div class="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-2 rounded-lg">
+                        <span class="block text-emerald-800 dark:text-emerald-300 font-bold text-sm"><?= count($pushSummary['allowedDomains']) ?></span>
+                        <span class="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Domains</span>
+                    </div>
+                    <div class="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/50 p-2 rounded-lg">
+                        <span class="block text-rose-800 dark:text-rose-300 font-bold text-sm"><?= count($pushSummary['blockedDomains']) ?></span>
+                        <span class="text-[11px] text-rose-700 dark:text-rose-400">Blocked Domains</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="overflow-y-auto space-y-4 pr-1 my-2 grow divide-y divide-slate-100 dark:divide-slate-800">
+                <div class="pt-2">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span>Allowed Senders (<code>-AllowedSenders</code>)</span>
+                        </span>
+                        <span class="text-[11px] text-slate-400 font-mono">eop_allowed_senders</span>
+                    </div>
+                    <?php if (!empty($pushSummary['allowedSenders'])): ?>
+                    <div class="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                        <?php foreach ($pushSummary['allowedSenders'] as $val): ?>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                            <?= htmlspecialchars($val) ?>
+                        </span>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php else: ?>
+                    <p class="text-[11px] italic text-slate-400 pl-3">No allowed senders configured for this policy.</p>
+                    <?php endif; ?>
+                </div>
+
+                <div class="pt-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                            <span>Blocked Senders (<code>-BlockedSenders</code>)</span>
+                        </span>
+                        <span class="text-[11px] text-slate-400 font-mono">eop_blocked_senders</span>
+                    </div>
+                    <?php if (!empty($pushSummary['blockedSenders'])): ?>
+                    <div class="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                        <?php foreach ($pushSummary['blockedSenders'] as $val): ?>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
+                            <?= htmlspecialchars($val) ?>
+                        </span>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php else: ?>
+                    <p class="text-[11px] italic text-slate-400 pl-3">No blocked senders configured for this policy.</p>
+                    <?php endif; ?>
+                </div>
+
+                <div class="pt-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span>Allowed Sender Domains (<code>-AllowedSenderDomains</code>)</span>
+                        </span>
+                        <span class="text-[11px] text-slate-400 font-mono">eop_allowed_domains</span>
+                    </div>
+                    <?php if (!empty($pushSummary['allowedDomains'])): ?>
+                    <div class="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                        <?php foreach ($pushSummary['allowedDomains'] as $val): ?>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                            <?= htmlspecialchars($val) ?>
+                        </span>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php else: ?>
+                    <p class="text-[11px] italic text-slate-400 pl-3">No allowed domains configured for this policy.</p>
+                    <?php endif; ?>
+                </div>
+
+                <div class="pt-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                            <span>Blocked Sender Domains (<code>-BlockedSenderDomains</code>)</span>
+                        </span>
+                        <span class="text-[11px] text-slate-400 font-mono">eop_blocked_domains</span>
+                    </div>
+                    <?php if (!empty($pushSummary['blockedDomains'])): ?>
+                    <div class="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                        <?php foreach ($pushSummary['blockedDomains'] as $val): ?>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
+                            <?= htmlspecialchars($val) ?>
+                        </span>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php else: ?>
+                    <p class="text-[11px] italic text-slate-400 pl-3">No blocked domains configured for this policy.</p>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                <span class="text-[11px] text-slate-400 dark:text-slate-500">Action recorded in <code>eop_audit_log</code> &bull; Status: Synced</span>
+                <button type="button" onclick="document.getElementById('pushSummaryModal').remove()" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer">
+                    Done
+                </button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <!-- Footer -->
     <footer class="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-4 mt-auto text-center text-xs text-slate-400 dark:text-slate-500 transition-colors duration-200">
@@ -3671,6 +3819,22 @@ if ($action === 'trigger_sync') {
         } else {
             Database::updatePolicySyncStatus($policyName, 'synced', 'Pushed changes to Exchange Online');
             Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Manual push to Exchange Online completed', $user['username']);
+            
+            // Capture entries pushed to each list for the post-push summary popup
+            $pushedAllowedSenders = array_column(Database::getListItems('allowed_senders', $policyName, '', 500, 0), 'item_value');
+            $pushedBlockedSenders = array_column(Database::getListItems('blocked_senders', $policyName, '', 500, 0), 'item_value');
+            $pushedAllowedDomains = array_column(Database::getListItems('allowed_domains', $policyName, '', 500, 0), 'item_value');
+            $pushedBlockedDomains = array_column(Database::getListItems('blocked_domains', $policyName, '', 500, 0), 'item_value');
+
+            $_SESSION['push_summary'] = [
+                'policy'         => $policyName,
+                'timestamp'      => date('Y-m-d H:i:s'),
+                'allowedSenders' => $pushedAllowedSenders,
+                'blockedSenders' => $pushedBlockedSenders,
+                'allowedDomains' => $pushedAllowedDomains,
+                'blockedDomains' => $pushedBlockedDomains,
+            ];
+
             setFlash('success', "Exchange Online push completed successfully! MariaDB lists applied to Microsoft 365 for policy '{$policyName}'.");
         }
     } else {

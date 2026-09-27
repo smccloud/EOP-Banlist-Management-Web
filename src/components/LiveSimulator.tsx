@@ -34,7 +34,8 @@ import {
   ArrowLeft,
   Sparkles,
   Split,
-  CloudUpload
+  CloudUpload,
+  X
 } from 'lucide-react';
 
 interface LiveSimulatorProps {
@@ -169,6 +170,14 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncActionType, setSyncActionType] = useState<'pull' | 'push'>('pull');
   const [showPushConfirmModal, setShowPushConfirmModal] = useState(false);
+  const [pushSummaryModal, setPushSummaryModal] = useState<{
+    policy: string;
+    timestamp: string;
+    allowedSenders: string[];
+    blockedSenders: string[];
+    allowedDomains: string[];
+    blockedDomains: string[];
+  } | null>(null);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<{ id: number; value: string; tab: ListType } | null>(null);
   const [lastSyncResult, setLastSyncResult] = useState<{
     timestamp: string;
@@ -791,13 +800,28 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
         });
         logAction('SYNC', 'SYSTEM', activePolicy, 'Automated cron pull from EOP completed (Pull-Only)');
       } else {
+        const policyAllowedSenders = allowedSenders.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
+        const policyBlockedSenders = blockedSenders.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
+        const policyAllowedDomains = allowedDomains.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
+        const policyBlockedDomains = blockedDomains.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
+
         setLastSyncResult({
           timestamp,
           status: 'success',
           direction: 'push',
-          message: `Manual Admin Push completed successfully for policy '${activePolicy}'. Set-HostedContentFilterPolicy applied ${allowedSendersCount} allowed senders, ${blockedSendersCount} blocked senders, ${allowedDomainsCount} allowed domains, and ${blockedDomainsCount} blocked domains to Exchange Online.`,
+          message: `Manual Admin Push completed successfully for policy '${activePolicy}'. Set-HostedContentFilterPolicy applied ${policyAllowedSenders.length} allowed senders, ${policyBlockedSenders.length} blocked senders, ${policyAllowedDomains.length} allowed domains, and ${policyBlockedDomains.length} blocked domains to Exchange Online.`,
         });
         logAction('SYNC', 'SYSTEM', activePolicy, 'Manual push to Exchange Online executed');
+
+        // Open popup showing what was pushed to each list
+        setPushSummaryModal({
+          policy: activePolicy,
+          timestamp,
+          allowedSenders: policyAllowedSenders,
+          blockedSenders: policyBlockedSenders,
+          allowedDomains: policyAllowedDomains,
+          blockedDomains: policyBlockedDomains,
+        });
       }
     }, 1100);
   };
@@ -2809,6 +2833,169 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Execute Push</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Push Completion Result Modal: Showing what was added to each list */}
+      {pushSummaryModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-2xl w-full p-6 border border-slate-200 dark:border-slate-800 flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="flex items-start justify-between pb-4 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                  <CheckCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <span>Pushed to Exchange Online Protection</span>
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">Success</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    Policy: <strong className="text-slate-700 dark:text-slate-200">{pushSummaryModal.policy}</strong> &bull; Synced at: <span className="font-mono">{pushSummaryModal.timestamp}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPushSummaryModal(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Subheader / Summary pill row */}
+            <div className="py-3 text-xs text-slate-600 dark:text-slate-300">
+              <p className="mb-2 text-xs">
+                The following entries from your remote MariaDB tables were successfully pushed and configured in Microsoft 365 Exchange Online via <code className="text-indigo-600 dark:text-indigo-400 font-bold">Set-HostedContentFilterPolicy</code>:
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-2 rounded-lg">
+                  <span className="block text-emerald-800 dark:text-emerald-300 font-bold text-sm">{pushSummaryModal.allowedSenders.length}</span>
+                  <span className="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Senders</span>
+                </div>
+                <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/50 p-2 rounded-lg">
+                  <span className="block text-rose-800 dark:text-rose-300 font-bold text-sm">{pushSummaryModal.blockedSenders.length}</span>
+                  <span className="text-[11px] text-rose-700 dark:text-rose-400">Blocked Senders</span>
+                </div>
+                <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-2 rounded-lg">
+                  <span className="block text-emerald-800 dark:text-emerald-300 font-bold text-sm">{pushSummaryModal.allowedDomains.length}</span>
+                  <span className="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Domains</span>
+                </div>
+                <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/50 p-2 rounded-lg">
+                  <span className="block text-rose-800 dark:text-rose-300 font-bold text-sm">{pushSummaryModal.blockedDomains.length}</span>
+                  <span className="text-[11px] text-rose-700 dark:text-rose-400">Blocked Domains</span>
+                </div>
+              </div>
+            </div>
+
+            {/* List Details (Scrollable) */}
+            <div className="overflow-y-auto space-y-4 pr-1 my-2 grow divide-y divide-slate-100 dark:divide-slate-800">
+              {/* 1. Allowed Senders */}
+              <div className="pt-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span>Allowed Senders (<code>-AllowedSenders</code>)</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono">eop_allowed_senders</span>
+                </div>
+                {pushSummaryModal.allowedSenders.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                    {pushSummaryModal.allowedSenders.map((val) => (
+                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                        {val}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] italic text-slate-400 pl-3">No allowed senders configured for this policy.</p>
+                )}
+              </div>
+
+              {/* 2. Blocked Senders */}
+              <div className="pt-3">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                    <span>Blocked Senders (<code>-BlockedSenders</code>)</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono">eop_blocked_senders</span>
+                </div>
+                {pushSummaryModal.blockedSenders.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                    {pushSummaryModal.blockedSenders.map((val) => (
+                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
+                        {val}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] italic text-slate-400 pl-3">No blocked senders configured for this policy.</p>
+                )}
+              </div>
+
+              {/* 3. Allowed Domains */}
+              <div className="pt-3">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span>Allowed Sender Domains (<code>-AllowedSenderDomains</code>)</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono">eop_allowed_domains</span>
+                </div>
+                {pushSummaryModal.allowedDomains.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                    {pushSummaryModal.allowedDomains.map((val) => (
+                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                        {val}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] italic text-slate-400 pl-3">No allowed domains configured for this policy.</p>
+                )}
+              </div>
+
+              {/* 4. Blocked Domains */}
+              <div className="pt-3">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                    <span>Blocked Sender Domains (<code>-BlockedSenderDomains</code>)</span>
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono">eop_blocked_domains</span>
+                </div>
+                {pushSummaryModal.blockedDomains.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                    {pushSummaryModal.blockedDomains.map((val) => (
+                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
+                        {val}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] italic text-slate-400 pl-3">No blocked domains configured for this policy.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                Action recorded in <code>eop_audit_log</code> &bull; Exchange status: Synced
+              </span>
+              <button
+                type="button"
+                onClick={() => setPushSummaryModal(null)}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+              >
+                Done
               </button>
             </div>
           </div>

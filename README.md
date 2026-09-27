@@ -303,6 +303,7 @@ When triggered, an in-app confirmation modal outlines the policy name and all 4 
   ```
 - Logs the push execution in `eop_audit_log` with the administrator's Active Directory username, client IP, timestamp, and record counts.
 - Updates the policy's `last_synced_at` and `sync_status` in `eop_policies`.
+- **Post-Push Summary Modal**: Immediately following push completion, displays a detailed popup showing exactly what entries were applied to Microsoft 365 across all four policy lists (`eop_allowed_senders`, `eop_blocked_senders`, `eop_allowed_domains`, and `eop_blocked_domains`) along with item counts, timestamp, and target policy identity.
 
 ### Certificate-Based Authentication (CBA)
 
@@ -322,10 +323,15 @@ The web interface features multi-mode intelligent sorting:
 - **TLD Group**: Organizes entries by Top-Level Domain (`.com`, `.net`, `.io`, `.gov`).
 - **Standard A-Z**: Alphabetical sorting by entry value or date added.
 
-### In-App Confirmation Safeguards
-To comply with modern browser sandboxes and iframe restrictions (where browser-native `alert()` or `confirm()` are blocked), all destructive actions use in-app modals:
+### In-App Confirmation Safeguards & Push Verification
+To comply with modern browser sandboxes and iframe restrictions (where browser-native `alert()` or `confirm()` are blocked), all destructive and high-impact actions use in-app modals:
 - **Delete Confirmation Modal**: Shows the exact email or domain, target table, and warns that it will be removed on the next push.
 - **Exchange Online Push Modal**: Outlines the policy name and record counts before triggering `Set-HostedContentFilterPolicy`.
+- **Post-Push List Summary Popup**: A comprehensive completion dialog that pops up immediately following a push to Microsoft 365, verifying and listing all configured entries across:
+  - **Allowed Senders** (`-AllowedSenders` &rarr; `eop_allowed_senders`)
+  - **Blocked Senders** (`-BlockedSenders` &rarr; `eop_blocked_senders`)
+  - **Allowed Sender Domains** (`-AllowedSenderDomains` &rarr; `eop_allowed_domains`)
+  - **Blocked Sender Domains** (`-BlockedSenderDomains` &rarr; `eop_blocked_domains`)
 
 ### Dark Mode & Audit Trail
 - High-contrast **Dark Mode** and clean **Light Mode** toggled with a single click.
