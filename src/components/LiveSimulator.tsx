@@ -57,6 +57,8 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [loginPassword, setLoginPassword] = useState('SecretPass123!');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isGroupMember, setIsGroupMember] = useState(true);
+  const [ldapDcOnline, setLdapDcOnline] = useState(true);
+  const [isFallbackLoggedIn, setIsFallbackLoggedIn] = useState(false);
 
   // Active Policy
   const [activePolicy, setActivePolicy] = useState(config.defaultPolicyName);
@@ -363,20 +365,60 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     e.preventDefault();
     setLoginError(null);
 
-    if (!loginUsername || !loginPassword) {
-      setLoginError('Please enter both Active Directory username and password.');
+    const enteredUser = loginUsername.trim();
+    const enteredPass = loginPassword;
+
+    if (!enteredUser || !enteredPass) {
+      setLoginError('Please enter both username and password.');
+      return;
+    }
+
+    const fallbackUser = config.fallbackAdminUsername || 'eopadmin';
+    const fallbackPass = config.fallbackAdminPassword || 'Emergency#Admin2026!';
+    const fallbackEnabled = config.fallbackAdminEnabled !== false;
+
+    // Check if user is logging in with the Emergency Fallback Non-LDAP Administrator account
+    if (fallbackEnabled && enteredUser.toLowerCase() === fallbackUser.toLowerCase()) {
+      if (enteredPass === fallbackPass) {
+        setIsAuthenticated(true);
+        setIsFallbackLoggedIn(true);
+        logAction(
+          'LOGIN',
+          'SYSTEM',
+          enteredUser,
+          ldapDcOnline
+            ? 'Emergency Non-LDAP Fallback Administrator Login (Direct Local Authenticated)'
+            : 'Emergency Non-LDAP Fallback Administrator Login (Active Directory LDAP connection failed / offline)'
+        );
+        return;
+      } else {
+        setLoginError('Invalid emergency fallback administrator credentials. Check password configured in Setup.');
+        return;
+      }
+    }
+
+    // Check if Active Directory LDAP server is offline / unreachable
+    if (!ldapDcOnline) {
+      setLoginError(
+        `Active Directory LDAP Connection Failure: Could not reach Domain Controller at ${config.ldapHost}:${config.ldapPort}. Connection timed out after 5000ms. ${
+          fallbackEnabled
+            ? `Emergency non-LDAP fallback account is enabled. You can authenticate using fallback administrator '${fallbackUser}'.`
+            : 'No emergency fallback administrator configured.'
+        }`
+      );
       return;
     }
 
     if (!isGroupMember) {
       setLoginError(
-        `Access Denied: Account '${loginUsername}' authenticated against Active Directory, but is NOT a member of authorized Group DN: ${config.ldapGroupDn}`
+        `Access Denied: Account '${enteredUser}' authenticated against Active Directory, but is NOT a member of authorized Group DN: ${config.ldapGroupDn}`
       );
       return;
     }
 
     setIsAuthenticated(true);
-    logAction('LOGIN', 'SYSTEM', loginUsername, 'Authenticated via Active Directory LDAP');
+    setIsFallbackLoggedIn(false);
+    logAction('LOGIN', 'SYSTEM', enteredUser, 'Authenticated via Active Directory LDAP');
   };
 
   // Add Single item with strict duplicate prevention
@@ -1060,13 +1102,13 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
 
         <form onSubmit={handleLogin} className="space-y-4 text-xs">
           <div>
-            <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">AD Username</label>
+            <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Username</label>
             <input
               type="text"
               value={loginUsername}
               onChange={(e) => setLoginUsername(e.target.value)}
               className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-              placeholder="sAMAccountName or user@corp.example.com"
+              placeholder="sAMAccountName, user@corp.example.com, or fallback admin"
             />
           </div>
 
@@ -1077,34 +1119,75 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               value={loginPassword}
               onChange={(e) => setLoginPassword(e.target.value)}
               className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-              placeholder="Domain password"
+              placeholder="Domain password or fallback admin password"
             />
           </div>
 
-          {/* Test toggle for AD group membership simulation */}
-          <div className="p-3 bg-slate-50 dark:bg-slate-800/70 rounded-xl border border-slate-200 dark:border-slate-700">
-            <div className="flex items-center justify-between mb-1">
+          {/* Test toggle for AD DC connectivity & group membership simulation */}
+          <div className="p-3 bg-slate-50 dark:bg-slate-800/70 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-slate-700 dark:text-slate-300">AD Domain Controller Status:</span>
+              <button
+                type="button"
+                onClick={() => setLdapDcOnline(!ldapDcOnline)}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded transition cursor-pointer ${
+                  ldapDcOnline
+                    ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                    : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                }`}
+              >
+                {ldapDcOnline ? '🟢 DC Online (Port 389)' : '🔴 DC Offline / Connection Fails'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-700 dark:text-slate-300">Simulate AD Group Membership:</span>
               <button
                 type="button"
                 onClick={() => setIsGroupMember(!isGroupMember)}
-                className={`text-[10px] font-bold px-2 py-0.5 rounded transition ${
+                className={`text-[10px] font-bold px-2 py-0.5 rounded transition cursor-pointer ${
                   isGroupMember ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300' : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
                 }`}
               >
                 {isGroupMember ? 'In Group DN' : 'Not in Group DN'}
               </button>
             </div>
+
             <p className="text-[10px] text-slate-500 dark:text-slate-400 font-mono break-all leading-tight">
               Group: {config.ldapGroupDn}
             </p>
           </div>
 
+          {/* Emergency Fallback Helper Box */}
+          {config.fallbackAdminEnabled !== false && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 space-y-2 text-[11px]">
+              <div className="flex items-center justify-between text-amber-900 dark:text-amber-200 font-bold">
+                <span className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span>Emergency Non-LDAP Fallback Admin:</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginUsername(config.fallbackAdminUsername || 'eopadmin');
+                    setLoginPassword(config.fallbackAdminPassword || 'Emergency#Admin2026!');
+                  }}
+                  className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-semibold transition cursor-pointer"
+                >
+                  Quick Fill Fallback
+                </button>
+              </div>
+              <p className="text-[10px] text-amber-800 dark:text-amber-300 leading-tight">
+                User: <code className="font-bold">{config.fallbackAdminUsername || 'eopadmin'}</code> &bull; Configured during setup to permit emergency administrator access if LDAP connection fails.
+              </p>
+            </div>
+          )}
+
           <button
             type="submit"
-            className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm transition"
+            className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm transition cursor-pointer"
           >
-            Authenticate via Active Directory
+            Authenticate &amp; Sign In
           </button>
         </form>
       </div>
@@ -1113,6 +1196,20 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 transition-colors duration-200">
+      {/* Emergency Fallback Login Banner (If authenticated via local fallback admin) */}
+      {isFallbackLoggedIn && (
+        <div className="mb-4 p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 flex items-center justify-between text-xs text-amber-900 dark:text-amber-200">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <div>
+              <span className="font-bold">Disaster Recovery Session Active:</span> Signed in as local administrator <strong>{loginUsername}</strong> using non-LDAP fallback credentials. Active Directory LDAP connection was bypassed or offline.
+            </div>
+          </div>
+          <span className="text-[10px] px-2 py-0.5 rounded bg-amber-200 dark:bg-amber-900/80 text-amber-900 dark:text-amber-200 font-bold uppercase tracking-wider shrink-0 ml-2">
+            Non-LDAP Admin
+          </span>
+        </div>
+      )}
       {/* Simulation Banner */}
       <div className="mb-6 p-4 rounded-xl bg-blue-50/70 dark:bg-slate-900 border border-blue-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs transition-colors duration-200">
         <div className="flex items-center space-x-2.5">

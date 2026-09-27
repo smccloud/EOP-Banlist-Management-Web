@@ -86,6 +86,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
   const [fallbackAdminUsername, setFallbackAdminUsername] = useState(config.fallbackAdminUsername || 'eopadmin');
   const [fallbackAdminPassword, setFallbackAdminPassword] = useState(config.fallbackAdminPassword || 'Emergency#Admin2026!');
   const [showFallbackPass, setShowFallbackPass] = useState(false);
+  const [step3Error, setStep3Error] = useState<string | null>(null);
 
   // Step 4: EOP connection state
   const [tenantId, setTenantId] = useState(config.tenantId || '72f988bf-86f1-41af-91ab-2d7cd011db47');
@@ -785,7 +786,10 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                       <input
                         type="text"
                         value={fallbackAdminUsername}
-                        onChange={(e) => setFallbackAdminUsername(e.target.value)}
+                        onChange={(e) => {
+                          setFallbackAdminUsername(e.target.value);
+                          setStep3Error(null);
+                        }}
                         placeholder="eopadmin"
                         className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
                       />
@@ -799,7 +803,7 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                         <button
                           type="button"
                           onClick={() => setShowFallbackPass(!showFallbackPass)}
-                          className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-700 flex items-center gap-1"
+                          className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-700 flex items-center gap-1 cursor-pointer"
                         >
                           {showFallbackPass ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
                           <span>{showFallbackPass ? 'Hide' : 'Show'}</span>
@@ -808,7 +812,10 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                       <input
                         type={showFallbackPass ? 'text' : 'password'}
                         value={fallbackAdminPassword}
-                        onChange={(e) => setFallbackAdminPassword(e.target.value)}
+                        onChange={(e) => {
+                          setFallbackAdminPassword(e.target.value);
+                          setStep3Error(null);
+                        }}
                         placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols"
                         className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
                       />
@@ -819,38 +826,83 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                   {(() => {
                     const check = validateFallbackPassword(fallbackAdminPassword);
                     return (
-                      <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 space-y-1.5 text-[11px]">
-                        <div className="flex items-center justify-between font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                          <span>Password Complexity Requirement:</span>
+                      <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 space-y-2 text-[11px]">
+                        <div className="flex items-center justify-between font-semibold text-slate-700 dark:text-slate-300">
+                          <span className="flex items-center gap-1.5">
+                            <Lock className="w-3.5 h-3.5 text-amber-500" />
+                            <span>Password Policy Enforcement:</span>
+                          </span>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                             check.isValid
                               ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800'
                               : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-800'
                           }`}>
-                            {check.isValid ? 'REQUIREMENTS SATISFIED' : 'COMPLEXITY UNMET'}
+                            {check.isValid ? 'REQUIREMENTS SATISFIED (PASSED)' : 'CRITERIA UNMET'}
                           </span>
                         </div>
+
+                        {/* Top: 12+ length requirement */}
+                        <div className={`flex items-center justify-between p-2 rounded-lg border text-xs ${
+                          check.minLength
+                            ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
+                            : 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800'
+                        }`}>
+                          <div className="flex items-center gap-2">
+                            {check.minLength ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : <AlertTriangle className="w-4 h-4 text-amber-600" />}
+                            <span className="font-semibold">Minimum Length: 12+ Characters</span>
+                          </div>
+                          <span className="font-mono font-bold">{fallbackAdminPassword.length} characters</span>
+                        </div>
+
+                        {/* 4 Categories Checklist (At least 3 required) */}
+                        <div className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                          Must satisfy at least <strong>3 of the following 4</strong> categories:
+                        </div>
+
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
-                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.minLength ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
-                            {check.minLength ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
-                            <span>12+ Characters ({fallbackAdminPassword.length})</span>
+                          <div className={`flex items-center gap-1.5 p-2 rounded-lg border ${
+                            check.hasUpper
+                              ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
+                              : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700'
+                          }`}>
+                            {check.hasUpper ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <span className="w-3.5 h-3.5 text-center text-slate-400">&times;</span>}
+                            <span>Uppercase (A-Z)</span>
                           </div>
-                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.hasUpper ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
-                            {check.hasUpper ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
-                            <span>Uppercase Letters (A-Z)</span>
+
+                          <div className={`flex items-center gap-1.5 p-2 rounded-lg border ${
+                            check.hasLower
+                              ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
+                              : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700'
+                          }`}>
+                            {check.hasLower ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <span className="w-3.5 h-3.5 text-center text-slate-400">&times;</span>}
+                            <span>Lowercase (a-z)</span>
                           </div>
-                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.hasLower ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
-                            {check.hasLower ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
-                            <span>Lowercase Letters (a-z)</span>
+
+                          <div className={`flex items-center gap-1.5 p-2 rounded-lg border ${
+                            check.hasNumber
+                              ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
+                              : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700'
+                          }`}>
+                            {check.hasNumber ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <span className="w-3.5 h-3.5 text-center text-slate-400">&times;</span>}
+                            <span>Numbers (0-9)</span>
                           </div>
-                          <div className={`flex items-center gap-1.5 p-1.5 rounded ${check.hasNumber || check.hasSymbol ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40' : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800'}`}>
-                            {(check.hasNumber && check.hasSymbol) || (check.hasNumber || check.hasSymbol) ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="w-3 h-3 text-center">&bull;</span>}
-                            <span>Numbers &amp; Symbols</span>
+
+                          <div className={`flex items-center gap-1.5 p-2 rounded-lg border ${
+                            check.hasSymbol
+                              ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
+                              : 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700'
+                          }`}>
+                            {check.hasSymbol ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : <span className="w-3.5 h-3.5 text-center text-slate-400">&times;</span>}
+                            <span>Symbols (!@#$...)</span>
                           </div>
                         </div>
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500 italic pt-1">
-                          Rule: Must be at least 12 characters and contain at least 3 of 4 categories: Uppercase, Lowercase, Numbers, and Symbols. Passed: <strong>{check.passedCategories} of 4</strong> categories.
-                        </p>
+
+                        <div className="flex items-center justify-between text-[11px] pt-1 text-slate-500 dark:text-slate-400">
+                          <span>Complexity Score:</span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">
+                            <strong>{check.passedCategories} of 4</strong> categories satisfied ({check.passedCategories >= 3 ? 'Meets policy' : `${3 - check.passedCategories} more needed`})
+                          </span>
+                        </div>
                       </div>
                     );
                   })()}
@@ -858,12 +910,23 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
               )}
             </div>
 
+            {/* Inline validation error if user tries to advance without valid credentials */}
+            {step3Error && (
+              <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <div className="font-bold">Cannot Proceed to Next Step</div>
+                  <div>{step3Error}</div>
+                </div>
+              </div>
+            )}
+
             {/* Step 3 Navigation */}
             <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => setCurrentStep(2)}
-                className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+                className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span>Back</span>
@@ -871,14 +934,19 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
               <button
                 type="button"
                 onClick={() => {
+                  setStep3Error(null);
                   if (fallbackAdminEnabled) {
-                    const check = validateFallbackPassword(fallbackAdminPassword);
-                    if (!check.isValid) {
-                      alert('Please specify a valid fallback administrator password: at least 12 characters with at least three of the following: uppercase letters, lowercase letters, numbers, and symbols.');
+                    if (!fallbackAdminUsername.trim()) {
+                      setStep3Error('Please provide a fallback administrator username.');
                       return;
                     }
-                    if (!fallbackAdminUsername.trim()) {
-                      alert('Please provide a fallback administrator username.');
+                    const check = validateFallbackPassword(fallbackAdminPassword);
+                    if (!check.minLength) {
+                      setStep3Error(`Fallback password is too short (${fallbackAdminPassword.length} chars). It must be at least 12 characters long.`);
+                      return;
+                    }
+                    if (check.passedCategories < 3) {
+                      setStep3Error(`Fallback password satisfies only ${check.passedCategories} of 4 categories. It must satisfy at least 3: uppercase letters, lowercase letters, numbers, and symbols.`);
                       return;
                     }
                   }

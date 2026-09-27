@@ -110,6 +110,7 @@ define('TABLE_AUDIT_LOG',       'eop_audit_log');
 define('TABLE_POLICIES',        'eop_policies');
 define('TABLE_LDAP_CONFIG',     'eop_ldap_config'); // Dedicated database table storing LDAP connection information
 define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config'); // Dedicated database table storing EOP private key & encrypted password
+define('TABLE_LOCAL_ADMINS',    'eop_local_admins'); // Dedicated database table storing emergency non-LDAP fallback administrator accounts
 
 // Master key for AES-256-GCM encryption of stored private key passphrases
 define('AUTH_MASTER_ENCRYPTION_KEY', getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: 'eop_master_aes256_secret_key_2026_debian');
@@ -137,6 +138,15 @@ define('LDAP_BIND_DN', getenv('LDAP_BIND_DN') ?: '${cfg.ldapBindDn}');
 define('LDAP_BIND_PASSWORD', getenv('LDAP_BIND_PASSWORD') ?: '${cfg.ldapBindPass}');
 define('LDAP_ACCOUNT_SUFFIX', '@corp.example.com');
 define('LDAP_NETBIOS_DOMAIN', '${cfg.ldapDomain}');
+
+// --------------------------------------------------------------------------
+// 3b. Emergency Non-LDAP Fallback Administrator Account
+// Allows administrative access when Active Directory Domain Controller connection fails
+// --------------------------------------------------------------------------
+define('FALLBACK_ADMIN_ENABLED', ${cfg.fallbackAdminEnabled !== false ? 'true' : 'false'});
+define('FALLBACK_ADMIN_USERNAME', getenv('FALLBACK_ADMIN_USER') ?: '${cfg.fallbackAdminUsername || 'eopadmin'}');
+// Default hashed password fallback (BCrypt)
+define('FALLBACK_ADMIN_PASSWORD_HASH', '${cfg.fallbackAdminPasswordHash || '$2y$12$EmergencyFallbackAdminHash2026SecureBcrypt'}');
 
 // --------------------------------------------------------------------------
 // 4. Exchange Online Protection (EOP) Policy Settings
@@ -662,6 +672,38 @@ class Database {
     }
 
     /**
+     * Get fallback emergency local administrator by username from eop_local_admins table
+     */
+    public static function getFallbackAdmin(string $username): ?array {
+        try {
+            $pdo = self::getConnection();
+            $stmt = $pdo->prepare("SELECT * FROM " . (defined('TABLE_LOCAL_ADMINS') ? TABLE_LOCAL_ADMINS : 'eop_local_admins') . " WHERE username = :u AND is_active = 1 LIMIT 1");
+            $stmt->execute([':u' => $username]);
+            $res = $stmt->fetch();
+            return $res ?: null;
+        } catch (Exception $e) {
+            error_log('[Database::getFallbackAdmin Error] ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Save/register fallback administrator account with BCrypt password hash
+     */
+    public static function saveFallbackAdmin(string $username, string $passwordHash, string $createdBy = 'SETUP_WIZARD'): bool {
+        try {
+            $pdo = self::getConnection();
+            $stmt = $pdo->prepare("INSERT INTO " . (defined('TABLE_LOCAL_ADMINS') ? TABLE_LOCAL_ADMINS : 'eop_local_admins') . " (username, password_hash, is_active, created_by, created_at, updated_at) 
+                                   VALUES (:u, :p, 1, :cb, NOW(), NOW()) 
+                                   ON DUPLICATE KEY UPDATE password_hash = :p2, is_active = 1, updated_at = NOW()");
+            return $stmt->execute([':u' => $username, ':p' => $passwordHash, ':cb' => $createdBy, ':p2' => $passwordHash]);
+        } catch (Exception $e) {
+            error_log('[Database::saveFallbackAdmin Error] ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Check if initial setup is locked in MariaDB eop_setup_lock table
      */
     public static function isSetupLocked(): bool {
@@ -793,7 +835,18 @@ class LdapAuth {
         try {
             $this->connect();
         } catch (Exception $e) {
-            return ['success' => false, 'user' => null, 'error' => 'LDAP Connection failure: ' . $e->getMessage()];
+            // LDAP connection failure! If emergency fallback non-LDAP administrator is enabled, authenticate via MariaDB
+            if (defined('FALLBACK_ADMIN_ENABLED') && FALLBACK_ADMIN_ENABLED) {
+                $fallbackResult = $this->authenticateFallbackAdmin($username, $password, 'LDAP connection failure: ' . $e->getMessage());
+                if ($fallbackResult !== null) {
+                    return $fallbackResult;
+                }
+            }
+            return [
+                'success' => false,
+                'user'    => null,
+                'error'   => 'Active Directory LDAP Connection failure: ' . $e->getMessage() . (defined('FALLBACK_ADMIN_ENABLED') && FALLBACK_ADMIN_ENABLED ? ' (Note: If LDAP is offline, you can sign in with your emergency fallback administrator account).' : '')
+            ];
         }
 
         // 1. Initial bind to search user: use Service Account if configured, otherwise bind with user UPN
@@ -922,6 +975,61 @@ class LdapAuth {
         }
 
         return false;
+    }
+
+    /**
+     * Authenticate emergency non-LDAP fallback administrator when Active Directory LDAP fails
+     */
+    public function authenticateFallbackAdmin(string $username, string $password, string $failureReason = 'LDAP connection failure'): ?array {
+        $username = trim($username);
+        if (empty($username) || empty($password)) {
+            return null;
+        }
+
+        // 1. Check MariaDB table eop_local_admins first
+        $localAdmin = Database::getFallbackAdmin($username);
+        if ($localAdmin && !empty($localAdmin['password_hash'])) {
+            if (password_verify($password, $localAdmin['password_hash'])) {
+                Database::logAudit('LOGIN', 'SYSTEM', defined('DEFAULT_POLICY_NAME') ? DEFAULT_POLICY_NAME : 'GLOBAL', $username, "Emergency Non-LDAP Fallback Administrator Login ({$failureReason})", $username);
+                return [
+                    'success' => true,
+                    'user'    => [
+                        'username'        => $username,
+                        'displayName'     => 'Emergency Local Administrator (' . $username . ')',
+                        'email'           => 'admin@localhost',
+                        'dn'              => 'CN=' . $username . ',OU=LocalSecurity,DC=local',
+                        'groupDn'         => 'LOCAL_SECURITY_FALLBACK',
+                        'isFallbackAdmin' => true,
+                        'loginTime'       => time(),
+                    ],
+                    'error'   => null
+                ];
+            }
+        }
+
+        // 2. Check default fallback administrator credentials configured in setup if defined
+        if (defined('FALLBACK_ADMIN_USERNAME') && strcasecmp($username, FALLBACK_ADMIN_USERNAME) === 0) {
+            if (defined('FALLBACK_ADMIN_PASSWORD_HASH') && !empty(FALLBACK_ADMIN_PASSWORD_HASH)) {
+                if (password_verify($password, FALLBACK_ADMIN_PASSWORD_HASH)) {
+                    Database::logAudit('LOGIN', 'SYSTEM', defined('DEFAULT_POLICY_NAME') ? DEFAULT_POLICY_NAME : 'GLOBAL', $username, "Emergency Non-LDAP Fallback Administrator Login ({$failureReason})", $username);
+                    return [
+                        'success' => true,
+                        'user'    => [
+                            'username'        => $username,
+                            'displayName'     => 'Emergency Local Administrator (' . $username . ')',
+                            'email'           => 'admin@localhost',
+                            'dn'              => 'CN=' . $username . ',OU=LocalSecurity,DC=local',
+                            'groupDn'         => 'LOCAL_SECURITY_FALLBACK',
+                            'isFallbackAdmin' => true,
+                            'loginTime'       => time(),
+                        ],
+                        'error'   => null
+                    ];
+                }
+            }
+        }
+
+        return null;
     }
 
     public function __destruct() {
@@ -1225,6 +1333,27 @@ CREATE TABLE IF NOT EXISTS \`${cfg.dbName}\`.\`eop_setup_lock\` (
     \`app_version\` VARCHAR(20) NOT NULL DEFAULT '1.0.0',
     \`schema_version\` VARCHAR(20) NOT NULL DEFAULT '2026.1'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- Table 8: Emergency Non-LDAP Fallback Local Administrators
+-- Dedicated storage for emergency administrative access if LDAP DC connection fails
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS \`${cfg.dbName}\`.\`eop_local_admins\` (
+    \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    \`username\` VARCHAR(100) NOT NULL UNIQUE,
+    \`password_hash\` VARCHAR(255) NOT NULL,
+    \`is_active\` TINYINT(1) NOT NULL DEFAULT 1,
+    \`created_by\` VARCHAR(100) NOT NULL DEFAULT 'SETUP_WIZARD',
+    \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY \`idx_local_admin_username\` (\`username\`),
+    KEY \`idx_local_admin_active\` (\`is_active\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+${cfg.fallbackAdminEnabled !== false ? `-- Seed default emergency fallback administrator (Username: ${cfg.fallbackAdminUsername || 'eopadmin'})
+INSERT INTO \`${cfg.dbName}\`.\`eop_local_admins\` (\`username\`, \`password_hash\`, \`is_active\`, \`created_by\`)
+VALUES ('${cfg.fallbackAdminUsername || 'eopadmin'}', '${cfg.fallbackAdminPasswordHash || '$2y$12$EmergencyFallbackAdminHash2026SecureBcrypt'}', 1, 'INITIAL_SETUP_WIZARD')
+ON DUPLICATE KEY UPDATE \`password_hash\` = VALUES(\`password_hash\`), \`is_active\` = 1;` : ''}
 
 -- ----------------------------------------------------------------------------
 -- Remote User Permissions Grant Example (Run on Remote MariaDB server)
@@ -2782,6 +2911,18 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                     \`installer_ip\` VARCHAR(45) NOT NULL DEFAULT '127.0.0.1',
                     \`app_version\` VARCHAR(20) NOT NULL DEFAULT '1.0.0',
                     \`schema_version\` VARCHAR(20) NOT NULL DEFAULT '2026.1'
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+
+                'eop_local_admins' => "CREATE TABLE IF NOT EXISTS \`eop_local_admins\` (
+                    \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    \`username\` VARCHAR(100) NOT NULL UNIQUE,
+                    \`password_hash\` VARCHAR(255) NOT NULL,
+                    \`is_active\` TINYINT(1) NOT NULL DEFAULT 1,
+                    \`created_by\` VARCHAR(100) NOT NULL DEFAULT 'SETUP_WIZARD',
+                    \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    KEY \`idx_local_admin_username\` (\`username\`),
+                    KEY \`idx_local_admin_active\` (\`is_active\`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
             ];
 
@@ -2812,7 +2953,7 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Step 3: Prompt & Save LDAP Information
+    // Step 3: Prompt & Save LDAP Information + Emergency Non-LDAP Fallback Admin
     if (\\$action === 'step3_ldap') {
         \\$ldapHost = trim(\\$_POST['ldap_host'] ?? '');
         \\$ldapPort = (int)(\\$_POST['ldap_port'] ?? 389);
@@ -2823,19 +2964,44 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         \\$ldapBindPass = \\$_POST['ldap_bind_pass'] ?? '';
         \\$ldapDomain = trim(\\$_POST['ldap_domain'] ?? 'CORP');
 
+        // Fallback Non-LDAP Administrator settings
+        \\$fallbackEnabled = !empty(\\$_POST['fallback_admin_enabled']);
+        \\$fallbackUser = trim(\\$_POST['fallback_admin_username'] ?? 'eopadmin');
+        \\$fallbackPass = \\$_POST['fallback_admin_password'] ?? '';
+
         if (empty(\\$ldapHost) || empty(\\$ldapBaseDn) || empty(\\$ldapGroupDn)) {
             \\$error = "Please fill in all required LDAP settings (Host, Base DN, Group DN).";
-        } else {
+        } elseif (\\$fallbackEnabled) {
+            if (empty(\\$fallbackUser)) {
+                \\$error = "Fallback administrator username is required when fallback account is enabled.";
+            } elseif (strlen(\\$fallbackPass) < 12) {
+                \\$error = "Fallback administrator password must be at least 12 characters long.";
+            } else {
+                \\$hasUpper = preg_match('/[A-Z]/', \\$fallbackPass) ? 1 : 0;
+                \\$hasLower = preg_match('/[a-z]/', \\$fallbackPass) ? 1 : 0;
+                \\$hasNumber = preg_match('/[0-9]/', \\$fallbackPass) ? 1 : 0;
+                \\$hasSymbol = preg_match('/[^A-Za-z0-9]/', \\$fallbackPass) ? 1 : 0;
+                \\$passedCats = \\$hasUpper + \\$hasLower + \\$hasNumber + \\$hasSymbol;
+                if (\\$passedCats < 3) {
+                    \\$error = "Fallback administrator password must meet at least three of the following four criteria: uppercase letters, lowercase letters, numbers, and symbols.";
+                }
+            }
+        }
+
+        if (empty(\\$error)) {
             \\$_SESSION['wizard']['ldap'] = [
-                'host' => \\$ldapHost,
-                'port' => \\$ldapPort,
-                'protocol' => \\$ldapProtocol,
-                'base_dn' => \\$ldapBaseDn,
-                'group_dn' => \\$ldapGroupDn,
-                'bind_dn' => \\$ldapBindDn,
-                'bind_pass' => \\$ldapBindPass,
-                'domain' => \\$ldapDomain,
-                'tested' => true
+                'host'                   => \\$ldapHost,
+                'port'                   => \\$ldapPort,
+                'protocol'               => \\$ldapProtocol,
+                'base_dn'                => \\$ldapBaseDn,
+                'group_dn'               => \\$ldapGroupDn,
+                'bind_dn'                => \\$ldapBindDn,
+                'bind_pass'              => \\$ldapBindPass,
+                'domain'                 => \\$ldapDomain,
+                'fallback_admin_enabled' => \\$fallbackEnabled,
+                'fallback_admin_username'=> \\$fallbackUser,
+                'fallback_admin_password'=> \\$fallbackPass,
+                'tested'                 => true
             ];
             \\$_SESSION['wizard']['step'] = 4;
             header('Location: setup.php?step=4');
@@ -2905,6 +3071,19 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':bind_pass' => \\$ldap['bind_pass'],
                 ':dom' => \\$ldap['domain']
             ]);
+
+            // 3b. Save emergency fallback administrator account if configured
+            if (!empty(\\$ldap['fallback_admin_enabled']) && !empty(\\$ldap['fallback_admin_username']) && !empty(\\$ldap['fallback_admin_password'])) {
+                \\$pwdHash = password_hash(\\$ldap['fallback_admin_password'], PASSWORD_BCRYPT);
+                \\$fallbackStmt = \\$pdo->prepare("INSERT INTO \`eop_local_admins\` (\`username\`, \`password_hash\`, \`is_active\`, \`created_by\`, \`created_at\`, \`updated_at\`)
+                    VALUES (:u, :p, 1, 'INITIAL_SETUP_WIZARD', NOW(), NOW())
+                    ON DUPLICATE KEY UPDATE \`password_hash\` = :p2, \`is_active\` = 1, \`updated_at\` = NOW()");
+                \\$fallbackStmt->execute([
+                    ':u'  => \\$ldap['fallback_admin_username'],
+                    ':p'  => \\$pwdHash,
+                    ':p2' => \\$pwdHash
+                ]);
+            }
 
             // 4. Save EOP Auth config (AES encrypted password)
             \\$aesKey = hash('sha256', \\$eop['tenant_id'] . 'EOP_SALT_2026', true);
@@ -3219,6 +3398,46 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                     </div>
 
+                    <!-- Emergency Non-LDAP Fallback Administrator Account Setup -->
+                    <div class="p-4 bg-slate-900/80 rounded-xl border border-amber-500/40 space-y-3 mt-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <span class="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                                    <span>🛡️ Emergency Non-LDAP Fallback Administrator</span>
+                                </span>
+                                <p class="text-[11px] text-slate-400">Allows administrator login directly through MariaDB if the Active Directory Domain Controller connection fails or is offline.</p>
+                            </div>
+                            <label class="flex items-center space-x-2 text-xs text-slate-300 font-semibold cursor-pointer">
+                                <input type="checkbox" name="fallback_admin_enabled" value="1" <?php echo (!isset(\\$_SESSION['wizard']['ldap']['fallback_admin_enabled']) || !empty(\\$_SESSION['wizard']['ldap']['fallback_admin_enabled'])) ? 'checked' : ''; ?> class="w-4 h-4 text-amber-500 rounded border-slate-700">
+                                <span>Enable Fallback Account</span>
+                            </label>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Fallback Username</label>
+                                <input type="text" name="fallback_admin_username" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['fallback_admin_username'] ?? 'eopadmin'); ?>" placeholder="eopadmin" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1">Fallback Password</label>
+                                <input type="password" name="fallback_admin_password" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['fallback_admin_password'] ?? 'Emergency#Admin2026!'); ?>" placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
+                            </div>
+                        </div>
+
+                        <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] space-y-1">
+                            <div class="font-semibold text-amber-300">Password Policy Requirement:</div>
+                            <div class="text-slate-400 leading-tight">
+                                Must be at least <strong>12+ characters</strong> with at least <strong>three</strong> of the following:
+                            </div>
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1 text-[10px] font-mono text-slate-300 pt-1">
+                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Uppercase (A-Z)</div>
+                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Lowercase (a-z)</div>
+                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Numbers (0-9)</div>
+                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Symbols (!@#$...)</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="flex items-center justify-between pt-4 border-t border-slate-700">
                         <a href="?step=2" class="text-xs text-slate-400 hover:text-white">&larr; Back to Database</a>
                         <button type="submit" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
@@ -3412,7 +3631,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['LAST_ACTIVITY'] = time();
 
             require_once __DIR__ . '/database.php';
-            Database::logAudit('LOGIN', 'SYSTEM', DEFAULT_POLICY_NAME, $username, 'Successful AD LDAP login', $username);
+            $isFallback = !empty($authResult['user']['isFallbackAdmin']);
+            $logMsg = $isFallback 
+                ? 'Successful Emergency Fallback Local Admin login (LDAP connection failure / disaster recovery)' 
+                : 'Successful AD LDAP login';
+            Database::logAudit('LOGIN', 'SYSTEM', DEFAULT_POLICY_NAME, $username, $logMsg, $username);
 
             header('Location: index.php');
             exit;
@@ -3535,6 +3758,15 @@ $csrfToken = getCsrfToken();
                     Must be a member of Group DN:<br>
                     <code class="text-[10px] text-blue-600 dark:text-blue-400 break-all font-mono"><?= htmlspecialchars(LDAP_AUTHORIZED_GROUP_DN) ?></code>
                 </div>
+
+                <?php if (defined('FALLBACK_ADMIN_ENABLED') && FALLBACK_ADMIN_ENABLED): ?>
+                <div class="p-2.5 bg-amber-50 dark:bg-amber-950/30 rounded-lg border border-amber-200 dark:border-amber-900/40 text-[11px] text-amber-800 dark:text-amber-300 flex items-start space-x-2">
+                    <i class="fa-solid fa-shield-halved text-amber-600 dark:text-amber-400 mt-0.5"></i>
+                    <div>
+                        <span class="font-semibold">LDAP Offline Fallback:</span> If your Active Directory DC is unreachable, use your emergency fallback administrator credentials.
+                    </div>
+                </div>
+                <?php endif; ?>
 
                 <button type="submit" class="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg shadow-sm transition flex items-center justify-center space-x-2">
                     <i class="fa-solid fa-right-to-bracket"></i>
@@ -4416,6 +4648,10 @@ M365_CLIENT_SECRET="${cfg.clientSecret}"
 
 # Master key used for AES-256-GCM encryption of private key passwords stored in database
 AUTH_MASTER_ENCRYPTION_KEY="eop_master_aes256_secret_key_2026_debian"
+
+# Emergency Non-LDAP Fallback Administrator Account (used if LDAP connection fails)
+FALLBACK_ADMIN_ENABLED=${cfg.fallbackAdminEnabled !== false ? 'true' : 'false'}
+FALLBACK_ADMIN_USER="${cfg.fallbackAdminUsername || 'eopadmin'}"
 `
   },
 
