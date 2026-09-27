@@ -1118,14 +1118,14 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
             <div className="flex items-center pl-3 border-l border-slate-200 dark:border-slate-800 space-x-2.5">
               <div className="text-right">
                 <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center justify-end space-x-1">
-                  <span>{loginUsername}</span>
+                  <span>{loginUsername === 'jsmith' ? 'John Smith' : loginUsername}</span>
                   <span className="bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40 text-[10px] font-semibold px-1.5 py-0.2 rounded flex items-center space-x-0.5">
                     <UserCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                     <span>AD Authorized</span>
                   </span>
                 </div>
                 <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[180px]" title={config.ldapGroupDn}>
-                  {config.ldapDomain}\\{loginUsername}
+                  {config.ldapDomain}\{loginUsername}
                 </div>
               </div>
             </div>
