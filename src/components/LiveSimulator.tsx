@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { AppConfig, ListItem, ListType, AuditLogEntry, LdapDbConfig, EopAuthConfig } from '../types';
 import {
   ShieldCheck,
@@ -31,7 +31,9 @@ import {
   Eye,
   EyeOff,
   FileKey,
-  ArrowLeft
+  ArrowLeft,
+  Sparkles,
+  Split
 } from 'lucide-react';
 
 interface LiveSimulatorProps {
@@ -84,6 +86,11 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
+  const [showSmartSortModal, setShowSmartSortModal] = useState(false);
+  const [smartSortTarget, setSmartSortTarget] = useState<'blocked' | 'allowed'>('blocked');
+  const [smartSortText, setSmartSortText] = useState('');
+  const [smartSortNote, setSmartSortNote] = useState('');
+  const [smartSortError, setSmartSortError] = useState<string | null>(null);
   const [singleValue, setSingleValue] = useState('');
   const [singleNote, setSingleNote] = useState('');
   const [bulkText, setBulkText] = useState('');
@@ -537,6 +544,211 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
       type: duplicateCount > 0 ? 'warning' : 'success',
       text: msg
     });
+  };
+
+  // Smart Sorter classification engine (auto-sorts senders and domains)
+  const smartSortTriage = useMemo(() => {
+    const lines = smartSortText.split('\n');
+    const senders: { value: string; note: string; isDuplicate: boolean; duplicateReason?: string }[] = [];
+    const domains: { value: string; note: string; isDuplicate: boolean; duplicateReason?: string }[] = [];
+    const invalid: { value: string; line: string; reason: string }[] = [];
+
+    const targetSendersList = smartSortTarget === 'blocked' ? blockedSenders : allowedSenders;
+    const targetDomainsList = smartSortTarget === 'blocked' ? blockedDomains : allowedDomains;
+
+    const existingSenders = new Set(
+      targetSendersList
+        .filter((i) => i.policy_name === activePolicy)
+        .map((i) => i.value.toLowerCase())
+    );
+    const existingDomains = new Set(
+      targetDomainsList
+        .filter((i) => i.policy_name === activePolicy)
+        .map((i) => i.value.toLowerCase())
+    );
+
+    const seenSendersInBatch = new Set<string>();
+    const seenDomainsInBatch = new Set<string>();
+
+    for (const rawLine of lines) {
+      const trimmed = rawLine.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const parts = trimmed.split(',');
+      const val = parts[0]?.trim().toLowerCase();
+      const note = parts[1]?.trim() || smartSortNote.trim() || 'Smart Auto-Sorted';
+
+      if (!val) continue;
+
+      if (val.includes('@')) {
+        // Classified as Sender Email
+        if (!val.includes('.') || val.length < 5 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
+          invalid.push({ value: val, line: trimmed, reason: 'Invalid email address format' });
+        } else {
+          const isDup = existingSenders.has(val) || seenSendersInBatch.has(val);
+          senders.push({
+            value: val,
+            note,
+            isDuplicate: isDup,
+            duplicateReason: existingSenders.has(val)
+              ? `Already in ${smartSortTarget === 'blocked' ? 'Blocked' : 'Allowed'} Senders table`
+              : 'Duplicate within batch',
+          });
+          seenSendersInBatch.add(val);
+        }
+      } else {
+        // Classified as Domain Name
+        const cleanDomain = val.startsWith('*.') ? val.substring(2) : val;
+        if (!cleanDomain.includes('.') || cleanDomain.length < 3) {
+          invalid.push({ value: val, line: trimmed, reason: 'Invalid domain name format' });
+        } else {
+          const isDup = existingDomains.has(val) || seenDomainsInBatch.has(val);
+          domains.push({
+            value: val,
+            note,
+            isDuplicate: isDup,
+            duplicateReason: existingDomains.has(val)
+              ? `Already in ${smartSortTarget === 'blocked' ? 'Blocked' : 'Allowed'} Domains table`
+              : 'Duplicate within batch',
+          });
+          seenDomainsInBatch.add(val);
+        }
+      }
+    }
+
+    const validSenders = senders.filter((s) => !s.isDuplicate);
+    const validDomains = domains.filter((d) => !d.isDuplicate);
+    const duplicateSendersCount = senders.filter((s) => s.isDuplicate).length;
+    const duplicateDomainsCount = domains.filter((d) => d.isDuplicate).length;
+
+    return {
+      senders,
+      domains,
+      invalid,
+      validSenders,
+      validDomains,
+      duplicateCount: duplicateSendersCount + duplicateDomainsCount,
+      duplicateSendersCount,
+      duplicateDomainsCount,
+      totalValid: validSenders.length + validDomains.length,
+    };
+  }, [
+    smartSortText,
+    smartSortTarget,
+    smartSortNote,
+    activePolicy,
+    allowedSenders,
+    blockedSenders,
+    allowedDomains,
+    blockedDomains,
+  ]);
+
+  // Execute Smart Sort import
+  const handleExecuteSmartSort = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSmartSortError(null);
+
+    const {
+      validSenders,
+      validDomains,
+      duplicateCount,
+      duplicateSendersCount,
+      duplicateDomainsCount,
+      invalid,
+    } = smartSortTriage;
+
+    if (validSenders.length === 0 && validDomains.length === 0) {
+      if (duplicateCount > 0) {
+        setSmartSortError(
+          `All ${duplicateCount} entries already exist in the database for policy "${activePolicy}". No duplicates were added.`
+        );
+      } else if (invalid.length > 0) {
+        setSmartSortError('All entries in the list had invalid syntax. Please verify email and domain formats.');
+      } else {
+        setSmartSortError('Please paste at least one sender email or domain name.');
+      }
+      return;
+    }
+
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+    const newSenderItems: ListItem[] = validSenders.map((s, idx) => ({
+      id: Date.now() + Math.floor(Math.random() * 100000) + idx,
+      policy_name: activePolicy,
+      value: s.value,
+      note: s.note,
+      added_by: loginUsername,
+      created_at: now,
+      updated_at: now,
+    }));
+
+    const newDomainItems: ListItem[] = validDomains.map((d, idx) => ({
+      id: Date.now() + 500000 + Math.floor(Math.random() * 100000) + idx,
+      policy_name: activePolicy,
+      value: d.value,
+      note: d.note,
+      added_by: loginUsername,
+      created_at: now,
+      updated_at: now,
+    }));
+
+    const targetLabel = smartSortTarget === 'blocked' ? 'Blocked' : 'Allowed';
+
+    if (smartSortTarget === 'blocked') {
+      if (newSenderItems.length > 0) {
+        setBlockedSenders((prev) => [...newSenderItems, ...prev]);
+        logAction(
+          'ADD',
+          'blocked_senders',
+          `${newSenderItems.length} senders`,
+          `Smart-sorted ${newSenderItems.length} senders into eop_blocked_senders`
+        );
+      }
+      if (newDomainItems.length > 0) {
+        setBlockedDomains((prev) => [...newDomainItems, ...prev]);
+        logAction(
+          'ADD',
+          'blocked_domains',
+          `${newDomainItems.length} domains`,
+          `Smart-sorted ${newDomainItems.length} domains into eop_blocked_domains`
+        );
+      }
+    } else {
+      if (newSenderItems.length > 0) {
+        setAllowedSenders((prev) => [...newSenderItems, ...prev]);
+        logAction(
+          'ADD',
+          'allowed_senders',
+          `${newSenderItems.length} senders`,
+          `Smart-sorted ${newSenderItems.length} senders into eop_allowed_senders`
+        );
+      }
+      if (newDomainItems.length > 0) {
+        setAllowedDomains((prev) => [...newDomainItems, ...prev]);
+        logAction(
+          'ADD',
+          'allowed_domains',
+          `${newDomainItems.length} domains`,
+          `Smart-sorted ${newDomainItems.length} domains into eop_allowed_domains`
+        );
+      }
+    }
+
+    const msg =
+      `Smart Sort Complete: Sorted ${newSenderItems.length} senders into ${targetLabel} Senders (eop_${smartSortTarget}_senders) and ${newDomainItems.length} domains into ${targetLabel} Domains (eop_${smartSortTarget}_domains).` +
+      (duplicateCount > 0
+        ? ` Skipped ${duplicateCount} duplicate entries (${duplicateSendersCount} senders, ${duplicateDomainsCount} domains).`
+        : '');
+
+    setBannerMessage({
+      type: duplicateCount > 0 ? 'warning' : 'success',
+      text: msg,
+    });
+
+    setShowSmartSortModal(false);
+    setSmartSortText('');
+    setSmartSortNote('');
+    setSmartSortError(null);
   };
 
   // Delete item
@@ -1121,6 +1333,19 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               >
                 <Upload className="w-3.5 h-3.5" />
                 <span>Bulk Import</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setSmartSortTarget(activeTab.includes('blocked') ? 'blocked' : 'allowed');
+                  setSmartSortError(null);
+                  setShowSmartSortModal(true);
+                }}
+                className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer"
+                title="Paste a mixed list of emails and domains to auto-sort into Senders and Domains tables"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                <span>Smart Sort &amp; Import</span>
               </button>
 
               <button
@@ -2097,6 +2322,335 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 >
                   Import Items
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Smart Sort & Mixed Import Modal */}
+      {showSmartSortModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-2xl w-full p-6 border border-slate-200 dark:border-slate-800 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white flex items-center justify-center shadow-xs">
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Smart Sorter: Senders &amp; Domains
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Paste a mixed list of email addresses and domain names. They will automatically be sorted into the proper tables.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSmartSortModal(false)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Error Banner */}
+            {smartSortError && (
+              <div className="mt-4 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <div className="leading-snug">{smartSortError}</div>
+              </div>
+            )}
+
+            <form onSubmit={handleExecuteSmartSort} className="mt-4 space-y-4 text-xs">
+              {/* Target List Selector */}
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  1. Target List Category (Where should these items be sorted?):
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSmartSortTarget('blocked');
+                      if (smartSortError) setSmartSortError(null);
+                    }}
+                    className={`p-3 rounded-xl border text-left transition flex items-center space-x-3 cursor-pointer ${
+                      smartSortTarget === 'blocked'
+                        ? 'border-rose-500 bg-rose-50/70 dark:bg-rose-950/40 text-rose-900 dark:text-rose-200 ring-2 ring-rose-500/20 shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 hover:border-rose-300 dark:hover:border-rose-700 text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <Ban className={`w-5 h-5 shrink-0 ${smartSortTarget === 'blocked' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'}`} />
+                    <div>
+                      <div className="font-bold text-xs">Blocked Items</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+                        &rarr; eop_blocked_senders &amp; eop_blocked_domains
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSmartSortTarget('allowed');
+                      if (smartSortError) setSmartSortError(null);
+                    }}
+                    className={`p-3 rounded-xl border text-left transition flex items-center space-x-3 cursor-pointer ${
+                      smartSortTarget === 'allowed'
+                        ? 'border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 ring-2 ring-emerald-500/20 shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700 text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <ShieldCheck className={`w-5 h-5 shrink-0 ${smartSortTarget === 'allowed' ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}`} />
+                    <div>
+                      <div className="font-bold text-xs">Allowed Items</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+                        &rarr; eop_allowed_senders &amp; eop_allowed_domains
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Paste Mixed Entries Input */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300">
+                    2. Paste Mixed List (Emails and/or Domains, one per line):
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (smartSortTarget === 'blocked') {
+                          setSmartSortText(
+                            "phish-verify@account-update-sec.com, Phishing alert\nmalicious-spammer@darkweb-breach.org, Credential harvesting\nfake-invoicing@payroll-scam.net, Impersonation scam\nsuspicious-phish-domain.biz, Malicious domain\n*.stealer-redirect.top, Wildcard tracking domain\ncompromised-portal-auth.info, Malware distribution"
+                          );
+                        } else {
+                          setSmartSortText(
+                            "invoicing@strategic-partner.com, Supply chain vendor\nsupport@saas-monitor.io, Cloud incident webhook\nalerts@enterprise-metrics.net, Infrastructure alerting\ntrustedpartner.com, Primary vendor domain\n*.secure-cdn-vendor.net, Wildcard asset CDN\nglobal-logistics.org, Primary shipping portal"
+                          );
+                        }
+                      }}
+                      className="text-[11px] text-purple-600 dark:text-purple-400 hover:underline font-semibold"
+                    >
+                      Load Sample {smartSortTarget === 'blocked' ? 'Blocked' : 'Allowed'} List
+                    </button>
+                    <span className="text-slate-300 dark:text-slate-600">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setSmartSortText('')}
+                      className="text-[11px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                <textarea
+                  rows={7}
+                  required
+                  value={smartSortText}
+                  onChange={(e) => {
+                    setSmartSortText(e.target.value);
+                    if (smartSortError) setSmartSortError(null);
+                  }}
+                  placeholder={
+                    smartSortTarget === 'blocked'
+                      ? "spammer@phishing-target.com, Fraudulent sender\nmalicious-domain.xyz, Phishing host domain\nbad-bot@automated-junk.net, Scraping bot\n*.credential-harvest.top, Wildcard malware domain"
+                      : "partner-finance@company.com, Invoicing contact\nvendor-portal.com, Authorized supply portal\nalerts@critical-status.io, Monitoring webhook\n*.cdn-trusted-assets.net, Wildcard CDN"
+                  }
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-3 text-slate-900 dark:text-white font-mono text-[11px] focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
+                />
+              </div>
+
+              {/* Default Note */}
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Default Change Ticket / Reason Note <span className="text-slate-400 font-normal">(used if line has no comma note)</span>:
+                </label>
+                <input
+                  type="text"
+                  value={smartSortNote}
+                  onChange={(e) => setSmartSortNote(e.target.value)}
+                  placeholder="e.g. Incident Response Ticket #SEC-9842 Auto-Triage"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:outline-hidden"
+                />
+              </div>
+
+              {/* Real-Time Classification & Deduplication Preview Panel */}
+              {smartSortText.trim() && (
+                <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white">
+                    <span className="flex items-center gap-1.5">
+                      <Split className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                      <span>Live Classification &amp; Routing Preview</span>
+                    </span>
+                    <span className="text-[11px] font-normal text-slate-500 dark:text-slate-400">
+                      Policy: <strong className="text-slate-700 dark:text-slate-200">{activePolicy}</strong>
+                    </span>
+                  </div>
+
+                  {/* Summary Badges */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                    <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60">
+                      <div className="text-[10px] text-blue-700 dark:text-blue-300 font-semibold uppercase tracking-wider">
+                        Senders (Emails)
+                      </div>
+                      <div className="text-base font-bold text-blue-900 dark:text-blue-100 mt-0.5">
+                        {smartSortTriage.validSenders.length}
+                        {smartSortTriage.duplicateSendersCount > 0 && (
+                          <span className="text-[10px] font-normal text-amber-600 dark:text-amber-400 ml-1">
+                            ({smartSortTriage.duplicateSendersCount} dup)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-2 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-900/60">
+                      <div className="text-[10px] text-indigo-700 dark:text-indigo-300 font-semibold uppercase tracking-wider">
+                        Domains
+                      </div>
+                      <div className="text-base font-bold text-indigo-900 dark:text-indigo-100 mt-0.5">
+                        {smartSortTriage.validDomains.length}
+                        {smartSortTriage.duplicateDomainsCount > 0 && (
+                          <span className="text-[10px] font-normal text-amber-600 dark:text-amber-400 ml-1">
+                            ({smartSortTriage.duplicateDomainsCount} dup)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60">
+                      <div className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold uppercase tracking-wider">
+                        Total New
+                      </div>
+                      <div className="text-base font-bold text-emerald-900 dark:text-emerald-100 mt-0.5">
+                        {smartSortTriage.totalValid}
+                      </div>
+                    </div>
+
+                    <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60">
+                      <div className="text-[10px] text-amber-700 dark:text-amber-300 font-semibold uppercase tracking-wider">
+                        Duplicates Skipped
+                      </div>
+                      <div className="text-base font-bold text-amber-900 dark:text-amber-100 mt-0.5">
+                        {smartSortTriage.duplicateCount}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Classification Breakdown Columns */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px] pt-1">
+                    {/* Senders Column */}
+                    <div className="border border-slate-200 dark:border-slate-700/80 rounded-lg p-2.5 bg-white dark:bg-slate-900">
+                      <div className="font-semibold text-slate-800 dark:text-slate-200 mb-1.5 flex items-center justify-between">
+                        <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
+                          <Mail className="w-3.5 h-3.5" />
+                          <span>Routing to <code>eop_{smartSortTarget}_senders</code>:</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono">{smartSortTriage.senders.length} items</span>
+                      </div>
+                      {smartSortTriage.senders.length === 0 ? (
+                        <div className="text-slate-400 italic text-[10px]">No email addresses detected</div>
+                      ) : (
+                        <ul className="space-y-1 font-mono max-h-28 overflow-y-auto pr-1">
+                          {smartSortTriage.senders.map((s, idx) => (
+                            <li
+                              key={idx}
+                              className={`flex items-center justify-between px-1.5 py-0.5 rounded text-[10px] ${
+                                s.isDuplicate
+                                  ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 line-through'
+                                  : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200'
+                              }`}
+                            >
+                              <span className="truncate max-w-[200px]">{s.value}</span>
+                              <span className="text-[9px] shrink-0 font-sans ml-1">
+                                {s.isDuplicate ? '(Duplicate: skip)' : '(New)'}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    {/* Domains Column */}
+                    <div className="border border-slate-200 dark:border-slate-700/80 rounded-lg p-2.5 bg-white dark:bg-slate-900">
+                      <div className="font-semibold text-slate-800 dark:text-slate-200 mb-1.5 flex items-center justify-between">
+                        <span className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400">
+                          <Globe className="w-3.5 h-3.5" />
+                          <span>Routing to <code>eop_{smartSortTarget}_domains</code>:</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono">{smartSortTriage.domains.length} items</span>
+                      </div>
+                      {smartSortTriage.domains.length === 0 ? (
+                        <div className="text-slate-400 italic text-[10px]">No domains detected</div>
+                      ) : (
+                        <ul className="space-y-1 font-mono max-h-28 overflow-y-auto pr-1">
+                          {smartSortTriage.domains.map((d, idx) => (
+                            <li
+                              key={idx}
+                              className={`flex items-center justify-between px-1.5 py-0.5 rounded text-[10px] ${
+                                d.isDuplicate
+                                  ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 line-through'
+                                  : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200'
+                              }`}
+                            >
+                              <span className="truncate max-w-[200px]">{d.value}</span>
+                              <span className="text-[9px] shrink-0 font-sans ml-1">
+                                {d.isDuplicate ? '(Duplicate: skip)' : '(New)'}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Invalid syntax warnings */}
+                  {smartSortTriage.invalid.length > 0 && (
+                    <div className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60 text-rose-800 dark:text-rose-300 text-[10px]">
+                      <span className="font-bold">Notice:</span> {smartSortTriage.invalid.length} line(s) have invalid email/domain syntax and will be skipped:
+                      <span className="font-mono ml-1 font-normal truncate inline-block max-w-[250px] align-bottom">
+                        {smartSortTriage.invalid.map((i) => i.value).join(', ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Modal Actions */}
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800">
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Target: <strong>{smartSortTarget === 'blocked' ? 'Blocked' : 'Allowed'}</strong> &bull; Policy: <strong>{activePolicy}</strong>
+                </span>
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowSmartSortModal(false)}
+                    className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={smartSortTriage.totalValid === 0}
+                    className={`px-5 py-2 text-white font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition ${
+                      smartSortTriage.totalValid === 0
+                        ? 'bg-slate-400 dark:bg-slate-600 cursor-not-allowed'
+                        : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 cursor-pointer'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <span>
+                      Sort &amp; Import {smartSortTriage.totalValid > 0 ? `${smartSortTriage.totalValid} Items` : 'Items'}
+                    </span>
+                  </button>
+                </div>
               </div>
             </form>
           </div>

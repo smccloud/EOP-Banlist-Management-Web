@@ -1466,6 +1466,11 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                         <i class="fa-solid fa-file-import"></i>
                         <span>Bulk Import</span>
                     </button>
+                    <button onclick="document.getElementById('smartSortModal').classList.remove('hidden')" 
+                            class="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-md shadow-xs flex items-center space-x-1.5 transition cursor-pointer">
+                        <i class="fa-solid fa-wand-magic-sparkles text-amber-300"></i>
+                        <span>Smart Sort &amp; Import</span>
+                    </button>
                     <a href="actions.php?action=export_csv&list=<?= $currentTab ?>&policy=<?= urlencode($selectedPolicy) ?>&csrf=<?= $csrfToken ?>" 
                        class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold rounded-md flex items-center space-x-1.5 transition">
                         <i class="fa-solid fa-file-arrow-down"></i>
@@ -2122,6 +2127,70 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
         </div>
     </div>
 
+    <!-- Smart Sort & Import Modal (Auto-sorts Senders & Domains) -->
+    <div id="smartSortModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-900 rounded-xl shadow-xl max-w-xl w-full p-6 border border-slate-200 dark:border-slate-800">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center space-x-2">
+                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 text-white flex items-center justify-center text-xs">
+                        <i class="fa-solid fa-wand-magic-sparkles text-amber-300"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-slate-900 dark:text-white">Smart Sort: Senders &amp; Domains</h3>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">Auto-routes emails to Senders table and domains to Domains table</p>
+                    </div>
+                </div>
+                <button onclick="document.getElementById('smartSortModal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <form method="POST" action="actions.php">
+                <input type="hidden" name="action" value="smart_sort_import">
+                <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+
+                <div class="mb-4">
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Target List Category:</label>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="flex items-center space-x-2 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-purple-400 cursor-pointer text-xs">
+                            <input type="radio" name="target_mode" value="blocked" <?= str_contains($currentTab, 'blocked') ? 'checked' : '' ?> class="text-purple-600">
+                            <span><strong>Blocked Items</strong> (senders &amp; domains)</span>
+                        </label>
+                        <label class="flex items-center space-x-2 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-purple-400 cursor-pointer text-xs">
+                            <input type="radio" name="target_mode" value="allowed" <?= str_contains($currentTab, 'allowed') ? 'checked' : '' ?> class="text-purple-600">
+                            <span><strong>Allowed Items</strong> (senders &amp; domains)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Paste Mixed List (Emails and/or Domains, one per line):
+                    </label>
+                    <textarea name="bulk_data" rows="7" required placeholder="user@external.com, Sample sender note&#10;partner-domain.com, Domain note&#10;alert@external.org&#10;*.wildcard-domain.net"
+                              class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs rounded-lg p-3 font-mono focus:ring-2 focus:ring-purple-500 focus:outline-hidden"></textarea>
+                    <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                        Emails with <code>@</code> are routed to the Senders table; domain names are routed to the Domains table. Existing duplicates will be skipped.
+                    </p>
+                </div>
+
+                <div class="mb-4">
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Default Ticket # / Justification Note:</label>
+                    <input type="text" name="default_note" placeholder="e.g. Bulk auto-classified intake Ticket #INC-9481" 
+                           class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:outline-hidden">
+                </div>
+
+                <div class="flex items-center justify-end space-x-2">
+                    <button type="button" onclick="document.getElementById('smartSortModal').classList.add('hidden')" class="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">Cancel</button>
+                    <button type="submit" class="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 cursor-pointer">
+                        <i class="fa-solid fa-wand-magic-sparkles text-amber-300"></i>
+                        <span>Sort &amp; Import Items</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Footer -->
     <footer class="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-4 mt-auto text-center text-xs text-slate-400 dark:text-slate-500 transition-colors duration-200">
         Exchange Online Protection Policy Manager &bull; Host: Debian Linux &bull; Storage: Remote MariaDB &bull; Auth: Active Directory LDAP (Port 389/636)
@@ -2484,6 +2553,97 @@ if ($action === 'bulk_import') {
     }
 
     header("Location: index.php?policy=" . urlencode($policyName) . "&tab=" . urlencode($listType));
+    exit;
+}
+
+// --------------------------------------------------------------------------
+// 3b. Smart Sort & Import (Auto-sort Mixed List of Senders and Domains)
+// --------------------------------------------------------------------------
+if ($action === 'smart_sort_import') {
+    $targetMode = $_POST['target_mode'] ?? 'blocked'; // 'allowed' or 'blocked'
+    if ($targetMode !== 'allowed' && $targetMode !== 'blocked') {
+        $targetMode = 'blocked';
+    }
+
+    $bulkData = trim($_POST['bulk_data'] ?? '');
+    $defaultNote = trim($_POST['default_note'] ?? 'Smart Auto-Sorted Import');
+    $lines = explode("\n", str_replace("\r", "", $bulkData));
+
+    $senders = [];
+    $domains = [];
+    $skippedDuplicates = 0;
+    $invalidLines = 0;
+
+    $sendersListType = ($targetMode === 'blocked') ? 'blocked_senders' : 'allowed_senders';
+    $domainsListType = ($targetMode === 'blocked') ? 'blocked_domains' : 'allowed_domains';
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) continue;
+
+        $parts = explode(',', $line, 2);
+        $val = strtolower(trim($parts[0]));
+        $note = isset($parts[1]) && trim($parts[1]) !== '' ? trim($parts[1]) : $defaultNote;
+
+        if ($val === '') continue;
+
+        if (str_contains($val, '@')) {
+            // Sender Email Address
+            if (!isValidEmail($val)) {
+                $invalidLines++;
+                continue;
+            }
+            if (Database::itemExists($sendersListType, $policyName, $val)) {
+                $skippedDuplicates++;
+                continue;
+            }
+            $senders[] = ['value' => $val, 'note' => $note];
+        } else {
+            // Domain Name
+            if (!isValidDomain($val)) {
+                $invalidLines++;
+                continue;
+            }
+            if (Database::itemExists($domainsListType, $policyName, $val)) {
+                $skippedDuplicates++;
+                continue;
+            }
+            $domains[] = ['value' => $val, 'note' => $note];
+        }
+    }
+
+    $insertedSenders = 0;
+    $insertedDomains = 0;
+
+    if (!empty($senders)) {
+        $resSenders = Database::bulkInsert($sendersListType, $policyName, $senders, $user['username']);
+        $insertedSenders = $resSenders['inserted'];
+        $skippedDuplicates += $resSenders['skipped'];
+    }
+
+    if (!empty($domains)) {
+        $resDomains = Database::bulkInsert($domainsListType, $policyName, $domains, $user['username']);
+        $insertedDomains = $resDomains['inserted'];
+        $skippedDuplicates += $resDomains['skipped'];
+    }
+
+    $totalInserted = $insertedSenders + $insertedDomains;
+    $targetLabel = ucfirst($targetMode);
+
+    if ($totalInserted === 0 && $skippedDuplicates > 0) {
+        setFlash('warning', "Smart Sort: All {$skippedDuplicates} parsed items already exist in {$targetLabel} lists for policy '{$policyName}'. No duplicates were added.");
+    } elseif ($totalInserted === 0) {
+        setFlash('error', "No valid email addresses or domain names were found in input.");
+    } else {
+        $msg = "Smart Sort Complete: Sorted {$totalInserted} items into {$targetLabel} lists ({$insertedSenders} senders to eop_{$sendersListType}, {$insertedDomains} domains to eop_{$domainsListType}).";
+        if ($skippedDuplicates > 0) {
+            $msg .= " Skipped {$skippedDuplicates} duplicate entries.";
+        }
+        setFlash('success', $msg);
+    }
+
+    $redirectTab = $targetMode === 'blocked' ? 'blocked_senders' : 'allowed_senders';
+    header("Location: index.php?policy=" . urlencode($policyName) . "&tab=" . urlencode($redirectTab));
     exit;
 }
 
