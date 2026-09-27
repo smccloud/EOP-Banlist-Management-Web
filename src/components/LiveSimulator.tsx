@@ -43,13 +43,15 @@ interface LiveSimulatorProps {
   initialTab?: ListType | 'sync' | 'audit' | 'config_center' | 'ldap_db';
   onLeaveConfigPage?: () => void;
   onTabChange?: (tab: ListType | 'sync' | 'audit' | 'config_center' | 'ldap_db') => void;
+  triggerPushActionCount?: number;
 }
 
 export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   config,
   initialTab = 'allowed_senders',
   onLeaveConfigPage,
-  onTabChange
+  onTabChange,
+  triggerPushActionCount
 }) => {
   // Authentication state
   const [isAuthenticated, setIsAuthenticated] = useState(true);
@@ -322,6 +324,23 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
       ip_address: '192.168.10.105',
     },
   ]);
+
+  // Trigger push modal when instructed externally (e.g. from top Navbar)
+  useEffect(() => {
+    if (triggerPushActionCount && triggerPushActionCount > 0) {
+      setShowPushConfirmModal(true);
+    }
+  }, [triggerPushActionCount]);
+
+  // Total count of staged entries for active policy
+  const totalStagedItems = useMemo(() => {
+    return (
+      allowedSenders.filter((i) => i.policy_name === activePolicy).length +
+      blockedSenders.filter((i) => i.policy_name === activePolicy).length +
+      allowedDomains.filter((i) => i.policy_name === activePolicy).length +
+      blockedDomains.filter((i) => i.policy_name === activePolicy).length
+    );
+  }, [allowedSenders, blockedSenders, allowedDomains, blockedDomains, activePolicy]);
 
   // Helper to get active list state
   const getCurrentList = (): ListItem[] => {
@@ -1275,15 +1294,18 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               </select>
             </div>
 
-            {/* Quick Push from MariaDB to EOP Button */}
+            {/* Prominent Push Changes from MariaDB to EOP Button */}
             <button
               onClick={() => setShowPushConfirmModal(true)}
               disabled={syncLoading}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-xs transition cursor-pointer disabled:opacity-50"
+              className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 shadow-sm transition cursor-pointer disabled:opacity-50 ring-2 ring-indigo-500/20"
               title="Push changes from MariaDB tables to Exchange Online Protection (EOP)"
             >
               <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">{syncLoading && syncActionType === 'push' ? 'Pushing...' : 'Push to EOP'}</span>
+              <span>{syncLoading && syncActionType === 'push' ? 'Pushing to EOP...' : 'Push to EOP'}</span>
+              <span className="hidden sm:inline-block ml-1 px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-normal">
+                {totalStagedItems} staged
+              </span>
             </button>
 
             {/* Direct Configuration Page Link / Back Toggle */}
@@ -1575,11 +1597,14 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               <button
                 onClick={() => setShowPushConfirmModal(true)}
                 disabled={syncLoading}
-                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer disabled:opacity-50"
+                className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer disabled:opacity-50 ring-2 ring-indigo-500/20"
                 title="Push all staged changes from MariaDB tables to Exchange Online Protection (EOP)"
               >
                 <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
                 <span>{syncLoading && syncActionType === 'push' ? 'Pushing to EOP...' : 'Push to EOP'}</span>
+                <span className="hidden sm:inline-block px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-normal">
+                  {totalStagedItems}
+                </span>
               </button>
             </div>
           )}
@@ -1673,10 +1698,10 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 <button
                   onClick={() => setShowPushConfirmModal(true)}
                   disabled={syncLoading}
-                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition disabled:opacity-50 cursor-pointer"
+                  className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition disabled:opacity-50 cursor-pointer ring-2 ring-indigo-500/20"
                 >
-                  <Download className={`w-4 h-4 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
-                  <span>{syncLoading && syncActionType === 'push' ? 'Pushing to EOP...' : 'Manual Push to Exchange Online (Admin)'}</span>
+                  <CloudUpload className={`w-4 h-4 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
+                  <span>{syncLoading && syncActionType === 'push' ? 'Pushing Changes to EOP...' : 'Push Changes to Exchange Online (Set-HostedContentFilterPolicy)'}</span>
                 </button>
               </div>
             </div>
@@ -2398,8 +2423,20 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   className="w-full text-xs pl-8 pr-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                Active Table: <span className="font-semibold text-blue-600 dark:text-blue-400">eop_{activeTab}</span>
+              <div className="flex items-center space-x-3">
+                <div className="text-xs text-slate-500 dark:text-slate-400 font-mono hidden sm:inline">
+                  Table: <span className="font-semibold text-blue-600 dark:text-blue-400">eop_{activeTab}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPushConfirmModal(true)}
+                  disabled={syncLoading}
+                  className="px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
+                  title={`Push changes in MariaDB for policy "${activePolicy}" to Exchange Online Protection`}
+                >
+                  <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
+                  <span>Push to EOP</span>
+                </button>
               </div>
             </div>
 
@@ -2957,15 +2994,35 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
       {showPushConfirmModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
           <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-3">
-              <Download className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center mb-3">
+              <CloudUpload className="w-5 h-5" />
             </div>
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">
-              Push to Exchange Online Protection?
+              Push Changes to Exchange Online Protection?
             </h3>
-            <p className="text-xs text-slate-600 dark:text-slate-400 mb-4 leading-relaxed">
-              This will execute <code className="text-indigo-600 dark:text-indigo-400 font-bold">Set-HostedContentFilterPolicy</code> for policy <strong className="text-slate-900 dark:text-white">{activePolicy}</strong> with all allowed senders, blocked senders, allowed domains, and blocked domains currently staged in MariaDB.
+            <p className="text-xs text-slate-600 dark:text-slate-400 mb-3 leading-relaxed">
+              This will execute <code className="text-blue-600 dark:text-blue-400 font-bold">Set-HostedContentFilterPolicy</code> for policy <strong className="text-slate-900 dark:text-white">{activePolicy}</strong> with all allowed senders, blocked senders, allowed domains, and blocked domains currently staged in MariaDB.
             </p>
+
+            <div className="p-3 mb-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 text-xs space-y-1">
+              <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                Items to Deploy ({totalStagedItems} Total):
+              </div>
+              <div className="grid grid-cols-2 gap-1 text-[11px] font-mono">
+                <div className="text-emerald-700 dark:text-emerald-300">
+                  &bull; {allowedSenders.filter((i) => i.policy_name === activePolicy).length} Allowed Senders
+                </div>
+                <div className="text-rose-700 dark:text-rose-300">
+                  &bull; {blockedSenders.filter((i) => i.policy_name === activePolicy).length} Blocked Senders
+                </div>
+                <div className="text-emerald-700 dark:text-emerald-300">
+                  &bull; {allowedDomains.filter((i) => i.policy_name === activePolicy).length} Allowed Domains
+                </div>
+                <div className="text-rose-700 dark:text-rose-300">
+                  &bull; {blockedDomains.filter((i) => i.policy_name === activePolicy).length} Blocked Domains
+                </div>
+              </div>
+            </div>
 
             <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
@@ -2981,10 +3038,10 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   setShowPushConfirmModal(false);
                   handleTriggerSync('push');
                 }}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer flex items-center gap-1.5"
+                className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer flex items-center gap-1.5"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Execute Push</span>
+                <CloudUpload className="w-3.5 h-3.5" />
+                <span>Execute Push to EOP</span>
               </button>
             </div>
           </div>

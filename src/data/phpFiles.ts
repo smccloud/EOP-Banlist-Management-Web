@@ -1505,7 +1505,7 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                     <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
                     <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
                     <button type="submit" 
-                            class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-xs transition cursor-pointer"
+                            class="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 shadow-xs transition cursor-pointer"
                             title="Push changes from MariaDB tables to Exchange Online Protection (EOP)">
                         <i class="fa-solid fa-cloud-arrow-up"></i>
                         <span>Push to EOP</span>
@@ -1682,7 +1682,7 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                         <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
                         <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
                         <button type="submit" 
-                                class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-md shadow-xs flex items-center space-x-1.5 transition cursor-pointer"
+                                class="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold rounded-md shadow-xs flex items-center space-x-1.5 transition cursor-pointer"
                                 title="Push all changes from MariaDB tables to Exchange Online Protection (EOP)">
                             <i class="fa-solid fa-cloud-arrow-up"></i>
                             <span>Push Changes to EOP</span>

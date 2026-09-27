@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Code, Settings, Server, Play, Download, Moon, Sun, Key, Lock, Sparkles } from 'lucide-react';
+import { Shield, Code, Settings, Server, Play, Download, Moon, Sun, Key, Lock, Sparkles, CloudUpload } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
 export type ActiveTab = 'simulator' | 'config_page' | 'wizard' | 'files' | 'config' | 'guide';
@@ -10,6 +10,7 @@ interface NavbarProps {
   onDownloadZip: () => void;
   isDownloading: boolean;
   isSetupLocked?: boolean;
+  onPushToEop?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -18,6 +19,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onDownloadZip,
   isDownloading,
   isSetupLocked = false,
+  onPushToEop,
 }) => {
   const { theme, toggleTheme } = useTheme();
 
@@ -131,8 +133,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           </nav>
 
-          {/* Action buttons: Dark Mode Toggle + One-Click Download ZIP */}
+          {/* Action buttons: Push to EOP + Dark Mode Toggle + One-Click Download ZIP */}
           <div className="flex items-center space-x-2">
+            {/* Push Changes to EOP Button */}
+            {onPushToEop && (
+              <button
+                onClick={onPushToEop}
+                className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-3.5 py-2 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
+                title="Push changes from MariaDB tables to Exchange Online Protection (EOP)"
+              >
+                <CloudUpload className="w-3.5 h-3.5" />
+                <span>Push to EOP</span>
+              </button>
+            )}
+
             {/* Dark Mode Toggle */}
             <button
               onClick={toggleTheme}
@@ -166,6 +180,15 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Mobile Navigation bar */}
       <div className="md:hidden flex border-t border-slate-200 dark:border-slate-800 bg-slate-50/95 dark:bg-slate-950/95 overflow-x-auto px-2 py-1.5 space-x-1 text-xs">
+        {onPushToEop && (
+          <button
+            onClick={onPushToEop}
+            className="px-3 py-1.5 rounded whitespace-nowrap font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 text-white flex items-center gap-1 shadow-xs cursor-pointer"
+          >
+            <CloudUpload className="w-3 h-3" />
+            <span>Push to EOP</span>
+          </button>
+        )}
         <button
           onClick={() => setActiveTab('simulator')}
           className={`px-3 py-1.5 rounded whitespace-nowrap font-medium ${activeTab === 'simulator' ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-400'}`}

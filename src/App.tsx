@@ -17,6 +17,12 @@ function AppContent() {
   const [isSetupLocked, setIsSetupLocked] = useState<boolean>(() => {
     return localStorage.getItem('eop_setup_completed') === 'true';
   });
+  const [pushTriggerCount, setPushTriggerCount] = useState<number>(0);
+
+  const handlePushToEop = () => {
+    setActiveTab('simulator');
+    setPushTriggerCount((prev) => prev + 1);
+  };
 
   // Generate and download full project ZIP archive
   const handleDownloadZip = async () => {
@@ -58,6 +64,7 @@ function AppContent() {
         onDownloadZip={handleDownloadZip}
         isDownloading={isDownloading}
         isSetupLocked={isSetupLocked}
+        onPushToEop={handlePushToEop}
       />
 
       {/* Main Content Area */}
@@ -67,6 +74,7 @@ function AppContent() {
             key="simulator"
             config={config}
             initialTab="allowed_senders"
+            triggerPushActionCount={pushTriggerCount}
             onTabChange={(tab) => {
               if (tab === 'config_center' || tab === 'ldap_db') {
                 setActiveTab('config_page');
