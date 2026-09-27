@@ -7,12 +7,16 @@ import { LiveSimulator } from './components/LiveSimulator';
 import { FileExplorer } from './components/FileExplorer';
 import { ConfigGenerator } from './components/ConfigGenerator';
 import { DebianGuide } from './components/DebianGuide';
+import { SetupWizard } from './components/SetupWizard';
 import { ThemeProvider } from './context/ThemeContext';
 
 function AppContent() {
   const [config, setConfig] = useState<AppConfig>(defaultAppConfig);
   const [activeTab, setActiveTab] = useState<ActiveTab>('simulator');
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isSetupLocked, setIsSetupLocked] = useState<boolean>(() => {
+    return localStorage.getItem('eop_setup_completed') === 'true';
+  });
 
   // Generate and download full project ZIP archive
   const handleDownloadZip = async () => {
@@ -53,6 +57,7 @@ function AppContent() {
         setActiveTab={setActiveTab}
         onDownloadZip={handleDownloadZip}
         isDownloading={isDownloading}
+        isSetupLocked={isSetupLocked}
       />
 
       {/* Main Content Area */}
@@ -80,6 +85,16 @@ function AppContent() {
                 setActiveTab('simulator');
               }
             }}
+          />
+        )}
+        {activeTab === 'wizard' && (
+          <SetupWizard
+            config={config}
+            setConfig={setConfig}
+            isLocked={isSetupLocked}
+            setIsLocked={setIsSetupLocked}
+            onFinishSetup={() => setActiveTab('simulator')}
+            onOpenConfigPage={() => setActiveTab('config_page')}
           />
         )}
         {activeTab === 'files' && <FileExplorer config={config} />}

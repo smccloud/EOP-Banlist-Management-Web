@@ -1,14 +1,15 @@
 import React from 'react';
-import { Shield, Code, Settings, Server, Play, Download, Moon, Sun, Key } from 'lucide-react';
+import { Shield, Code, Settings, Server, Play, Download, Moon, Sun, Key, Lock, Sparkles } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
-export type ActiveTab = 'simulator' | 'config_page' | 'files' | 'config' | 'guide';
+export type ActiveTab = 'simulator' | 'config_page' | 'wizard' | 'files' | 'config' | 'guide';
 
 interface NavbarProps {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
   onDownloadZip: () => void;
   isDownloading: boolean;
+  isSetupLocked?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -16,6 +17,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   setActiveTab,
   onDownloadZip,
   isDownloading,
+  isSetupLocked = false,
 }) => {
   const { theme, toggleTheme } = useTheme();
 
@@ -69,6 +71,26 @@ export const Navbar: React.FC<NavbarProps> = ({
                   : 'bg-indigo-200/80 dark:bg-indigo-900/70 text-indigo-800 dark:text-indigo-200'
               }`}>
                 Keys & LDAP
+              </span>
+            </button>
+
+            {/* Initial Setup Wizard Button */}
+            <button
+              onClick={() => setActiveTab('wizard')}
+              className={`flex items-center space-x-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                activeTab === 'wizard'
+                  ? 'bg-amber-600 text-white shadow-sm'
+                  : 'text-amber-800 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 hover:bg-amber-100 dark:hover:bg-amber-900/60'
+              }`}
+            >
+              {isSetupLocked ? <Lock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" /> : <Sparkles className="w-3.5 h-3.5 text-amber-500" />}
+              <span>Setup Wizard</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                isSetupLocked
+                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                  : 'bg-amber-200/80 dark:bg-amber-900/70 text-amber-900 dark:text-amber-100'
+              }`}>
+                {isSetupLocked ? 'Locked' : 'Wizard'}
               </span>
             </button>
 
@@ -156,6 +178,13 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <Key className="w-3 h-3" />
           <span>Config Page</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('wizard')}
+          className={`px-3 py-1.5 rounded whitespace-nowrap font-semibold flex items-center gap-1 ${activeTab === 'wizard' ? 'bg-amber-600 text-white' : 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50'}`}
+        >
+          {isSetupLocked ? <Lock className="w-3 h-3" /> : <Sparkles className="w-3 h-3 text-amber-500" />}
+          <span>Setup Wizard {isSetupLocked ? '(Locked)' : ''}</span>
         </button>
         <button
           onClick={() => setActiveTab('files')}
