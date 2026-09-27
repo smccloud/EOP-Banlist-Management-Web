@@ -11,6 +11,7 @@ interface NavbarProps {
   isDownloading: boolean;
   isSetupLocked?: boolean;
   onPushToEop?: () => void;
+  pendingChangesCount?: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -20,6 +21,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isDownloading,
   isSetupLocked = false,
   onPushToEop,
+  pendingChangesCount = 0,
 }) => {
   const { theme, toggleTheme } = useTheme();
 
@@ -140,10 +142,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 onClick={onPushToEop}
                 className="flex items-center space-x-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-3.5 py-2 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
-                title="Push changes from MariaDB tables to Exchange Online Protection (EOP)"
+                title="Push all pending changes across all tables to Exchange Online Protection (EOP)"
               >
                 <CloudUpload className="w-3.5 h-3.5" />
                 <span>Push to EOP</span>
+                {pendingChangesCount > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 bg-white/25 text-white font-bold rounded-full text-[10px]" title={`${pendingChangesCount} pending changes across all tables`}>
+                    {pendingChangesCount}
+                  </span>
+                )}
               </button>
             )}
 
@@ -183,10 +190,16 @@ export const Navbar: React.FC<NavbarProps> = ({
         {onPushToEop && (
           <button
             onClick={onPushToEop}
-            className="px-3 py-1.5 rounded whitespace-nowrap font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 text-white flex items-center gap-1 shadow-xs cursor-pointer"
+            className="px-3 py-1.5 rounded whitespace-nowrap font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 text-white flex items-center gap-1 shadow-xs cursor-pointer text-xs"
+            title="Push all pending changes across all tables to Exchange Online Protection (EOP)"
           >
             <CloudUpload className="w-3 h-3" />
             <span>Push to EOP</span>
+            {pendingChangesCount > 0 && (
+              <span className="px-1.5 py-0.2 bg-white/25 text-white font-bold rounded-full text-[10px]">
+                {pendingChangesCount}
+              </span>
+            )}
           </button>
         )}
         <button

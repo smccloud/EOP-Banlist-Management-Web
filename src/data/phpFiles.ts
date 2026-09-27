@@ -2454,7 +2454,7 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                     </div>
                     <div>
                         <h3 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                            <span>Pushed to Exchange Online Protection</span>
+                            <span>All Changes Successfully Pushed to EOP (All 4 Tables)</span>
                             <span class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">Success</span>
                         </h3>
                         <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -4130,7 +4130,8 @@ if ($action === 'trigger_sync') {
                 'blockedDomains' => $pushedBlockedDomains,
             ];
 
-            setFlash('success', "Exchange Online push completed successfully! MariaDB lists applied to Microsoft 365 for policy '{$policyName}'.");
+            $totPushed = count($pushedAllowedSenders) + count($pushedBlockedSenders) + count($pushedAllowedDomains) + count($pushedBlockedDomains);
+            setFlash('success', "Exchange Online push completed successfully! Pushed {$totPushed} entries across all 4 tables to Microsoft 365: " . count($pushedAllowedSenders) . " Allowed Senders, " . count($pushedBlockedSenders) . " Blocked Senders, " . count($pushedAllowedDomains) . " Allowed Domains, " . count($pushedBlockedDomains) . " Blocked Domains for policy '{$policyName}'.");
         }
     } else {
         Database::updatePolicySyncStatus($policyName, 'failed', $logMsg);

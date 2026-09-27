@@ -18,6 +18,7 @@ function AppContent() {
     return localStorage.getItem('eop_setup_completed') === 'true';
   });
   const [pushTriggerCount, setPushTriggerCount] = useState<number>(0);
+  const [pendingChangesCount, setPendingChangesCount] = useState<number>(4);
 
   const handlePushToEop = () => {
     setActiveTab('simulator');
@@ -65,6 +66,7 @@ function AppContent() {
         isDownloading={isDownloading}
         isSetupLocked={isSetupLocked}
         onPushToEop={handlePushToEop}
+        pendingChangesCount={pendingChangesCount}
       />
 
       {/* Main Content Area */}
@@ -75,6 +77,7 @@ function AppContent() {
             config={config}
             initialTab="allowed_senders"
             triggerPushActionCount={pushTriggerCount}
+            onPendingChangesCountChange={setPendingChangesCount}
             onTabChange={(tab) => {
               if (tab === 'config_center' || tab === 'ldap_db') {
                 setActiveTab('config_page');
@@ -87,6 +90,8 @@ function AppContent() {
             key="config_page"
             config={config}
             initialTab="config_center"
+            triggerPushActionCount={pushTriggerCount}
+            onPendingChangesCountChange={setPendingChangesCount}
             onLeaveConfigPage={() => setActiveTab('simulator')}
             onTabChange={(tab) => {
               if (tab !== 'config_center' && tab !== 'ldap_db') {

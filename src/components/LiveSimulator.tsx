@@ -38,12 +38,42 @@ import {
   X
 } from 'lucide-react';
 
+export interface PendingChangeItem {
+  id: string;
+  timestamp: string;
+  type: 'ADD' | 'REMOVE';
+  listType: ListType;
+  listLabel: string;
+  value: string;
+  policy: string;
+  note?: string;
+  user?: string;
+}
+
+export interface PushSummaryData {
+  policy: string;
+  timestamp: string;
+  pushedChanges: PendingChangeItem[];
+  allowedSenders: string[];
+  blockedSenders: string[];
+  allowedDomains: string[];
+  blockedDomains: string[];
+  changesByList: {
+    allowed_senders: PendingChangeItem[];
+    blocked_senders: PendingChangeItem[];
+    allowed_domains: PendingChangeItem[];
+    blocked_domains: PendingChangeItem[];
+  };
+  policiesImpacted: string[];
+}
+
 interface LiveSimulatorProps {
   config: AppConfig;
   initialTab?: ListType | 'sync' | 'audit' | 'config_center' | 'ldap_db';
   onLeaveConfigPage?: () => void;
   onTabChange?: (tab: ListType | 'sync' | 'audit' | 'config_center' | 'ldap_db') => void;
   triggerPushActionCount?: number;
+  onPendingChangesCountChange?: (count: number) => void;
 }
 
 export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
@@ -51,7 +81,8 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   initialTab = 'allowed_senders',
   onLeaveConfigPage,
   onTabChange,
-  triggerPushActionCount
+  triggerPushActionCount,
+  onPendingChangesCountChange,
 }) => {
   // Authentication state
   const [isAuthenticated, setIsAuthenticated] = useState(true);
@@ -174,14 +205,57 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncActionType, setSyncActionType] = useState<'pull' | 'push'>('pull');
   const [showPushConfirmModal, setShowPushConfirmModal] = useState(false);
-  const [pushSummaryModal, setPushSummaryModal] = useState<{
-    policy: string;
-    timestamp: string;
-    allowedSenders: string[];
-    blockedSenders: string[];
-    allowedDomains: string[];
-    blockedDomains: string[];
-  } | null>(null);
+
+  // Staged pending changes across all 4 tables waiting to be pushed to EOP
+  const [pendingChanges, setPendingChanges] = useState<PendingChangeItem[]>([
+    {
+      id: 'pc-1',
+      timestamp: '2026-09-26 10:15:00',
+      type: 'ADD',
+      listType: 'allowed_senders',
+      listLabel: 'Allowed Senders',
+      value: 'billing@strategic-partner.com',
+      policy: config.defaultPolicyName,
+      note: 'Verified corporate invoicing vendor - Ticket #INC-9482',
+      user: 'jsmith',
+    },
+    {
+      id: 'pc-2',
+      timestamp: '2026-09-26 11:20:00',
+      type: 'ADD',
+      listType: 'allowed_senders',
+      listLabel: 'Allowed Senders',
+      value: 'alerts@critical-saas-monitor.net',
+      policy: config.defaultPolicyName,
+      note: 'Infrastructure alert notification webhook',
+      user: 'jsmith',
+    },
+    {
+      id: 'pc-3',
+      timestamp: '2026-09-26 15:40:00',
+      type: 'ADD',
+      listType: 'blocked_senders',
+      listLabel: 'Blocked Senders',
+      value: 'phishing-alert@fake-login-service.info',
+      policy: config.defaultPolicyName,
+      note: 'Confirmed credential harvesting campaign',
+      user: 'jsmith',
+    },
+    {
+      id: 'pc-4',
+      timestamp: '2026-09-26 16:05:00',
+      type: 'ADD',
+      listType: 'blocked_domains',
+      listLabel: 'Blocked Domains',
+      value: 'malicious-phishing-host.xyz',
+      policy: config.defaultPolicyName,
+      note: 'Zero-day phishing infrastructure',
+      user: 'jsmith',
+    },
+  ]);
+
+  const [pushSummaryModal, setPushSummaryModal] = useState<PushSummaryData | null>(null);
+  const [pushSummaryTab, setPushSummaryTab] = useState<'changes' | 'all_entries' | 'powershell'>('changes');
   const [duplicateWarningPopup, setDuplicateWarningPopup] = useState<{
     value: string;
     listLabel: string;
@@ -332,6 +406,11 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     }
   }, [triggerPushActionCount]);
 
+  // Synchronize pending changes count with parent component
+  useEffect(() => {
+    onPendingChangesCountChange?.(pendingChanges.length);
+  }, [pendingChanges, onPendingChangesCountChange]);
+
   // Total count of staged entries for active policy
   const totalStagedItems = useMemo(() => {
     return (
@@ -341,6 +420,36 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
       blockedDomains.filter((i) => i.policy_name === activePolicy).length
     );
   }, [allowedSenders, blockedSenders, allowedDomains, blockedDomains, activePolicy]);
+
+  // Total count of all items across ALL policies and tables
+  const totalAllItemsCount = useMemo(() => {
+    return allowedSenders.length + blockedSenders.length + allowedDomains.length + blockedDomains.length;
+  }, [allowedSenders, blockedSenders, allowedDomains, blockedDomains]);
+
+  // Pending changes for currently selected policy across all 4 tables
+  const policyPendingChanges = useMemo(() => {
+    return pendingChanges.filter((c) => c.policy === activePolicy);
+  }, [pendingChanges, activePolicy]);
+
+  // Grouped pending changes across ALL tables and ALL policies
+  const allPendingByList = useMemo(() => {
+    return {
+      allowed_senders: pendingChanges.filter((c) => c.listType === 'allowed_senders'),
+      blocked_senders: pendingChanges.filter((c) => c.listType === 'blocked_senders'),
+      allowed_domains: pendingChanges.filter((c) => c.listType === 'allowed_domains'),
+      blocked_domains: pendingChanges.filter((c) => c.listType === 'blocked_domains'),
+    };
+  }, [pendingChanges]);
+
+  // Grouped pending changes per table for active policy
+  const pendingByList = useMemo(() => {
+    return {
+      allowed_senders: policyPendingChanges.filter((c) => c.listType === 'allowed_senders'),
+      blocked_senders: policyPendingChanges.filter((c) => c.listType === 'blocked_senders'),
+      allowed_domains: policyPendingChanges.filter((c) => c.listType === 'allowed_domains'),
+      blocked_domains: policyPendingChanges.filter((c) => c.listType === 'blocked_domains'),
+    };
+  }, [policyPendingChanges]);
 
   // Helper to get active list state
   const getCurrentList = (): ListItem[] => {
@@ -584,6 +693,26 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     if (activeTab === 'allowed_domains') setAllowedDomains((prev) => [newItem, ...prev]);
     if (activeTab === 'blocked_domains') setBlockedDomains((prev) => [newItem, ...prev]);
 
+    // Stage pending change for EOP push
+    const listLabelMap: Record<ListType, string> = {
+      allowed_senders: 'Allowed Senders',
+      blocked_senders: 'Blocked Senders',
+      allowed_domains: 'Allowed Domains',
+      blocked_domains: 'Blocked Domains',
+    };
+    const stagedChange: PendingChangeItem = {
+      id: `pc-${Date.now()}`,
+      timestamp: newItem.created_at,
+      type: 'ADD',
+      listType: activeTab as ListType,
+      listLabel: listLabelMap[activeTab as ListType],
+      value: val,
+      policy: activePolicy,
+      note: newItem.note,
+      user: loginUsername,
+    };
+    setPendingChanges((prev) => [stagedChange, ...prev]);
+
     logAction('ADD', activeTab as ListType, val, `Added to eop_${activeTab}`);
     setSingleValue('');
     setSingleNote('');
@@ -667,6 +796,26 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     if (activeTab === 'blocked_senders') setBlockedSenders((prev) => [...newItems, ...prev]);
     if (activeTab === 'allowed_domains') setAllowedDomains((prev) => [...newItems, ...prev]);
     if (activeTab === 'blocked_domains') setBlockedDomains((prev) => [...newItems, ...prev]);
+
+    // Stage pending changes for EOP push
+    const listLabelMap: Record<ListType, string> = {
+      allowed_senders: 'Allowed Senders',
+      blocked_senders: 'Blocked Senders',
+      allowed_domains: 'Allowed Domains',
+      blocked_domains: 'Blocked Domains',
+    };
+    const bulkStagedChanges: PendingChangeItem[] = newItems.map((item, idx) => ({
+      id: `pc-${Date.now()}-${idx}`,
+      timestamp: now,
+      type: 'ADD',
+      listType: activeTab as ListType,
+      listLabel: listLabelMap[activeTab as ListType],
+      value: item.value,
+      policy: activePolicy,
+      note: item.note,
+      user: loginUsername,
+    }));
+    setPendingChanges((prev) => [...bulkStagedChanges, ...prev]);
 
     const msg = duplicateCount > 0
       ? `Bulk imported ${newItems.length} new items. Skipped ${duplicateCount} duplicate entries.`
@@ -870,6 +1019,35 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
       }
     }
 
+    // Stage smart sorted items for EOP push
+    const smartStagedChanges: PendingChangeItem[] = [
+      ...newSenderItems.map((s, idx) => ({
+        id: `pc-smart-s-${Date.now()}-${idx}`,
+        timestamp: now,
+        type: 'ADD' as const,
+        listType: (smartSortTarget === 'blocked' ? 'blocked_senders' : 'allowed_senders') as ListType,
+        listLabel: smartSortTarget === 'blocked' ? 'Blocked Senders' : 'Allowed Senders',
+        value: s.value,
+        policy: activePolicy,
+        note: s.note,
+        user: loginUsername,
+      })),
+      ...newDomainItems.map((d, idx) => ({
+        id: `pc-smart-d-${Date.now()}-${idx}`,
+        timestamp: now,
+        type: 'ADD' as const,
+        listType: (smartSortTarget === 'blocked' ? 'blocked_domains' : 'allowed_domains') as ListType,
+        listLabel: smartSortTarget === 'blocked' ? 'Blocked Domains' : 'Allowed Domains',
+        value: d.value,
+        policy: activePolicy,
+        note: d.note,
+        user: loginUsername,
+      })),
+    ];
+    if (smartStagedChanges.length > 0) {
+      setPendingChanges((prev) => [...smartStagedChanges, ...prev]);
+    }
+
     const msg =
       `Smart Sort Complete: Sorted ${newSenderItems.length} senders into ${targetLabel} Senders (eop_${smartSortTarget}_senders) and ${newDomainItems.length} domains into ${targetLabel} Domains (eop_${smartSortTarget}_domains).` +
       (duplicateCount > 0
@@ -901,6 +1079,26 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     if (tab === 'allowed_domains') setAllowedDomains((prev) => prev.filter((i) => i.id !== id));
     if (tab === 'blocked_domains') setBlockedDomains((prev) => prev.filter((i) => i.id !== id));
 
+    // Stage pending removal for EOP push
+    const listLabelMap: Record<ListType, string> = {
+      allowed_senders: 'Allowed Senders',
+      blocked_senders: 'Blocked Senders',
+      allowed_domains: 'Allowed Domains',
+      blocked_domains: 'Blocked Domains',
+    };
+    const stagedRemove: PendingChangeItem = {
+      id: `pc-del-${Date.now()}`,
+      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      type: 'REMOVE',
+      listType: tab,
+      listLabel: listLabelMap[tab],
+      value: val,
+      policy: activePolicy,
+      note: `Removal from eop_${tab}`,
+      user: loginUsername,
+    };
+    setPendingChanges((prev) => [stagedRemove, ...prev]);
+
     logAction('REMOVE', tab, val, `Deleted from eop_${tab}`);
     setDeleteConfirmItem(null);
   };
@@ -921,27 +1119,71 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
         });
         logAction('SYNC', 'SYSTEM', activePolicy, 'Automated cron pull from EOP completed (Pull-Only)');
       } else {
+        // Collect all pending changes across all 4 tables and all policies waiting to be pushed
+        const changesToPush = [...pendingChanges];
+
+        // Group changes by target list
+        const changesAllowedSenders = changesToPush.filter((c) => c.listType === 'allowed_senders');
+        const changesBlockedSenders = changesToPush.filter((c) => c.listType === 'blocked_senders');
+        const changesAllowedDomains = changesToPush.filter((c) => c.listType === 'allowed_domains');
+        const changesBlockedDomains = changesToPush.filter((c) => c.listType === 'blocked_domains');
+
+        // Policies impacted
+        const policiesImpacted = Array.from(new Set(changesToPush.map((c) => c.policy)));
+        if (policiesImpacted.length === 0) {
+          policiesImpacted.push(activePolicy);
+        }
+
         const policyAllowedSenders = allowedSenders.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
         const policyBlockedSenders = blockedSenders.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
         const policyAllowedDomains = allowedDomains.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
         const policyBlockedDomains = blockedDomains.filter((i) => i.policy_name === activePolicy).map((i) => i.value);
 
+        // Clear staged pending changes now that they are pushed to Exchange Online
+        setPendingChanges([]);
+
+        const changesCount = changesToPush.length;
+        const pushMessage = changesCount > 0
+          ? `Push to EOP completed successfully! Deployed ${changesCount} pending changes across all 4 tables to Exchange Online: ${changesAllowedSenders.length} to Allowed Senders, ${changesBlockedSenders.length} to Blocked Senders, ${changesAllowedDomains.length} to Allowed Domains, ${changesBlockedDomains.length} to Blocked Domains.`
+          : `Push to EOP completed successfully! Applied all current MariaDB table records for policy '${activePolicy}' to Microsoft 365 Exchange Online Protection (no pending uncommitted changes).`;
+
         setLastSyncResult({
           timestamp,
           status: 'success',
           direction: 'push',
-          message: `Manual Admin Push completed successfully for policy '${activePolicy}'. Set-HostedContentFilterPolicy applied ${policyAllowedSenders.length} allowed senders, ${policyBlockedSenders.length} blocked senders, ${policyAllowedDomains.length} allowed domains, and ${policyBlockedDomains.length} blocked domains to Exchange Online.`,
+          message: pushMessage,
         });
-        logAction('SYNC', 'SYSTEM', activePolicy, 'Manual push to Exchange Online executed');
 
-        // Open popup showing what was pushed to each list
+        logAction(
+          'SYNC',
+          'SYSTEM',
+          policiesImpacted.join(', '),
+          `Pushed ${changesCount} pending changes across all 4 tables to Exchange Online`
+        );
+
+        // Open comprehensive popup showing what changes were pushed to what list
         setPushSummaryModal({
-          policy: activePolicy,
+          policy: policiesImpacted.length === 1 ? policiesImpacted[0] : policiesImpacted.join(', '),
           timestamp,
+          pushedChanges: changesToPush,
           allowedSenders: policyAllowedSenders,
           blockedSenders: policyBlockedSenders,
           allowedDomains: policyAllowedDomains,
           blockedDomains: policyBlockedDomains,
+          changesByList: {
+            allowed_senders: changesAllowedSenders,
+            blocked_senders: changesBlockedSenders,
+            allowed_domains: changesAllowedDomains,
+            blocked_domains: changesBlockedDomains,
+          },
+          policiesImpacted,
+        });
+
+        setPushSummaryTab('changes');
+
+        setBannerMessage({
+          type: 'success',
+          text: `EOP Push Complete: Successfully deployed ${changesCount} pending changes across all tables to Exchange Online (${changesAllowedSenders.length} to Allowed Senders, ${changesBlockedSenders.length} to Blocked Senders, ${changesAllowedDomains.length} to Allowed Domains, ${changesBlockedDomains.length} to Blocked Domains).`,
         });
       }
     }, 1100);
@@ -1294,17 +1536,17 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               </select>
             </div>
 
-            {/* Prominent Push Changes from MariaDB to EOP Button */}
+            {/* Prominent Push All Changes from MariaDB to EOP Button */}
             <button
               onClick={() => setShowPushConfirmModal(true)}
               disabled={syncLoading}
               className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 shadow-sm transition cursor-pointer disabled:opacity-50 ring-2 ring-indigo-500/20"
-              title="Push changes from MariaDB tables to Exchange Online Protection (EOP)"
+              title="Push all pending staged changes across all 4 tables to Exchange Online Protection (EOP)"
             >
               <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
-              <span>{syncLoading && syncActionType === 'push' ? 'Pushing to EOP...' : 'Push to EOP'}</span>
+              <span>{syncLoading && syncActionType === 'push' ? 'Pushing All to EOP...' : 'Push All Changes to EOP'}</span>
               <span className="hidden sm:inline-block ml-1 px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-normal">
-                {totalStagedItems} staged
+                {pendingChanges.length > 0 ? `${pendingChanges.length} pending` : `${totalStagedItems} staged`}
               </span>
             </button>
 
@@ -1598,12 +1840,12 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 onClick={() => setShowPushConfirmModal(true)}
                 disabled={syncLoading}
                 className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer disabled:opacity-50 ring-2 ring-indigo-500/20"
-                title="Push all staged changes from MariaDB tables to Exchange Online Protection (EOP)"
+                title="Push all pending staged changes across all 4 tables to Exchange Online Protection (EOP)"
               >
                 <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
-                <span>{syncLoading && syncActionType === 'push' ? 'Pushing to EOP...' : 'Push to EOP'}</span>
+                <span>{syncLoading && syncActionType === 'push' ? 'Pushing All to EOP...' : 'Push All Changes to EOP'}</span>
                 <span className="hidden sm:inline-block px-1.5 py-0.2 rounded-full bg-white/20 text-[10px] font-normal">
-                  {totalStagedItems}
+                  {pendingChanges.length > 0 ? `${pendingChanges.length} pending` : `${totalStagedItems} staged`}
                 </span>
               </button>
             </div>
@@ -1701,7 +1943,12 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition disabled:opacity-50 cursor-pointer ring-2 ring-indigo-500/20"
                 >
                   <CloudUpload className={`w-4 h-4 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
-                  <span>{syncLoading && syncActionType === 'push' ? 'Pushing Changes to EOP...' : 'Push Changes to Exchange Online (Set-HostedContentFilterPolicy)'}</span>
+                  <span>{syncLoading && syncActionType === 'push' ? 'Pushing All Changes to EOP...' : 'Push All Changes to Exchange Online (Set-HostedContentFilterPolicy)'}</span>
+                  {pendingChanges.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-white/20 text-white text-[10px] font-bold">
+                      {pendingChanges.length} pending
+                    </span>
+                  )}
                 </button>
               </div>
             </div>
@@ -2411,6 +2658,33 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               </div>
             )}
 
+            {/* Pending Staged Changes Notification Strip across ALL 4 tables */}
+            {pendingChanges.length > 0 && (
+              <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-blue-900 dark:text-blue-200">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400 shrink-0"></span>
+                  <div>
+                    <span className="font-bold">{pendingChanges.length} Pending Changes Waiting Across All Tables</span>:
+                    <span className="text-blue-700 dark:text-blue-300 ml-1.5 text-[11px]">
+                      {allPendingByList.allowed_senders.length > 0 && `${allPendingByList.allowed_senders.length} in Allowed Senders${allPendingByList.blocked_senders.length > 0 || allPendingByList.allowed_domains.length > 0 || allPendingByList.blocked_domains.length > 0 ? ', ' : ''}`}
+                      {allPendingByList.blocked_senders.length > 0 && `${allPendingByList.blocked_senders.length} in Blocked Senders${allPendingByList.allowed_domains.length > 0 || allPendingByList.blocked_domains.length > 0 ? ', ' : ''}`}
+                      {allPendingByList.allowed_domains.length > 0 && `${allPendingByList.allowed_domains.length} in Allowed Domains${allPendingByList.blocked_domains.length > 0 ? ', ' : ''}`}
+                      {allPendingByList.blocked_domains.length > 0 && `${allPendingByList.blocked_domains.length} in Blocked Domains`}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPushConfirmModal(true)}
+                  disabled={syncLoading}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                >
+                  <CloudUpload className="w-3.5 h-3.5" />
+                  <span>Review &amp; Push All Changes</span>
+                </button>
+              </div>
+            )}
+
             {/* Search Filter Bar */}
             <div className="p-4 bg-slate-50 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
               <div className="relative max-w-sm w-full">
@@ -2431,11 +2705,16 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   type="button"
                   onClick={() => setShowPushConfirmModal(true)}
                   disabled={syncLoading}
-                  className="px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
-                  title={`Push changes in MariaDB for policy "${activePolicy}" to Exchange Online Protection`}
+                  className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
+                  title="Push all pending staged changes across all 4 tables to Exchange Online Protection"
                 >
                   <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
-                  <span>Push to EOP</span>
+                  <span>Push All Changes to EOP</span>
+                  {pendingChanges.length > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-white/25 text-white text-[10px] font-bold">
+                      {pendingChanges.length}
+                    </span>
+                  )}
                 </button>
               </div>
             </div>
@@ -2993,56 +3272,126 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
       {/* Manual Admin Push Confirmation Modal */}
       {showPushConfirmModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-800">
-            <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center mb-3">
-              <CloudUpload className="w-5 h-5" />
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-xl w-full p-6 border border-slate-200 dark:border-slate-800 max-h-[90vh] flex flex-col">
+            <div className="flex items-center space-x-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                <CloudUpload className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Push All Pending Changes to Exchange Online Protection?
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Target: <strong className="text-blue-600 dark:text-blue-400">{activePolicy}</strong> &bull; All 4 MariaDB Tables
+                </p>
+              </div>
             </div>
-            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">
-              Push Changes to Exchange Online Protection?
-            </h3>
+
             <p className="text-xs text-slate-600 dark:text-slate-400 mb-3 leading-relaxed">
-              This will execute <code className="text-blue-600 dark:text-blue-400 font-bold">Set-HostedContentFilterPolicy</code> for policy <strong className="text-slate-900 dark:text-white">{activePolicy}</strong> with all allowed senders, blocked senders, allowed domains, and blocked domains currently staged in MariaDB.
+              This action will push <strong>all pending changes across all tables</strong> (not just the currently active view) to Microsoft 365 Exchange Online Protection using <code className="text-blue-600 dark:text-blue-400 font-bold">Set-HostedContentFilterPolicy</code>.
             </p>
 
-            <div className="p-3 mb-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 text-xs space-y-1">
-              <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                Items to Deploy ({totalStagedItems} Total):
+            {/* Pending Changes Summary Pill Row */}
+            <div className="p-3 mb-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  Pending Changes to Deploy ({pendingChanges.length} Total):
+                </div>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-blue-100 dark:bg-blue-950/80 text-blue-800 dark:text-blue-300">
+                  All 4 Tables
+                </span>
               </div>
-              <div className="grid grid-cols-2 gap-1 text-[11px] font-mono">
-                <div className="text-emerald-700 dark:text-emerald-300">
-                  &bull; {allowedSenders.filter((i) => i.policy_name === activePolicy).length} Allowed Senders
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                <div className="bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <span className="block font-bold text-sm text-emerald-600 dark:text-emerald-400">
+                    {allPendingByList.allowed_senders.length}
+                  </span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400">Allowed Senders</span>
                 </div>
-                <div className="text-rose-700 dark:text-rose-300">
-                  &bull; {blockedSenders.filter((i) => i.policy_name === activePolicy).length} Blocked Senders
+                <div className="bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <span className="block font-bold text-sm text-rose-600 dark:text-rose-400">
+                    {allPendingByList.blocked_senders.length}
+                  </span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400">Blocked Senders</span>
                 </div>
-                <div className="text-emerald-700 dark:text-emerald-300">
-                  &bull; {allowedDomains.filter((i) => i.policy_name === activePolicy).length} Allowed Domains
+                <div className="bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <span className="block font-bold text-sm text-cyan-600 dark:text-cyan-400">
+                    {allPendingByList.allowed_domains.length}
+                  </span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400">Allowed Domains</span>
                 </div>
-                <div className="text-rose-700 dark:text-rose-300">
-                  &bull; {blockedDomains.filter((i) => i.policy_name === activePolicy).length} Blocked Domains
+                <div className="bg-white dark:bg-slate-900 p-2 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <span className="block font-bold text-sm text-amber-600 dark:text-amber-400">
+                    {allPendingByList.blocked_domains.length}
+                  </span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400">Blocked Domains</span>
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setShowPushConfirmModal(false)}
-                className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium cursor-pointer transition"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowPushConfirmModal(false);
-                  handleTriggerSync('push');
-                }}
-                className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer flex items-center gap-1.5"
-              >
-                <CloudUpload className="w-3.5 h-3.5" />
-                <span>Execute Push to EOP</span>
-              </button>
+            {/* Scrollable list of pending staged items */}
+            <div className="overflow-y-auto space-y-1.5 my-1 grow max-h-48 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 font-mono text-xs">
+              {pendingChanges.length === 0 ? (
+                <div className="p-4 text-center text-slate-400 dark:text-slate-500 italic text-[11px] font-sans">
+                  No new staged changes queued. Pushing will re-verify and enforce all current records across all 4 tables in Exchange Online Protection ({totalStagedItems} total items in policy "{activePolicy}").
+                </div>
+              ) : (
+                pendingChanges.map((change) => (
+                  <div
+                    key={change.id}
+                    className="flex items-center justify-between p-2 rounded bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 text-[11px]"
+                  >
+                    <div className="flex items-center space-x-2 truncate">
+                      <span
+                        className={`px-1.5 py-0.2 rounded text-[9px] font-bold shrink-0 ${
+                          change.type === 'ADD'
+                            ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                            : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                        }`}
+                      >
+                        {change.type === 'ADD' ? '+ ADD' : '- REMOVE'}
+                      </span>
+                      <span className="font-bold text-slate-800 dark:text-slate-100 truncate">{change.value}</span>
+                    </div>
+                    <div className="flex items-center space-x-2 shrink-0 ml-2 font-sans text-[10px]">
+                      <span className="px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                        {change.listLabel}
+                      </span>
+                      <span className="text-slate-400 dark:text-slate-500 hidden sm:inline">
+                        {change.policy}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex items-center justify-between pt-3 mt-3 border-t border-slate-100 dark:border-slate-800">
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                Pushes all 4 tables &bull; Records in audit trail
+              </span>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPushConfirmModal(false)}
+                  className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium cursor-pointer transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPushConfirmModal(false);
+                    handleTriggerSync('push');
+                  }}
+                  className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <CloudUpload className="w-3.5 h-3.5" />
+                  <span>
+                    Push All {pendingChanges.length > 0 ? `${pendingChanges.length} Changes` : 'Tables'} to EOP
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3060,7 +3409,7 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                    <span>Pushed to Exchange Online Protection</span>
+                    <span>All Changes Successfully Pushed to EOP</span>
                     <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">Success</span>
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -3078,126 +3427,343 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               </button>
             </div>
 
+            {/* Modal Tabs Navigation */}
+            <div className="flex border-b border-slate-200 dark:border-slate-800 text-xs font-semibold mt-3">
+              <button
+                onClick={() => setPushSummaryTab('changes')}
+                className={`py-2 px-4 border-b-2 transition flex items-center gap-1.5 cursor-pointer ${
+                  pushSummaryTab === 'changes'
+                    ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                <span>Changes Pushed to Lists</span>
+                <span className="px-1.5 py-0.2 rounded-full bg-blue-100 dark:bg-blue-950/60 text-blue-800 dark:text-blue-300 text-[10px]">
+                  {pushSummaryModal.pushedChanges.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setPushSummaryTab('all_entries')}
+                className={`py-2 px-4 border-b-2 transition flex items-center gap-1.5 cursor-pointer ${
+                  pushSummaryTab === 'all_entries'
+                    ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                <span>Current Resulting EOP Lists</span>
+                <span className="px-1.5 py-0.2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 text-[10px]">
+                  {pushSummaryModal.allowedSenders.length + pushSummaryModal.blockedSenders.length + pushSummaryModal.allowedDomains.length + pushSummaryModal.blockedDomains.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setPushSummaryTab('powershell')}
+                className={`py-2 px-4 border-b-2 transition flex items-center gap-1.5 cursor-pointer ${
+                  pushSummaryTab === 'powershell'
+                    ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                <span>PowerShell Cmdlet</span>
+              </button>
+            </div>
+
             {/* Subheader / Summary pill row */}
-            <div className="py-3 text-xs text-slate-600 dark:text-slate-300">
-              <p className="mb-2 text-xs">
-                The following entries from your remote MariaDB tables were successfully pushed and configured in Microsoft 365 Exchange Online via <code className="text-indigo-600 dark:text-indigo-400 font-bold">Set-HostedContentFilterPolicy</code>:
-              </p>
+            <div className="py-2.5 text-xs text-slate-600 dark:text-slate-300">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
                 <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-2 rounded-lg">
-                  <span className="block text-emerald-800 dark:text-emerald-300 font-bold text-sm">{pushSummaryModal.allowedSenders.length}</span>
-                  <span className="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Senders</span>
+                  <span className="block text-emerald-800 dark:text-emerald-300 font-bold text-sm">
+                    {pushSummaryModal.changesByList.allowed_senders.length}
+                  </span>
+                  <span className="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Senders Changed</span>
                 </div>
                 <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/50 p-2 rounded-lg">
-                  <span className="block text-rose-800 dark:text-rose-300 font-bold text-sm">{pushSummaryModal.blockedSenders.length}</span>
-                  <span className="text-[11px] text-rose-700 dark:text-rose-400">Blocked Senders</span>
+                  <span className="block text-rose-800 dark:text-rose-300 font-bold text-sm">
+                    {pushSummaryModal.changesByList.blocked_senders.length}
+                  </span>
+                  <span className="text-[11px] text-rose-700 dark:text-rose-400">Blocked Senders Changed</span>
                 </div>
                 <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-2 rounded-lg">
-                  <span className="block text-emerald-800 dark:text-emerald-300 font-bold text-sm">{pushSummaryModal.allowedDomains.length}</span>
-                  <span className="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Domains</span>
+                  <span className="block text-emerald-800 dark:text-emerald-300 font-bold text-sm">
+                    {pushSummaryModal.changesByList.allowed_domains.length}
+                  </span>
+                  <span className="text-[11px] text-emerald-700 dark:text-emerald-400">Allowed Domains Changed</span>
                 </div>
                 <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/50 p-2 rounded-lg">
-                  <span className="block text-rose-800 dark:text-rose-300 font-bold text-sm">{pushSummaryModal.blockedDomains.length}</span>
-                  <span className="text-[11px] text-rose-700 dark:text-rose-400">Blocked Domains</span>
+                  <span className="block text-rose-800 dark:text-rose-300 font-bold text-sm">
+                    {pushSummaryModal.changesByList.blocked_domains.length}
+                  </span>
+                  <span className="text-[11px] text-rose-700 dark:text-rose-400">Blocked Domains Changed</span>
                 </div>
               </div>
             </div>
 
-            {/* List Details (Scrollable) */}
-            <div className="overflow-y-auto space-y-4 pr-1 my-2 grow divide-y divide-slate-100 dark:divide-slate-800">
-              {/* 1. Allowed Senders */}
-              <div className="pt-2">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                    <span>Allowed Senders (<code>-AllowedSenders</code>)</span>
-                  </span>
-                  <span className="text-[11px] text-slate-400 font-mono">eop_allowed_senders</span>
-                </div>
-                {pushSummaryModal.allowedSenders.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
-                    {pushSummaryModal.allowedSenders.map((val) => (
-                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
-                        {val}
-                      </span>
-                    ))}
+            {/* Tab 1: Detailed breakdown of what changes were pushed to what list */}
+            {pushSummaryTab === 'changes' && (
+              <div className="overflow-y-auto space-y-4 pr-1 my-2 grow divide-y divide-slate-100 dark:divide-slate-800">
+                {/* 1. Allowed Senders Changes */}
+                <div className="pt-2">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      <span>1. Allowed Senders (<code>-AllowedSenders</code> / <code>eop_allowed_senders</code>)</span>
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
+                      {pushSummaryModal.changesByList.allowed_senders.length} changes pushed
+                    </span>
                   </div>
-                ) : (
-                  <p className="text-[11px] italic text-slate-400 pl-3">No allowed senders configured for this policy.</p>
-                )}
-              </div>
+                  {pushSummaryModal.changesByList.allowed_senders.length > 0 ? (
+                    <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.changesByList.allowed_senders.map((change) => (
+                        <div key={change.id} className="flex items-center justify-between p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-200/60 dark:border-slate-700/60 text-xs">
+                          <div className="flex items-center space-x-2">
+                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                              change.type === 'ADD' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300' : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                            }`}>
+                              {change.type === 'ADD' ? '+ ADDED' : '- REMOVED'}
+                            </span>
+                            <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">{change.value}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-xs">
+                            {change.note || change.policy}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">
+                      No pending changes were queued for Allowed Senders (current state maintained: {pushSummaryModal.allowedSenders.length} entries).
+                    </p>
+                  )}
+                </div>
 
-              {/* 2. Blocked Senders */}
-              <div className="pt-3">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                    <span>Blocked Senders (<code>-BlockedSenders</code>)</span>
-                  </span>
-                  <span className="text-[11px] text-slate-400 font-mono">eop_blocked_senders</span>
-                </div>
-                {pushSummaryModal.blockedSenders.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
-                    {pushSummaryModal.blockedSenders.map((val) => (
-                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
-                        {val}
-                      </span>
-                    ))}
+                {/* 2. Blocked Senders Changes */}
+                <div className="pt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                      <span>2. Blocked Senders (<code>-BlockedSenders</code> / <code>eop_blocked_senders</code>)</span>
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300">
+                      {pushSummaryModal.changesByList.blocked_senders.length} changes pushed
+                    </span>
                   </div>
-                ) : (
-                  <p className="text-[11px] italic text-slate-400 pl-3">No blocked senders configured for this policy.</p>
-                )}
-              </div>
+                  {pushSummaryModal.changesByList.blocked_senders.length > 0 ? (
+                    <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.changesByList.blocked_senders.map((change) => (
+                        <div key={change.id} className="flex items-center justify-between p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-200/60 dark:border-slate-700/60 text-xs">
+                          <div className="flex items-center space-x-2">
+                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                              change.type === 'ADD' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300' : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                            }`}>
+                              {change.type === 'ADD' ? '+ ADDED' : '- REMOVED'}
+                            </span>
+                            <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">{change.value}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-xs">
+                            {change.note || change.policy}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">
+                      No pending changes were queued for Blocked Senders (current state maintained: {pushSummaryModal.blockedSenders.length} entries).
+                    </p>
+                  )}
+                </div>
 
-              {/* 3. Allowed Domains */}
-              <div className="pt-3">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                    <span>Allowed Sender Domains (<code>-AllowedSenderDomains</code>)</span>
-                  </span>
-                  <span className="text-[11px] text-slate-400 font-mono">eop_allowed_domains</span>
-                </div>
-                {pushSummaryModal.allowedDomains.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
-                    {pushSummaryModal.allowedDomains.map((val) => (
-                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
-                        {val}
-                      </span>
-                    ))}
+                {/* 3. Allowed Domains Changes */}
+                <div className="pt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-cyan-500"></span>
+                      <span>3. Allowed Sender Domains (<code>-AllowedSenderDomains</code> / <code>eop_allowed_domains</code>)</span>
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-cyan-100 dark:bg-cyan-950/60 text-cyan-800 dark:text-cyan-300">
+                      {pushSummaryModal.changesByList.allowed_domains.length} changes pushed
+                    </span>
                   </div>
-                ) : (
-                  <p className="text-[11px] italic text-slate-400 pl-3">No allowed domains configured for this policy.</p>
-                )}
-              </div>
+                  {pushSummaryModal.changesByList.allowed_domains.length > 0 ? (
+                    <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.changesByList.allowed_domains.map((change) => (
+                        <div key={change.id} className="flex items-center justify-between p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-200/60 dark:border-slate-700/60 text-xs">
+                          <div className="flex items-center space-x-2">
+                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                              change.type === 'ADD' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300' : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                            }`}>
+                              {change.type === 'ADD' ? '+ ADDED' : '- REMOVED'}
+                            </span>
+                            <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">{change.value}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-xs">
+                            {change.note || change.policy}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">
+                      No pending changes were queued for Allowed Domains (current state maintained: {pushSummaryModal.allowedDomains.length} entries).
+                    </p>
+                  )}
+                </div>
 
-              {/* 4. Blocked Domains */}
-              <div className="pt-3">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                    <span>Blocked Sender Domains (<code>-BlockedSenderDomains</code>)</span>
-                  </span>
-                  <span className="text-[11px] text-slate-400 font-mono">eop_blocked_domains</span>
-                </div>
-                {pushSummaryModal.blockedDomains.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
-                    {pushSummaryModal.blockedDomains.map((val) => (
-                      <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
-                        {val}
-                      </span>
-                    ))}
+                {/* 4. Blocked Domains Changes */}
+                <div className="pt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                      <span>4. Blocked Sender Domains (<code>-BlockedSenderDomains</code> / <code>eop_blocked_domains</code>)</span>
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300">
+                      {pushSummaryModal.changesByList.blocked_domains.length} changes pushed
+                    </span>
                   </div>
-                ) : (
-                  <p className="text-[11px] italic text-slate-400 pl-3">No blocked domains configured for this policy.</p>
-                )}
+                  {pushSummaryModal.changesByList.blocked_domains.length > 0 ? (
+                    <div className="space-y-1.5 max-h-36 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.changesByList.blocked_domains.map((change) => (
+                        <div key={change.id} className="flex items-center justify-between p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-200/60 dark:border-slate-700/60 text-xs">
+                          <div className="flex items-center space-x-2">
+                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                              change.type === 'ADD' ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300' : 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                            }`}>
+                              {change.type === 'ADD' ? '+ ADDED' : '- REMOVED'}
+                            </span>
+                            <span className="font-mono font-semibold text-slate-900 dark:text-slate-100">{change.value}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-xs">
+                            {change.note || change.policy}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">
+                      No pending changes were queued for Blocked Domains (current state maintained: {pushSummaryModal.blockedDomains.length} entries).
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* Tab 2: All Active Entries in EOP */}
+            {pushSummaryTab === 'all_entries' && (
+              <div className="overflow-y-auto space-y-4 pr-1 my-2 grow divide-y divide-slate-100 dark:divide-slate-800">
+                {/* 1. Allowed Senders */}
+                <div className="pt-2">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      <span>Allowed Senders (<code>-AllowedSenders</code>)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-mono">eop_allowed_senders</span>
+                  </div>
+                  {pushSummaryModal.allowedSenders.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.allowedSenders.map((val) => (
+                        <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">No allowed senders configured for this policy.</p>
+                  )}
+                </div>
+
+                {/* 2. Blocked Senders */}
+                <div className="pt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                      <span>Blocked Senders (<code>-BlockedSenders</code>)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-mono">eop_blocked_senders</span>
+                  </div>
+                  {pushSummaryModal.blockedSenders.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.blockedSenders.map((val) => (
+                        <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">No blocked senders configured for this policy.</p>
+                  )}
+                </div>
+
+                {/* 3. Allowed Domains */}
+                <div className="pt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-cyan-500"></span>
+                      <span>Allowed Sender Domains (<code>-AllowedSenderDomains</code>)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-mono">eop_allowed_domains</span>
+                  </div>
+                  {pushSummaryModal.allowedDomains.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.allowedDomains.map((val) => (
+                        <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">No allowed domains configured for this policy.</p>
+                  )}
+                </div>
+
+                {/* 4. Blocked Domains */}
+                <div className="pt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                      <span>Blocked Sender Domains (<code>-BlockedSenderDomains</code>)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-mono">eop_blocked_domains</span>
+                  </div>
+                  {pushSummaryModal.blockedDomains.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg border border-slate-200 dark:border-slate-800">
+                      {pushSummaryModal.blockedDomains.map((val) => (
+                        <span key={val} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-300">
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] italic text-slate-400 pl-3">No blocked domains configured for this policy.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Tab 3: PowerShell Cmdlet Executed */}
+            {pushSummaryTab === 'powershell' && (
+              <div className="overflow-y-auto my-2 grow p-4 bg-slate-950 rounded-xl font-mono text-xs text-slate-200 border border-slate-800">
+                <div className="text-slate-500 mb-2"># Executed via PowerShell against Exchange Online Protection:</div>
+                <div className="text-indigo-400 font-bold">Set-HostedContentFilterPolicy `</div>
+                <div className="pl-4 text-emerald-400">-Identity "{pushSummaryModal.policy}" `</div>
+                <div className="pl-4 text-blue-300">
+                  -AllowedSenders @({pushSummaryModal.allowedSenders.map((s) => `'${s}'`).join(', ') || '@()'}) `
+                </div>
+                <div className="pl-4 text-rose-300">
+                  -BlockedSenders @({pushSummaryModal.blockedSenders.map((s) => `'${s}'`).join(', ') || '@()'}) `
+                </div>
+                <div className="pl-4 text-cyan-300">
+                  -AllowedSenderDomains @({pushSummaryModal.allowedDomains.map((d) => `'${d}'`).join(', ') || '@()'}) `
+                </div>
+                <div className="pl-4 text-amber-300">
+                  -BlockedSenderDomains @({pushSummaryModal.blockedDomains.map((d) => `'${d}'`).join(', ') || '@()'})
+                </div>
+              </div>
+            )}
 
             {/* Footer */}
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
               <span className="text-[11px] text-slate-400 dark:text-slate-500">
-                Action recorded in <code>eop_audit_log</code> &bull; Exchange status: Synced
+                Action recorded in <code>eop_audit_log</code> &bull; All 4 MariaDB tables in sync with EOP
               </span>
               <button
                 type="button"
