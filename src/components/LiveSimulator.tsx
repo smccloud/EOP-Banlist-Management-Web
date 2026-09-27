@@ -33,7 +33,8 @@ import {
   FileKey,
   ArrowLeft,
   Sparkles,
-  Split
+  Split,
+  CloudUpload
 } from 'lucide-react';
 
 interface LiveSimulatorProps {
@@ -1093,6 +1094,17 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               </select>
             </div>
 
+            {/* Quick Push from MariaDB to EOP Button */}
+            <button
+              onClick={() => setShowPushConfirmModal(true)}
+              disabled={syncLoading}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-xs transition cursor-pointer disabled:opacity-50"
+              title="Push changes from MariaDB tables to Exchange Online Protection (EOP)"
+            >
+              <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{syncLoading && syncActionType === 'push' ? 'Pushing...' : 'Push to EOP'}</span>
+            </button>
+
             {/* Direct Configuration Page Link / Back Toggle */}
             <button
               onClick={() => {
@@ -1377,6 +1389,16 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export CSV</span>
+              </button>
+
+              <button
+                onClick={() => setShowPushConfirmModal(true)}
+                disabled={syncLoading}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition cursor-pointer disabled:opacity-50"
+                title="Push all staged changes from MariaDB tables to Exchange Online Protection (EOP)"
+              >
+                <CloudUpload className={`w-3.5 h-3.5 ${syncLoading && syncActionType === 'push' ? 'animate-spin' : ''}`} />
+                <span>{syncLoading && syncActionType === 'push' ? 'Pushing to EOP...' : 'Push to EOP'}</span>
               </button>
             </div>
           )}

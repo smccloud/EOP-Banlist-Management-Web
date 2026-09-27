@@ -1355,6 +1355,20 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                     </select>
                 </form>
 
+                <!-- Push Changes from MariaDB to EOP Button -->
+                <form method="POST" action="actions.php" class="inline" onsubmit="return confirm('Push all MariaDB changes for policy &quot;<?= htmlspecialchars($selectedPolicy) ?>&quot; to Microsoft 365 Exchange Online Protection?');">
+                    <input type="hidden" name="action" value="trigger_sync">
+                    <input type="hidden" name="direction" value="push">
+                    <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                    <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                    <button type="submit" 
+                            class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-xs transition cursor-pointer"
+                            title="Push changes from MariaDB tables to Exchange Online Protection (EOP)">
+                        <i class="fa-solid fa-cloud-arrow-up"></i>
+                        <span>Push to EOP</span>
+                    </button>
+                </form>
+
                 <!-- Direct Link to Configuration Page -->
                 <a href="?policy=<?= urlencode($selectedPolicy) ?>&tab=config_center" 
                    class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition <?= in_array($currentTab, ['config_center', 'ldap_config']) ? 'bg-indigo-600 text-white shadow-xs' : 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/60' ?>"
@@ -1517,6 +1531,20 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                         <i class="fa-solid fa-file-arrow-down"></i>
                         <span>Export CSV</span>
                     </a>
+
+                    <!-- Push to EOP Action Button -->
+                    <form method="POST" action="actions.php" class="inline" onsubmit="return confirm('Push all MariaDB changes for policy &quot;<?= htmlspecialchars($selectedPolicy) ?>&quot; to Microsoft 365 Exchange Online Protection?');">
+                        <input type="hidden" name="action" value="trigger_sync">
+                        <input type="hidden" name="direction" value="push">
+                        <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                        <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                        <button type="submit" 
+                                class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-md shadow-xs flex items-center space-x-1.5 transition cursor-pointer"
+                                title="Push all changes from MariaDB tables to Exchange Online Protection (EOP)">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            <span>Push Changes to EOP</span>
+                        </button>
+                    </form>
                 </div>
                 <?php endif; ?>
             </div>
@@ -4219,7 +4247,7 @@ The application includes a standard page-by-page setup wizard that runs during f
      # Scheduled Cron: Pull remote changes from Microsoft 365 into MariaDB
      Get-HostedContentFilterPolicy -Identity "${cfg.defaultPolicyName}"
      \`\`\`
-   - **Manual Admin Push**: Pushing local MariaDB entries to Microsoft 365 requires an intentional administrator action in the Web UI:
+   - **Manual Admin Push**: Pushing local MariaDB entries to Microsoft 365 is triggered on-demand via the **"Push Changes to EOP"** action button on list tabs or the quick **"Push to EOP"** header button:
      \`\`\`powershell
      # Manual Admin Push: Applies MariaDB tables to Exchange Online
      Connect-ExchangeOnline -AppId "${cfg.clientId}" -CertificateThumbprint "${cfg.certificateThumbprint}" -Organization "${cfg.organization || 'corp.example.com'}"

@@ -71,6 +71,9 @@ This solution provides:
 - **Safe UX with In-App Modals**:
   - Non-blocking in-app modal confirmations for record deletion and Exchange Online pushes.
   - Displays user profile badge (e.g. `John Smith AD Authorized`) while tracking underlying account identifiers (`jsmith`).
+- **One-Click Push from MariaDB to EOP**:
+  - Immediate **"Push to EOP"** quick button in the header and **"Push Changes to EOP"** button in each policy list toolbar to apply staged MariaDB entries directly to Microsoft 365 without navigating through submenus.
+  - Triggers an in-app confirmation modal before running `Set-HostedContentFilterPolicy`.
 - **Dark Mode Support**:
   - Built-in Dark and Light themes with a one-click toggle in the header.
   - Respects system `prefers-color-scheme` and remembers preference in `localStorage`.
@@ -281,10 +284,15 @@ Get-HostedContentFilterPolicy -Identity "Default"
 
 ### Manual Admin Push (Exchange Online)
 
-Pushing local MariaDB changes to Microsoft 365 is an intentional administrative action requiring confirmation in the UI:
-- When confirmed, the application executes `sync-exchange.ps1` with `-Action Push`.
+Pushing local MariaDB changes to Microsoft 365 is an intentional administrative action with dedicated push buttons across the interface:
+- **Main Policy List Action Bar**: A dedicated **"Push Changes to EOP"** button is located right alongside *Add Entry*, *Bulk Import*, *Smart Sort*, and *Export CSV*, allowing administrators to stage entries and immediately push changes to Microsoft 365 without navigating away.
+- **Top Header Quick Action**: A **"Push to EOP"** button is positioned right next to the active policy selector for one-click deployment from anywhere in the application.
+- **Exchange Sync Center**: A full manual push panel displaying the exact `Set-HostedContentFilterPolicy` syntax with active parameter values before execution.
+
+When triggered, an in-app confirmation modal outlines the policy name and all 4 tables being updated. Once confirmed:
+- The application executes `sync-exchange.ps1` with `-Action Push`.
 - Gathers all records from `eop_allowed_senders`, `eop_blocked_senders`, `eop_allowed_domains`, and `eop_blocked_domains`.
-- Executes:
+- Connects using Certificate-Based Authentication (CBA) and applies the staged lists:
   ```powershell
   Connect-ExchangeOnline -AppId $ClientId -CertificateThumbprint $CertThumbprint -Organization $Organization
   Set-HostedContentFilterPolicy -Identity $PolicyName `
@@ -293,6 +301,8 @@ Pushing local MariaDB changes to Microsoft 365 is an intentional administrative 
     -AllowedSenderDomains $AllowedDomains `
     -BlockedSenderDomains $BlockedDomains
   ```
+- Logs the push execution in `eop_audit_log` with the administrator's Active Directory username, client IP, timestamp, and record counts.
+- Updates the policy's `last_synced_at` and `sync_status` in `eop_policies`.
 
 ### Certificate-Based Authentication (CBA)
 
