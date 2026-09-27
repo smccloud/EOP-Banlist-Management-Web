@@ -205,15 +205,13 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
 
   // Developer simulation reset (only for testing within the builder)
   const handleSimulationReset = () => {
-    if (confirm('Are you sure you want to unlock the initial setup routine for simulation testing?')) {
-      localStorage.removeItem('eop_setup_completed');
-      localStorage.removeItem('eop_setup_locked_at');
-      setIsLocked(false);
-      setCurrentStep(1);
-      setDbTestResult(null);
-      setLdapTestResult(null);
-      setEopTestResult(null);
-    }
+    localStorage.removeItem('eop_setup_completed');
+    localStorage.removeItem('eop_setup_locked_at');
+    setIsLocked(false);
+    setCurrentStep(1);
+    setDbTestResult(null);
+    setLdapTestResult(null);
+    setEopTestResult(null);
   };
 
   // =========================================================================

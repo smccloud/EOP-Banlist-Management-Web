@@ -167,6 +167,8 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   // Sync execution simulation
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncActionType, setSyncActionType] = useState<'pull' | 'push'>('pull');
+  const [showPushConfirmModal, setShowPushConfirmModal] = useState(false);
+  const [deleteConfirmItem, setDeleteConfirmItem] = useState<{ id: number; value: string; tab: ListType } | null>(null);
   const [lastSyncResult, setLastSyncResult] = useState<{
     timestamp: string;
     status: 'success' | 'failed';
@@ -754,16 +756,22 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     setSmartSortError(null);
   };
 
-  // Delete item
-  const handleDelete = (id: number, val: string) => {
-    if (!confirm(`Are you sure you want to remove '${val}' from this policy list?`)) return;
+  // Delete item - open confirmation modal
+  const promptDelete = (id: number, val: string) => {
+    setDeleteConfirmItem({ id, value: val, tab: activeTab as ListType });
+  };
 
-    if (activeTab === 'allowed_senders') setAllowedSenders((prev) => prev.filter((i) => i.id !== id));
-    if (activeTab === 'blocked_senders') setBlockedSenders((prev) => prev.filter((i) => i.id !== id));
-    if (activeTab === 'allowed_domains') setAllowedDomains((prev) => prev.filter((i) => i.id !== id));
-    if (activeTab === 'blocked_domains') setBlockedDomains((prev) => prev.filter((i) => i.id !== id));
+  const confirmDelete = () => {
+    if (!deleteConfirmItem) return;
+    const { id, value: val, tab } = deleteConfirmItem;
 
-    logAction('REMOVE', activeTab as ListType, val, `Deleted from eop_${activeTab}`);
+    if (tab === 'allowed_senders') setAllowedSenders((prev) => prev.filter((i) => i.id !== id));
+    if (tab === 'blocked_senders') setBlockedSenders((prev) => prev.filter((i) => i.id !== id));
+    if (tab === 'allowed_domains') setAllowedDomains((prev) => prev.filter((i) => i.id !== id));
+    if (tab === 'blocked_domains') setBlockedDomains((prev) => prev.filter((i) => i.id !== id));
+
+    logAction('REMOVE', tab, val, `Deleted from eop_${tab}`);
+    setDeleteConfirmItem(null);
   };
 
   // Trigger simulated Exchange sync (Pull-Only for Cron or Manual Push for Admin)
@@ -1460,11 +1468,7 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </button>
 
                 <button
-                  onClick={() => {
-                    if (confirm('Are you sure you want to push all MariaDB entries to Microsoft 365 Exchange Online Protection?')) {
-                      handleTriggerSync('push');
-                    }
-                  }}
+                  onClick={() => setShowPushConfirmModal(true)}
                   disabled={syncLoading}
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition disabled:opacity-50 cursor-pointer"
                 >
@@ -2230,11 +2234,13 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                         <td className="py-3 px-4 text-slate-500 dark:text-slate-400 whitespace-nowrap text-[11px]">{item.created_at}</td>
                         <td className="py-3 px-4 text-right">
                           <button
-                            onClick={() => handleDelete(item.id, item.value)}
-                            className="text-rose-600 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 p-1 rounded hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
-                            title="Delete Entry"
+                            type="button"
+                            onClick={() => promptDelete(item.id, item.value)}
+                            className="text-rose-600 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                            title={`Delete ${item.value}`}
+                            aria-label={`Delete ${item.value}`}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         </td>
                       </tr>
@@ -2709,6 +2715,80 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Item Confirmation Modal */}
+      {deleteConfirmItem && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-800">
+            <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mb-3">
+              <Trash2 className="w-5 h-5" />
+            </div>
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">
+              Remove Entry from Policy?
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mb-4 leading-relaxed">
+              Are you sure you want to delete <strong className="font-mono text-slate-900 dark:text-white font-semibold">{deleteConfirmItem.value}</strong> from <span className="font-semibold">{deleteConfirmItem.tab.replace('_', ' ')}</span>?
+              This will remove the record from MariaDB table <code>eop_{deleteConfirmItem.tab}</code> and will be omitted from Exchange Online on the next push.
+            </p>
+
+            <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmItem(null)}
+                className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium cursor-pointer transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Entry</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Admin Push Confirmation Modal */}
+      {showPushConfirmModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-800">
+            <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-3">
+              <Download className="w-5 h-5" />
+            </div>
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">
+              Push to Exchange Online Protection?
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mb-4 leading-relaxed">
+              This will execute <code className="text-indigo-600 dark:text-indigo-400 font-bold">Set-HostedContentFilterPolicy</code> for policy <strong className="text-slate-900 dark:text-white">{activePolicy}</strong> with all allowed senders, blocked senders, allowed domains, and blocked domains currently staged in MariaDB.
+            </p>
+
+            <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowPushConfirmModal(false)}
+                className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium cursor-pointer transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPushConfirmModal(false);
+                  handleTriggerSync('push');
+                }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-sm transition cursor-pointer flex items-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Execute Push</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

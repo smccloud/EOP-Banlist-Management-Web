@@ -28,9 +28,7 @@ export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setCon
   };
 
   const handleReset = () => {
-    if (confirm('Reset all settings to default configuration?')) {
-      setConfig(defaultAppConfig);
-    }
+    setConfig(defaultAppConfig);
   };
 
   return (
