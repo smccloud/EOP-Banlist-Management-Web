@@ -87,6 +87,9 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [singleValue, setSingleValue] = useState('');
   const [singleNote, setSingleNote] = useState('');
   const [bulkText, setBulkText] = useState('');
+  const [addError, setAddError] = useState<string | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bannerMessage, setBannerMessage] = useState<{ type: 'success' | 'warning' | 'error'; text: string } | null>(null);
 
   // State for Table 6: eop_auth_config in MariaDB (Private Key & Encrypted Passphrase)
   const [eopAuthRows, setEopAuthRows] = useState<EopAuthConfig[]>([
@@ -344,21 +347,81 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     logAction('LOGIN', 'SYSTEM', loginUsername, 'Authenticated via Active Directory LDAP');
   };
 
-  // Add Single item
+  // Add Single item with strict duplicate prevention
   const handleAddSingle = (e: React.FormEvent) => {
     e.preventDefault();
+    setAddError(null);
     const val = singleValue.trim().toLowerCase();
     if (!val) return;
 
     // Email or domain validation
     if (activeTab === 'allowed_senders' || activeTab === 'blocked_senders') {
       if (!val.includes('@') || !val.includes('.')) {
-        alert('Please enter a valid email address (e.g. user@domain.com)');
+        setAddError('Please enter a valid email address (e.g. user@domain.com)');
         return;
       }
     } else {
       if (!val.includes('.')) {
-        alert('Please enter a valid domain name (e.g. domain.com or *.domain.com)');
+        setAddError('Please enter a valid domain name (e.g. domain.com or *.domain.com)');
+        return;
+      }
+    }
+
+    // 1. Strict Duplicate Check within current list for active policy
+    const currentItems = getCurrentList();
+    const isDuplicate = currentItems.some(
+      (item) => item.value.toLowerCase() === val
+    );
+
+    const listLabel = activeTab.replace('_', ' ');
+
+    if (isDuplicate) {
+      setAddError(
+        `Duplicate Entry: "${val}" already exists in ${listLabel} for policy "${activePolicy}". Duplicate entries are not allowed.`
+      );
+      return;
+    }
+
+    // 2. Cross-list duplicate/conflict check:
+    // If adding to Allowed Senders, verify it's not in Blocked Senders (and vice versa)
+    if (activeTab === 'allowed_senders') {
+      const inBlocked = blockedSenders.some(
+        (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
+      );
+      if (inBlocked) {
+        setAddError(
+          `Conflict: "${val}" is already in Blocked Senders for policy "${activePolicy}". Remove it from Blocked Senders before adding it to Allowed Senders.`
+        );
+        return;
+      }
+    } else if (activeTab === 'blocked_senders') {
+      const inAllowed = allowedSenders.some(
+        (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
+      );
+      if (inAllowed) {
+        setAddError(
+          `Conflict: "${val}" is already in Allowed Senders for policy "${activePolicy}". Remove it from Allowed Senders before adding it to Blocked Senders.`
+        );
+        return;
+      }
+    } else if (activeTab === 'allowed_domains') {
+      const inBlocked = blockedDomains.some(
+        (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
+      );
+      if (inBlocked) {
+        setAddError(
+          `Conflict: "${val}" is already in Blocked Domains for policy "${activePolicy}". Remove it from Blocked Domains before adding it to Allowed Domains.`
+        );
+        return;
+      }
+    } else if (activeTab === 'blocked_domains') {
+      const inAllowed = allowedDomains.some(
+        (i) => i.policy_name === activePolicy && i.value.toLowerCase() === val
+      );
+      if (inAllowed) {
+        setAddError(
+          `Conflict: "${val}" is already in Allowed Domains for policy "${activePolicy}". Remove it from Allowed Domains before adding it to Blocked Domains.`
+        );
         return;
       }
     }
@@ -381,43 +444,99 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     logAction('ADD', activeTab as ListType, val, `Added to eop_${activeTab}`);
     setSingleValue('');
     setSingleNote('');
+    setAddError(null);
     setShowAddModal(false);
+    setBannerMessage({
+      type: 'success',
+      text: `Successfully added "${val}" to ${listLabel} (policy: ${activePolicy})`
+    });
   };
 
-  // Bulk import
+  // Bulk import with duplicate detection & reporting
   const handleBulkImport = (e: React.FormEvent) => {
     e.preventDefault();
+    setBulkError(null);
     const lines = bulkText.split('\n');
-    let addedCount = 0;
     const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
 
+    const currentItems = getCurrentList();
+    const existingValuesSet = new Set(
+      currentItems.map((item) => item.value.toLowerCase())
+    );
+
+    const seenInBatch = new Set<string>();
     const newItems: ListItem[] = [];
+    let duplicateCount = 0;
+    let invalidCount = 0;
+
     lines.forEach((line) => {
       const parts = line.split(',');
       const val = parts[0]?.trim().toLowerCase();
       const note = parts[1]?.trim() || 'Bulk CSV imported';
-      if (val && val.length > 2) {
-        newItems.push({
-          id: Date.now() + Math.floor(Math.random() * 10000),
-          policy_name: activePolicy,
-          value: val,
-          note,
-          added_by: loginUsername,
-          created_at: now,
-          updated_at: now,
-        });
-        addedCount++;
+
+      if (!val || val.length < 3) return;
+
+      // Validation
+      if (activeTab === 'allowed_senders' || activeTab === 'blocked_senders') {
+        if (!val.includes('@') || !val.includes('.')) {
+          invalidCount++;
+          return;
+        }
+      } else {
+        if (!val.includes('.')) {
+          invalidCount++;
+          return;
+        }
       }
+
+      // Check if duplicate in current batch or already exists in this list
+      if (existingValuesSet.has(val) || seenInBatch.has(val)) {
+        duplicateCount++;
+        return;
+      }
+
+      seenInBatch.add(val);
+      newItems.push({
+        id: Date.now() + Math.floor(Math.random() * 100000) + newItems.length,
+        policy_name: activePolicy,
+        value: val,
+        note,
+        added_by: loginUsername,
+        created_at: now,
+        updated_at: now,
+      });
     });
+
+    if (newItems.length === 0) {
+      if (duplicateCount > 0) {
+        setBulkError(
+          `Duplicate Prevention: All ${duplicateCount} entries already exist in this list. No duplicate records were added.`
+        );
+      } else if (invalidCount > 0) {
+        setBulkError(`Format Error: All ${invalidCount} entries had invalid syntax.`);
+      } else {
+        setBulkError('No valid items found in import data.');
+      }
+      return;
+    }
 
     if (activeTab === 'allowed_senders') setAllowedSenders((prev) => [...newItems, ...prev]);
     if (activeTab === 'blocked_senders') setBlockedSenders((prev) => [...newItems, ...prev]);
     if (activeTab === 'allowed_domains') setAllowedDomains((prev) => [...newItems, ...prev]);
     if (activeTab === 'blocked_domains') setBlockedDomains((prev) => [...newItems, ...prev]);
 
-    logAction('ADD', activeTab as ListType, `${addedCount} items`, `Bulk imported ${addedCount} records into eop_${activeTab}`);
+    const msg = duplicateCount > 0
+      ? `Bulk imported ${newItems.length} new items. Skipped ${duplicateCount} duplicate entries.`
+      : `Bulk imported ${newItems.length} items successfully.`;
+
+    logAction('ADD', activeTab as ListType, `${newItems.length} items`, msg);
     setBulkText('');
+    setBulkError(null);
     setShowBulkModal(false);
+    setBannerMessage({
+      type: duplicateCount > 0 ? 'warning' : 'success',
+      text: msg
+    });
   };
 
   // Delete item
@@ -983,7 +1102,10 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
           {activeTab !== 'sync' && activeTab !== 'audit' && activeTab !== 'config_center' && activeTab !== 'ldap_db' && (
             <div className="flex items-center space-x-2 py-2">
               <button
-                onClick={() => setShowAddModal(true)}
+                onClick={() => {
+                  setAddError(null);
+                  setShowAddModal(true);
+                }}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-1.5 transition"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -991,7 +1113,10 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               </button>
 
               <button
-                onClick={() => setShowBulkModal(true)}
+                onClick={() => {
+                  setBulkError(null);
+                  setShowBulkModal(true);
+                }}
                 className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold rounded-lg flex items-center space-x-1.5 transition"
               >
                 <Upload className="w-3.5 h-3.5" />
@@ -1746,6 +1871,33 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
         ) : (
           /* List Table View */
           <div>
+            {/* Global Notification Banner */}
+            {bannerMessage && (
+              <div className={`mx-4 sm:mx-6 mt-4 p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+                bannerMessage.type === 'success'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                  : bannerMessage.type === 'warning'
+                  ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200'
+                  : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'
+              }`}>
+                <div className="flex items-center gap-2">
+                  {bannerMessage.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  )}
+                  <span className="font-medium">{bannerMessage.text}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBannerMessage(null)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-semibold px-2 py-0.5 rounded cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
             {/* Search Filter Bar */}
             <div className="p-4 bg-slate-50 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
               <div className="relative max-w-sm w-full">
@@ -1821,9 +1973,17 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">
               Add to {activeTab.replace('_', ' ').toUpperCase()}
             </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
               Inserting into table <code>eop_{activeTab}</code> for policy <strong>{activePolicy}</strong>
             </p>
+
+            {/* Error Banner */}
+            {addError && (
+              <div className="p-3 mb-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <div className="leading-snug">{addError}</div>
+              </div>
+            )}
 
             <form onSubmit={handleAddSingle} className="space-y-4 text-xs">
               <div>
@@ -1834,10 +1994,21 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   type="text"
                   required
                   value={singleValue}
-                  onChange={(e) => setSingleValue(e.target.value)}
+                  onChange={(e) => {
+                    setSingleValue(e.target.value);
+                    if (addError) setAddError(null);
+                  }}
                   placeholder={activeTab.includes('sender') ? 'user@externalpartner.com' : 'partner.com or *.partner.com'}
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                 />
+
+                {/* Instant Real-Time Duplicate Warning */}
+                {singleValue.trim() && getCurrentList().some((i) => i.value.toLowerCase() === singleValue.trim().toLowerCase()) && (
+                  <div className="mt-1.5 p-2 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-300 text-[11px] flex items-center gap-1.5 font-medium">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span>Duplicate: Already exists in this list for {activePolicy}.</span>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1861,7 +2032,12 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm"
+                  disabled={Boolean(singleValue.trim() && getCurrentList().some((i) => i.value.toLowerCase() === singleValue.trim().toLowerCase()))}
+                  className={`px-4 py-2 text-white font-semibold rounded-lg shadow-sm transition ${
+                    singleValue.trim() && getCurrentList().some((i) => i.value.toLowerCase() === singleValue.trim().toLowerCase())
+                      ? 'bg-slate-400 dark:bg-slate-600 cursor-not-allowed'
+                      : 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
+                  }`}
                 >
                   Save to MariaDB
                 </button>
@@ -1879,15 +2055,26 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               Bulk Import - {activeTab.replace('_', ' ').toUpperCase()}
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
-              Paste one entry per line, or <code>value, optional note</code>. Duplicate entries will be skipped.
+              Paste one entry per line, or <code>value, optional note</code>. Duplicate entries will be automatically filtered and skipped.
             </p>
+
+            {/* Error Banner */}
+            {bulkError && (
+              <div className="p-3 mb-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <div className="leading-snug">{bulkError}</div>
+              </div>
+            )}
 
             <form onSubmit={handleBulkImport} className="space-y-4 text-xs">
               <textarea
                 rows={8}
                 required
                 value={bulkText}
-                onChange={(e) => setBulkText(e.target.value)}
+                onChange={(e) => {
+                  setBulkText(e.target.value);
+                  if (bulkError) setBulkError(null);
+                }}
                 placeholder={
                   activeTab.includes('sender')
                     ? "partner1@company.com, Vendor billing contact\npartner2@company.com, Logistics notification\nuser@agency.net, Marketing agency"
@@ -1906,7 +2093,7 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm cursor-pointer"
                 >
                   Import Items
                 </button>

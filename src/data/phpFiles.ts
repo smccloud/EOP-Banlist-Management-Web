@@ -300,17 +300,36 @@ class Database {
     }
 
     /**
-     * Add single item to the dedicated table
+     * Check if an item already exists in a dedicated table for a policy (duplicate check)
      */
-    public static function addItem(string $listType, string $policyName, string $value, string $note, string $addedBy): bool {
+    public static function itemExists(string $listType, string $policyName, string $value): bool {
         $pdo = self::getConnection();
         $table = self::getTableName($listType);
         $col = self::getValueColumn($listType);
         $value = strtolower(trim($value));
 
+        $stmt = $pdo->prepare("SELECT 1 FROM {$table} WHERE policy_name = :policy AND {$col} = :val LIMIT 1");
+        $stmt->execute([':policy' => $policyName, ':val' => $value]);
+        return (bool)$stmt->fetchColumn();
+    }
+
+    /**
+     * Add single item to the dedicated table (rejects duplicate entries)
+     */
+    public static function addItem(string $listType, string $policyName, string $value, string $note, string $addedBy): bool {
+        $value = strtolower(trim($value));
+
+        // Strict duplicate check: do not add duplicate entries
+        if (self::itemExists($listType, $policyName, $value)) {
+            return false;
+        }
+
+        $pdo = self::getConnection();
+        $table = self::getTableName($listType);
+        $col = self::getValueColumn($listType);
+
         $sql = "INSERT INTO {$table} (policy_name, {$col}, note, added_by, created_at, updated_at)
-                VALUES (:policy, :val, :note, :user, NOW(), NOW())
-                ON DUPLICATE KEY UPDATE note = VALUES(note), updated_at = NOW()";
+                VALUES (:policy, :val, :note, :user, NOW(), NOW())";
         
         $stmt = $pdo->prepare($sql);
         $success = $stmt->execute([
@@ -321,7 +340,7 @@ class Database {
         ]);
 
         if ($success) {
-            self::logAudit('ADD', $listType, $policyName, $value, "Added or updated in {$table} by {$addedBy}", $addedBy);
+            self::logAudit('ADD', $listType, $policyName, $value, "Added to {$table} by {$addedBy}", $addedBy);
         }
         return $success;
     }
@@ -2368,7 +2387,7 @@ if (!verifyCsrfToken($token)) {
 }
 
 // --------------------------------------------------------------------------
-// 1. Add Single Entry
+// 1. Add Single Entry (Enforces Duplicate Prevention)
 // --------------------------------------------------------------------------
 if ($action === 'add_single') {
     $value = trim($_POST['value'] ?? '');
@@ -2389,11 +2408,18 @@ if ($action === 'add_single') {
         }
     }
 
+    // Check if entry already exists (duplicate prevention)
+    if (Database::itemExists($listType, $policyName, $value)) {
+        setFlash('error', "Duplicate entry rejected: '{$value}' already exists in {$listType} for policy '{$policyName}'.");
+        header("Location: index.php?policy=" . urlencode($policyName) . "&tab=" . urlencode($listType));
+        exit;
+    }
+
     $success = Database::addItem($listType, $policyName, $value, $note, $user['username']);
     if ($success) {
         setFlash('success', "Added '{$value}' to {$listType} for policy '{$policyName}'");
     } else {
-        setFlash('error', "Failed to add entry to {$listType}");
+        setFlash('error', "Failed to add entry to {$listType}. An entry with this value may already exist.");
     }
 
     header("Location: index.php?policy=" . urlencode($policyName) . "&tab=" . urlencode($listType));
@@ -2448,7 +2474,13 @@ if ($action === 'bulk_import') {
         setFlash('error', "No valid items found in bulk data.");
     } else {
         $result = Database::bulkInsert($listType, $policyName, $parsed, $user['username']);
-        setFlash('success', "Bulk Import Complete: {$result['inserted']} inserted, {$result['skipped']} duplicate/skipped.");
+        if ($result['inserted'] === 0 && $result['skipped'] > 0) {
+            setFlash('warning', "Duplicate Prevention: All {$result['skipped']} entries already exist in {$listType} for policy '{$policyName}'. No duplicates were added.");
+        } else if ($result['skipped'] > 0) {
+            setFlash('success', "Bulk Import Complete: {$result['inserted']} new items added. {$result['skipped']} duplicate entries were automatically skipped.");
+        } else {
+            setFlash('success', "Bulk Import Complete: {$result['inserted']} items added successfully.");
+        }
     }
 
     header("Location: index.php?policy=" . urlencode($policyName) . "&tab=" . urlencode($listType));
