@@ -7,6 +7,21 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
 ## 📑 Table of Contents
 
 - [Overview & Architecture](#overview--architecture)
+- [System Requirements](#system-requirements)
+  - [Hardware & Virtual Machine Recommendations](#hardware--virtual-machine-recommendations)
+  - [Operating System & Web Server](#operating-system--web-server)
+  - [PHP Runtime & Extensions](#php-runtime--extensions)
+  - [Remote MariaDB Database Server](#remote-mariadb-database-server)
+  - [Microsoft Active Directory & LDAP](#microsoft-active-directory--ldap)
+  - [Microsoft 365 Exchange Online Protection](#microsoft-365-exchange-online-protection)
+  - [Network & Firewall Port Matrix](#network--firewall-port-matrix)
+  - [Client Browser Requirements](#client-browser-requirements)
+- [Screenshots & UI Architecture](#screenshots--ui-architecture)
+  - [1. Main Policy Dashboard & Multi-Table Management (Dark Slate Mode)](#1-main-policy-dashboard--multi-table-management-dark-slate-mode)
+  - [2. Split Smart Sorter (Allowed & Blocked Real-Time Classification)](#2-split-smart-sorter-allowed--blocked-real-time-classification)
+  - [3. 5-Step Initial Deployment Setup Wizard (`setup.php`)](#3-5-step-initial-deployment-setup-wizard-setupphp)
+  - [4. Global Push All Changes to EOP (Confirmation & Itemized Audit Summary)](#4-global-push-all-changes-to-eop-confirmation--itemized-audit-summary)
+  - [5. Centralized Configuration Center (`config_center` - LDAP & CBA Key Storage)](#5-centralized-configuration-center-config_center---ldap--cba-key-storage)
 - [Key Features & Highlights](#key-features--highlights)
   - [Push All Changes to EOP (Global Staging & List-by-List Breakdown)](#push-all-changes-to-eop-global-staging--list-by-list-breakdown)
   - [Split Smart Sorter (Allowed & Blocked Buttons)](#split-smart-sorter-allowed--blocked-buttons)
@@ -27,15 +42,17 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
   - [Smart Domain Hierarchy Views](#smart-domain-hierarchy-views)
   - [Dark Mode & Audit Trail](#dark-mode--audit-trail)
 - [Debian Linux Server Deployment](#debian-linux-server-deployment)
-  - [Prerequisites](#prerequisites)
-  - [Step 1: Remote MariaDB Database Setup](#step-1-remote-mariadb-database-setup)
-  - [Step 2: Automated Installation on Debian](#step-2-automated-installation-on-debian)
-  - [Step 3: Manual Debian Setup (Alternative)](#step-3-manual-debian-setup-alternative)
+  - [Deployment Overview](#deployment-overview)
+  - [Step 1: Remote MariaDB Database Setup & Privileges](#step-1-remote-mariadb-database-setup--privileges)
+  - [Step 2: Install Packages on Debian 11 / 12](#step-2-install-packages-on-debian-11--12)
+  - [Step 3: Web Application Directory & File Permissions](#step-3-web-application-directory--file-permissions)
   - [Step 4: NGINX Server Block Configuration](#step-4-nginx-server-block-configuration)
-  - [Step 5: Exchange Online Management on Linux](#step-5-exchange-online-management-on-linux)
+  - [Step 5: Exchange Online Management & PowerShell Setup](#step-5-exchange-online-management--powershell-setup)
+  - [Step 6: Crontab Background Pull-Only Sync](#step-6-crontab-background-pull-only-sync)
 - [Project File Structure & Inventory](#project-file-structure--inventory)
 - [Configuration Reference (`config.php`, `.env`, & Database Tables)](#configuration-reference-configphp-env--database-tables)
 - [Troubleshooting & FAQ](#troubleshooting--faq)
+- [Authors & Co-Contributors](#authors--co-contributors)
 - [License](#license)
 
 ---
@@ -56,6 +73,259 @@ This solution provides:
    - **Scheduled Cron is strictly Pull-Only**: Never blindly overwrites Microsoft 365 in the background; only pulls remote changes into MariaDB.
    - **Manual Admin Push All**: Pushing MariaDB lists to Microsoft 365 requires an intentional administrator action with pre-push confirmation modals and post-push summaries.
 9. **Initial Run Setup Routine (`setup.php`)**: A 5-step deployment wizard that validates database and directory connectivity, builds the schema, and permanently locks itself against re-execution.
+
+---
+
+## System Requirements
+
+The application is engineered for enterprise reliability, predictable performance, and minimal operational overhead. Below are the comprehensive requirements across all infrastructure tiers:
+
+### Hardware & Virtual Machine Recommendations
+
+| Role | Minimum | Recommended | Notes |
+|---|---|---|---|
+| **Debian Web Server** | 1 vCPU, 1 GB RAM, 10 GB Disk | 2 vCPU, 4 GB RAM, 25 GB SSD | Hosts NGINX, PHP-FPM, and PowerShell Core (`pwsh`) |
+| **Remote MariaDB Server** | 1 vCPU, 1 GB RAM, 10 GB Disk | 2 vCPU, 4 GB RAM, 50 GB SSD | Remote database host running MariaDB or MySQL |
+| **Network Throughput** | 100 Mbps NIC | 1 Gbps NIC | Low latency (<15ms) to MariaDB & AD Domain Controller |
+
+### Operating System & Web Server
+
+- **Operating System**:
+  - **Debian 12 (Bookworm)** - *Recommended*
+  - **Debian 11 (Bullseye)** - *Supported*
+  - **Ubuntu 24.04 LTS / Ubuntu 22.04 LTS** - *Supported*
+- **Web Server**:
+  - **NGINX 1.18+** (NGINX 1.22+ on Debian 12) with FastCGI process manager (`fastcgi_pass unix:/run/php/php-fpm.sock`)
+  - HTTP/2 and TLS 1.2 / TLS 1.3 enabled (via reverse proxy or direct Let's Encrypt / enterprise SSL certificates)
+
+### PHP Runtime & Extensions
+
+- **PHP Version**: **PHP 8.1**, **PHP 8.2**, or **PHP 8.3**
+- **SAPI**: `php-fpm` (FastCGI Process Manager) and `php-cli` (Command Line Interface for cron jobs)
+- **Mandatory PHP Extensions**:
+  - `pdo_mysql` (`php-mysql`): Remote MariaDB database connectivity with prepared statements
+  - `ldap` (`php-ldap`): Microsoft Active Directory LDAP query and group membership evaluation
+  - `curl` (`php-curl`): External HTTP requests and API integrations
+  - `mbstring` (`php-mbstring`): Multi-byte UTF-8 string parsing for RFC email address handling
+  - `xml` (`php-xml`): XML / DOM parser utilities
+  - `zip` (`php-zip`): Bulk archive generation and import processing
+  - `openssl` (`php-openssl`): AES-256-GCM encryption for CBA private keys and TLS handshakes
+
+### Remote MariaDB Database Server
+
+- **Engine**: **MariaDB 10.5+**, **10.6+**, **10.11+ LTS** (or **MySQL 8.0+**)
+- **Storage Engine**: `InnoDB` (for ACID transactions, row-level locking, and foreign key integrity)
+- **Character Set**: `utf8mb4` with collation `utf8mb4_unicode_ci` (full international and emoji compatibility)
+- **Network Configuration**:
+  - TCP Port **3306** accessible from the Debian web server IP address
+  - Remote MariaDB `bind-address` configured to listen on internal LAN or `0.0.0.0`
+  - Dedicated database user with `SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, ALTER` privileges on `eop_antispam_db`
+
+### Microsoft Active Directory & LDAP
+
+- **Domain Controllers**: Windows Server 2012 R2, 2016, 2019, or 2022 Active Directory Domain Services (AD DS)
+- **LDAP Protocol Modes**:
+  - **Standard Plain LDAP (Port 389)**: *Supported by default*. Does not require enterprise root CA certificates installed on Debian.
+  - **LDAPS (Port 636)**: Supported over SSL with `TLS_REQCERT allow` or trusted enterprise CA.
+  - **StartTLS (Port 389)**: Supported for explicit TLS upgrades on standard ports.
+- **Service Account Requirements**:
+  - Standard domain user account with read-only directory query permissions
+  - **Bind DN**: (e.g., `CN=svc-eop,OU=Service Accounts,DC=corp,DC=example,DC=com`)
+  - **Bind Password**: Stored encrypted in MariaDB table `eop_ldap_config`
+- **Group Authorization**:
+  - Authorized Active Directory Group Distinguished Name (Group DN)
+  - Recursive nested groups supported via LDAP matching rule OID `1.2.840.113556.1.4.1941` (`LDAP_MATCHING_RULE_IN_CHAIN`)
+
+### Microsoft 365 Exchange Online Protection
+
+- **Tenant Access**: Microsoft 365 Commercial, GCC, GCC High, or DoD tenant with active Exchange Online licenses
+- **Entra ID (Azure AD) App Registration**:
+  - Microsoft Graph / Exchange Online Application Permissions: `Exchange.ManageAsApp`
+  - Entra ID Administrator Role: Assigned **Exchange Administrator** or **Global Administrator** role to the App Registration
+- **App-Only Certificate-Based Authentication (CBA)**:
+  - X.509 RSA 2048-bit or 4096-bit certificate uploaded to the App Registration in Microsoft Entra ID
+  - Corresponding RSA Private Key (`.key`, `.pem`, or PKCS#12 `.pfx`) stored in MariaDB `eop_auth_config`
+- **PowerShell Execution Environment (Debian Linux)**:
+  - **PowerShell Core 7.2+** (`pwsh`) installed on Debian
+  - PowerShell Module: `ExchangeOnlineManagement` (v3.0.0 or higher)
+
+### Network & Firewall Port Matrix
+
+| Port | Protocol | Source | Destination | Purpose |
+|---|---|---|---|---|
+| **80** | TCP | Clients / Reverse Proxy | Debian Web Server | HTTP web portal traffic (auto-redirects to HTTPS) |
+| **443** | TCP | Clients / Reverse Proxy | Debian Web Server | HTTPS secure web portal access |
+| **3306** | TCP | Debian Web Server | Remote MariaDB Server | Remote database queries & individual table transactions |
+| **389** | TCP | Debian Web Server | AD Domain Controller | Active Directory LDAP user authentication & Group DN verification |
+| **636** | TCP | Debian Web Server | AD Domain Controller | *Optional*: LDAPS encrypted directory queries |
+| **443** | TCP (Outbound) | Debian Web Server | `outlook.office365.com` | Exchange Online PowerShell CBA connection and cmdlet execution |
+| **443** | TCP (Outbound) | Debian Web Server | `login.microsoftonline.com` | Microsoft Entra ID OAuth 2.0 token endpoint for CBA authentication |
+
+### Client Browser Requirements
+
+- Modern evergreen web browser:
+  - **Google Chrome** (v100+)
+  - **Microsoft Edge** (v100+)
+  - **Mozilla Firefox** (v100+)
+  - **Apple Safari** (v15+)
+- Enabled JavaScript and CSS Grid / Flexbox
+- No Flash, Silverlight, or legacy ActiveX components required
+
+---
+
+## Screenshots & UI Architecture
+
+The application delivers an enterprise-grade dark-slate user interface, engineered specifically for administrative clarity, rapid intake, and zero-accident deployments to Microsoft 365.
+
+### 1. Main Policy Dashboard & Multi-Table Management (Dark Slate Mode)
+
+The primary interface provides instant visibility into active anti-spam lists, tenant health, search/filter controls, and staged delta modifications.
+
+```text
++-------------------------------------------------------------------------------------------------------------------------+
+| [🛡️ EOP Anti-Spam Manager]  Policy: [Default (Inbound Anti-Spam) ▼]  Tenant: corp.onmicrosoft.com   [🌙 Dark] [👤 Admin] |
++-------------------------------------------------------------------------------------------------------------------------+
+|  [Allowed Senders (1,420)]   [Blocked Senders (845)]   [Allowed Domains (312)]   [Blocked Domains (628)]   [Audit Log]  |
++-------------------------------------------------------------------------------------------------------------------------+
+|  [⚡ Smart Sort Allowed]  [⚡ Smart Sort Blocked]  [+ Add Entry]  [📥 Import CSV]  [📤 Export]  [🚀 Push All to EOP (4)]   |
++-------------------------------------------------------------------------------------------------------------------------+
+|  ℹ️ Staged Changes: +3 new senders staged, -1 domain staged for removal. Push All to apply to Exchange Online.        |
++-------------------------------------------------------------------------------------------------------------------------+
+|  🔍 Filter by sender or domain...                                     Sort: [Alphabetical A-Z ▼]   Cluster: [By Domain] |
+|-------------------------------------------------------------------------------------------------------------------------|
+|  Status  | Sender / Domain              | Category       | Added By     | Date Added          | Note            | Action|
+|----------|------------------------------|----------------|--------------|---------------------|-----------------|-------|
+|  ● ACTIVE| user@trustedpartner.com      | Allowed Senders| jdoe_admin   | 2026-09-28 08:30:15 | Vendor invoicing| [🗑️]  |
+|  ● ACTIVE| alerts@monitoring-core.net   | Allowed Senders| jdoe_admin   | 2026-09-27 14:12:00 | NOC alerting    | [🗑️]  |
+|  ▲ STAGED| support@partner-service.io   | Allowed Senders| jdoe_admin   | Just now            | Ticket dispatch | [Undo]|
+|  ● ACTIVE| notifications@cloud-corp.com | Allowed Senders| asmith_adm   | 2026-09-25 11:05:40 | Shared services | [🗑️]  |
++-------------------------------------------------------------------------------------------------------------------------+
+| Showing 1 to 25 of 1,421 records                                                         [First] [< Prev] [1] [2] [Next>]|
++-------------------------------------------------------------------------------------------------------------------------+
+```
+
+### 2. Split Smart Sorter (Allowed & Blocked Real-Time Classification)
+
+Clicking **"Smart Sort Allowed"** or **"Smart Sort Blocked"** opens an intelligent intake engine that automatically separates mixed bulk text into individual table targets.
+
+```text
++-------------------------------------------------------------------------------------------------------------------------+
+|  ⚡ Split Smart Sorter - Target: [ ALLOWLIST TABLES (Senders & Domains) ]                                            [✕] |
++-------------------------------------------------------------------------------------------------------------------------+
+|  Paste raw text, CSV extracts, or email lists. Sorter automatically parses RFC emails vs FQDN domains:                  |
+|                                                                                                                         |
+|  +-------------------------------------------------------------------------------------------------------------------+  |
+|  | billing@partner.com                                                                                               |  |
+|  | alerts.partner.com                                                                                                |  |
+|  | ceo@vendor-group.org                                                                                              |  |
+|  | trusted-gateway.net                                                                                               |  |
+|  | duplicate@partner.com                                                                                             |  |
+|  +-------------------------------------------------------------------------------------------------------------------+  |
+|                                                                                                                         |
+|  LIVE PARSING & DEDUPLICATION SUMMARY:                                                                                  |
+|  ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐                  |
+|  │  📧 Allowed Senders │   │  🌐 Allowed Domains │   │  ⚠️ Duplicates Found │   │  ❌ Invalid Syntax  │                  |
+|  │         2           │   │         2           │   │         1 (Ignored) │   │         0           │                  |
+|  └─────────────────────┘   └─────────────────────┘   └─────────────────────┘   └─────────────────────┘                  |
+|                                                                                                                         |
+|  Routing Preview:                                                                                                       |
+|  → `billing@partner.com`    → Route to table: `eop_allowed_senders`                                                     |
+|  → `alerts.partner.com`     → Route to table: `eop_allowed_domains`                                                     |
+|  → `ceo@vendor-group.org`   → Route to table: `eop_allowed_senders`                                                     |
+|  → `trusted-gateway.net`    → Route to table: `eop_allowed_domains`                                                     |
+|                                                                                                                         |
+|  Justification / Change Note: [ Q4 2026 Vendor Integration Approvals                                ]                  |
+|                                                                                                                         |
+|                                                                    [Cancel]   [ Stage 4 Entries into Allowlist Tables ] |
++-------------------------------------------------------------------------------------------------------------------------+
+```
+
+### 3. 5-Step Initial Deployment Setup Wizard (`setup.php`)
+
+Runs on initial server deployment to configure remote database tables, test Active Directory LDAP binding, register CBA certificates, and create the permanent lockout flag.
+
+```text
++-------------------------------------------------------------------------------------------------------------------------+
+|  🛡️ EOP Anti-Spam Manager - Initial Environment Setup Wizard                                                            |
++-------------------------------------------------------------------------------------------------------------------------+
+|  (1) Environment Check  ───▶  (2) MariaDB Setup  ───▶  (3) AD LDAP Auth  ───▶  (4) EOP CBA Keys  ───▶  (5) Lock & Finish |
++-------------------------------------------------------------------------------------------------------------------------+
+|                                                                                                                         |
+|  STEP 3 OF 5: Active Directory LDAP & Service Account Authorization                                                     |
+|                                                                                                                         |
+|  Domain Controller FQDN:       [ dc01.corp.example.com                           ]                                      |
+|  LDAP Protocol:                (●) Plain LDAP (Port 389 - No Certs Needed)   ( ) LDAPS (Port 636)                       |
+|  Base DN:                      [ DC=corp,DC=example,DC=com                       ]                                      |
+|  Authorized Group DN:          [ CN=Exchange-Admins,OU=Security Groups,DC=corp... ]                                      |
+|  Service Account Bind DN:      [ CN=svc-eop-web,OU=Service Accounts,DC=corp...   ]                                      |
+|  Service Account Bind Password:[ •••••••••••••••••••••                           ] [👁️ Show] [🔒 Locked]                |
+|                                                                                                                         |
+|  [⚡ Run Live AD Connection & Bind Test]                                                                                |
+|  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐  |
+|  │  [✓] TCP Connection to dc01.corp.example.com:389: SUCCESS (4ms)                                                  │  |
+|  │  [✓] Service Account Bind (CN=svc-eop-web...): SUCCESS                                                           │  |
+|  │  [✓] Base DN Resolution (DC=corp,DC=example,DC=com): SUCCESS                                                     │  |
+|  │  [✓] Group DN Verification (CN=Exchange-Admins...): SUCCESS (Found 14 nested members)                            │  |
+|  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘  |
+|                                                                                                                         |
+|                                                                               [< Back]   [ Save & Proceed to Step 4 >]  |
++-------------------------------------------------------------------------------------------------------------------------+
+```
+
+### 4. Global Push All Changes to EOP (Confirmation & Itemized Audit Summary)
+
+Clicking **"Push All Changes to EOP"** reviews all staged modifications across all 4 tables and outputs an itemized list-by-list audit report.
+
+```text
++-------------------------------------------------------------------------------------------------------------------------+
+|  🚀 Push Changes to Microsoft 365 Exchange Online Protection                                                        [✕] |
++-------------------------------------------------------------------------------------------------------------------------+
+|  Target Tenant: corp.onmicrosoft.com              Target Policy: Default (Inbound Anti-Spam)                            |
+|                                                                                                                         |
+|  ITEMIZED BREAKDOWN OF STAGED CHANGES:                                                                                  |
+|  ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐  |
+|  │  1. Allowed Senders (`eop_allowed_senders`):                                                                      │  |
+|  │     + ADD: support@partner-service.io                                                                             │  |
+|  │     + ADD: devops-alerts@monitoring-hub.org                                                                       │  |
+|  │  2. Blocked Senders (`eop_blocked_senders`):                                                                      │  |
+|  │     + ADD: phish-campaign@malicious-sender.top                                                                    │  |
+|  │  3. Allowed Domains (`eop_allowed_domains`):                                                                      │  |
+|  │     (No changes staged - 312 existing domains preserved)                                                          │  |
+|  │  4. Blocked Domains (`eop_blocked_domains`):                                                                      │  |
+|  │     - REMOVE: retired-vendor-domain.biz                                                                           │  |
+|  └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘  |
+|                                                                                                                         |
+|  PowerShell Execution Payload:                                                                                          |
+|  Set-HostedContentFilterPolicy -Identity "Default" `                                                                    |
+|    -AllowedSenders @('user@trustedpartner.com','support@partner-service.io',...) `                                      |
+|    -BlockedSenders @('spam@botnet.ru','phish-campaign@malicious-sender.top',...) `                                      |
+|    -AllowedSenderDomains @('partner.com','corp-vendors.net',...) `                                                      |
+|    -BlockedSenderDomains @('badactor.xyz','phish-gateway.cc',...)                                                       |
+|                                                                                                                         |
+|                                                           [Cancel]   [ Confirm & Execute Push to Exchange Online (4) ]  |
++-------------------------------------------------------------------------------------------------------------------------+
+```
+
+### 5. Centralized Configuration Center (`config_center` - LDAP & CBA Key Storage)
+
+Administrators can update Active Directory LDAP parameters and rotate Exchange Online RSA private keys directly in the database without modifying server filesystem configuration files.
+
+```text
++-------------------------------------------------------------------------------------------------------------------------+
+|  ⚙️ Centralized Configuration Center (Stored in MariaDB `eop_ldap_config` & `eop_auth_config`)                         |
++-------------------------------------------------------------------------------------------------------------------------+
+|  [ Active Directory LDAP Settings ]                 [ Exchange Online Certificate-Based Auth (CBA) ]                   |
+|--------------------------------------------------+----------------------------------------------------------------------|
+|  Domain Controller:  dc01.corp.example.com       |  Tenant ID:          7a8b9c0d-1234-5678-abcd-ef0123456789            |
+|  Port & Protocol:    389 (Plain LDAP)            |  Client App ID:      3b4c5d6e-9876-5432-fedc-ba9876543210            |
+|  Search Base DN:     DC=corp,DC=example,DC=com   |  Cert Thumbprint:    9F2E7B8A1C4D5E6F0123456789ABCDEF01234567         |
+|  Authorized Group DN:CN=Exchange-Admins,...      |  Organization:       corp.onmicrosoft.com                            |
+|  Service Bind DN:    CN=svc-eop-web,...          |  Private Key Status: [✓ Key Installed (AES-256-GCM Encrypted)]       |
+|  Bind Password:      [••••••••••••] [Show]       |  Target Policy:      Default                                         |
+|                                                  |                                                                      |
+|  [ Test Active Directory Connection ]            |  [ Upload New RSA Private Key (.pem / .key) ]   [ Test M365 Auth ]   |
++--------------------------------------------------+----------------------------------------------------------------------+
+```
 
 ---
 
@@ -138,7 +408,7 @@ The unified intake engine is split into two dedicated, color-coded buttons on th
 ### Auto-Dismiss Notification Banners & Staged Pending Strips
 
 To keep the interface clean, compact, and responsive, items that appear dynamically between the action toolbar buttons and the anti-spam list automatically dismiss:
-- **Global Notification Banner**: Success, warning, and operational status alerts (e.g. entry additions, bulk import results, Smart Sorter completions, deletions, and CSV export notices) automatically dismiss after **5 seconds** with a smooth fade animation. An immediate "Dismiss" button with an `X` icon is also available for instant closure.
+- **Global Notification Banner**: Success, warning, and operational status alerts automatically dismiss after **5 seconds** with a smooth fade animation. An immediate "Dismiss" button with an `X` icon is also available for instant closure.
 - **Staged Pending Changes Notice Strip**: When additions or deletions are staged across any of the 4 tables, an informative blue summary strip appears between the toolbar buttons and the list detailing what was staged, and automatically dismisses after **6 seconds**. Persistent badges on the **"Push All Changes to EOP"** action button and top navigation bar maintain continuous visibility of pending counts without permanently shifting the table layout.
 
 ---
@@ -386,15 +656,13 @@ Pushing local MariaDB changes to Microsoft 365 is an intentional administrative 
 
 ## Debian Linux Server Deployment
 
-### Prerequisites
+### Deployment Overview
 
-- A server running **Debian 11 (Bullseye)** or **Debian 12 (Bookworm)**.
-- A remote **MariaDB / MySQL Server** reachable on port 3306.
-- A **Windows Server Domain Controller** reachable on port 389 (LDAP).
+Follow these sequential steps to install the system on a clean **Debian 11 (Bullseye)** or **Debian 12 (Bookworm)** server.
 
-### Step 1: Remote MariaDB Database Setup
+### Step 1: Remote MariaDB Database Setup & Privileges
 
-On your remote MariaDB server, run the schema script:
+On your remote MariaDB server, import the schema file:
 
 ```bash
 mariadb -u root -p < schema.sql
@@ -410,52 +678,61 @@ FLUSH PRIVILEGES;
 
 > **Note**: Verify `/etc/mysql/mariadb.conf.d/50-server.cnf` on the remote server has `bind-address = 0.0.0.0` (or your internal LAN IP) and firewall port 3306 is open to the Debian server.
 
-### Step 2: Automated Installation on Debian
+### Step 2: Install Packages on Debian 11 / 12
 
-Copy the application archive to your Debian server, extract it, and run the automated installer:
-
-```bash
-chmod +x install-debian.sh
-sudo ./install-debian.sh
-```
-
-The script automatically:
-1. Installs NGINX, PHP 8 (PHP-FPM), `php-ldap`, `php-mysql`, `php-curl`, `php-mbstring`, and `mariadb-client`.
-2. Copies files to `/var/www/eop-antispam`.
-3. Sets secure permissions (`chown -R www-data:www-data`, directories 750, files 640).
-4. Configures the NGINX fastcgi pass to the PHP-FPM UNIX socket and sensitive file rules.
-5. Enables the NGINX server block and restarts `nginx` and `php-fpm`.
-
-### Step 3: Manual Debian Setup (Alternative)
-
-If you prefer installing packages manually:
+Update Debian APT repositories and install NGINX, PHP-FPM, PHP modules, and the MariaDB client:
 
 ```bash
-sudo apt-get update
+sudo apt-get update -y
 sudo apt-get install -y nginx \
     php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip \
-    mariadb-client curl wget
+    mariadb-client curl wget git
 ```
 
-Test your remote MariaDB connection from the Debian terminal:
+Test remote MariaDB connectivity from your Debian server:
 
 ```bash
 mariadb -h 192.168.10.50 -P 3306 -u eop_app_user -p'YourStrongPasswordHere' -D eop_antispam_db -e "SHOW TABLES;"
 ```
 
-Test your Active Directory connection over standard LDAP (port 389) with service account credentials:
+Test Active Directory LDAP connectivity over standard port 389 with your service account:
 
 ```bash
 sudo apt-get install -y ldap-utils
 ldapsearch -x -H ldap://dc01.corp.example.com:389 \
   -b "DC=corp,DC=example,DC=com" \
   -D "CN=svc-eop,OU=Service Accounts,DC=corp,DC=example,DC=com" \
-  -w "ServiceAccountPassword" "(sAMAccountName=*)" dn
+  -w "YourServicePassword" "(sAMAccountName=*)" dn
+```
+
+### Step 3: Web Application Directory & File Permissions
+
+Create the application directory, copy files, and assign secure ownership and permissions:
+
+```bash
+# Create application root directory
+sudo mkdir -p /var/www/eop-antispam
+
+# Copy extracted application files to /var/www/eop-antispam/
+sudo cp -r ./* /var/www/eop-antispam/
+
+# Set ownership to web user www-data
+sudo chown -R www-data:www-data /var/www/eop-antispam
+
+# Enforce secure directory and file permissions
+sudo find /var/www/eop-antispam -type d -exec chmod 750 {} \;
+sudo find /var/www/eop-antispam -type f -exec chmod 640 {} \;
 ```
 
 ### Step 4: NGINX Server Block Configuration
 
-Create `/etc/nginx/sites-available/eop-antispam.conf`:
+Deploy the NGINX configuration block to `/etc/nginx/sites-available/eop-antispam.conf`:
+
+```bash
+sudo cp /var/www/eop-antispam/nginx.conf /etc/nginx/sites-available/eop-antispam.conf
+```
+
+Verify your server block matches the hardened template:
 
 ```nginx
 server {
@@ -479,7 +756,7 @@ server {
         try_files $uri $uri/ /index.php?$args;
     }
 
-    # Pass PHP scripts to PHP-FPM
+    # Pass PHP scripts to PHP-FPM UNIX socket
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php-fpm.sock;
@@ -487,7 +764,7 @@ server {
         include fastcgi_params;
     }
 
-    # Block direct browser access to config, scripts, keys, and SQL files
+    # Block direct browser access to sensitive configs, keys, locks, and scripts
     location ~* ^/(\..*|config\.php|installed\.lock|.*\.sql|.*\.ps1|.*\.sh|.*\.key|.*\.pem) {
         deny all;
         return 403;
@@ -504,7 +781,7 @@ server {
 }
 ```
 
-Enable the site, disable the default site, test configuration, and restart NGINX + PHP-FPM:
+Enable the site configuration, disable the default site, test syntax, and restart NGINX + PHP-FPM:
 
 ```bash
 sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
@@ -514,26 +791,35 @@ sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
 sudo systemctl restart nginx
 ```
 
-### Step 5: Exchange Online Management on Linux
+### Step 5: Exchange Online Management & PowerShell Setup
 
-To enable automated Exchange Online synchronization via PowerShell on Debian:
+Install PowerShell Core (`pwsh`) and the Microsoft `ExchangeOnlineManagement` module:
 
-1. Install PowerShell (`pwsh`) on Debian:
-   ```bash
-   sudo apt-get install -y powershell
-   ```
-2. Install the Exchange Online Management module:
-   ```bash
-   sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUsers -Force"
-   ```
-3. Set up the Pull-Only cron schedule for user `www-data`:
-   ```bash
-   sudo crontab -u www-data -e
-   ```
-   Add:
-   ```cron
-   */15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --action=pull --policy="Default" >> /var/log/eop-sync.log 2>&1
-   ```
+```bash
+# Register Microsoft package repository for Debian:
+sudo apt-get install -y wget apt-transport-https software-properties-common
+wget -q "https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb"
+sudo dpkg -i packages-microsoft-prod.deb
+sudo apt-get update -y
+sudo apt-get install -y powershell
+
+# Install ExchangeOnlineManagement module:
+sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUsers -Force"
+```
+
+### Step 6: Crontab Background Pull-Only Sync
+
+Configure the Pull-Only cron schedule under the `www-data` user to automatically pull remote changes from Microsoft 365 every 15 minutes:
+
+```bash
+sudo crontab -u www-data -e
+```
+
+Add the following entry:
+
+```cron
+*/15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --action=pull --policy="Default" >> /var/log/eop-sync.log 2>&1
+```
 
 ---
 
@@ -553,8 +839,7 @@ eop-antispam-php-mariadb/
 ├── actions.php           # REST-style handler for add, delete, import, export, and sync
 ├── sync-exchange.ps1     # Linux PowerShell sync automation script (Pull & Push modes)
 ├── cron-sync.php         # Scheduled Pull-Only background CLI sync daemon
-├── install-debian.sh     # Automated Debian 11/12 deployment script
-├── eop-nginx.conf        # Hardened NGINX Server Block configuration
+├── nginx.conf            # Hardened NGINX Server Block configuration
 ├── .env.example          # Environment variable template
 └── README.md             # Complete technical and deployment documentation
 ```
@@ -611,6 +896,20 @@ To prevent accidental policy overwrites or race conditions in Microsoft 365, aut
 
 #### Q: Can I run this behind an HTTPS reverse proxy (e.g. Cloudflare, Traefik, HAProxy, AWS ALB)?
 Yes. Configure your upstream reverse proxy to forward requests to NGINX with `X-Forwarded-Proto https`, `X-Forwarded-Host`, and `X-Forwarded-For`. The application and NGINX configuration include security headers (`X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`) to protect your deployment.
+
+---
+
+## Authors & Co-Contributors
+
+- **Shaun Thomas McCloud** - Creator & Lead Architect (<shaun.thomas.mccloud@gmail.com>)
+- **AI Studio** - Co-Contributor
+
+### Contributions & Engineering Acknowledgments
+- Implementation of the dedicated 9-table remote MariaDB architecture for strict list isolation.
+- Active Directory LDAP authentication engine with service account bind password authorization and nested group resolution.
+- Split Smart Sorter classification engine with real-time email vs. domain routing and RFC deduplication.
+- Exchange Online Protection Certificate-Based Authentication (CBA) integration and pull-only cron sync engine.
+- Complete NGINX FastCGI server block integration and production Debian Linux manual deployment architecture.
 
 ---
 

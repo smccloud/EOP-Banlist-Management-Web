@@ -4513,143 +4513,15 @@ if (file_exists($psScript)) {
         echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\\n";
     } else {
         Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");
-        echo "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}.\\n";
+        echo "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}.\n";
     }
 } else {
-    echo "Error: PowerShell script not found at {$psScript}\\n";
+    echo "Error: PowerShell script not found at {$psScript}\n";
 }
 `
   },
 
-  // 12. install-debian.sh
-  {
-    name: 'install-debian.sh',
-    path: 'install-debian.sh',
-    description: 'Automated Bash setup script for Debian 11/12 installing NGINX, PHP-FPM 8.2/8.3, LDAP, MySQL extensions, mariadb-client, permissions, and directory structure.',
-    category: 'debian',
-    generateContent: (cfg) => `#!/usr/bin/env bash
-# ==============================================================================
-# Automated Debian 11 / 12 Deployment Script for EOP Anti-Spam Manager
-# Installs: NGINX, PHP-FPM (8.2/8.3), php-ldap, php-mysql, php-curl, mariadb-client, pwsh
-# ==============================================================================
-
-set -euo pipefail
-
-echo "=========================================================="
-echo "Installing EOP Anti-Spam Web App with NGINX on Debian..."
-echo "=========================================================="
-
-if [ "$EUID" -ne 0 ]; then
-    echo "Error: Please run as root (sudo ./install-debian.sh)"
-    exit 1
-fi
-
-APP_DIR="/var/www/eop-antispam"
-WEB_USER="www-data"
-
-# 1. Update apt repositories
-echo "[1/6] Updating APT repositories..."
-apt-get update -y
-apt-get install -y lsb-release ca-certificates apt-transport-https software-properties-common curl wget gnupg
-
-# 2. Install NGINX & PHP-FPM with required extensions (including LDAP and MariaDB client)
-echo "[2/6] Installing NGINX, PHP-FPM, LDAP, and MariaDB extensions..."
-apt-get install -y nginx \\
-    php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip \\
-    mariadb-client
-
-# 3. Configure Active Directory LDAP TLS Settings
-echo "[3/6] Configuring /etc/ldap/ldap.conf for Active Directory..."
-# If your AD domain controller uses an internal enterprise CA or self-signed cert,
-# we ensure TLS_REQCERT allows connection while trusting the CA:
-if ! grep -q "TLS_REQCERT" /etc/ldap/ldap.conf; then
-    echo "TLS_REQCERT allow" >> /etc/ldap/ldap.conf
-fi
-
-# 4. Deploy web files
-echo "[4/6] Creating deployment directory: $APP_DIR"
-mkdir -p "$APP_DIR"
-cp -r ./* "$APP_DIR/" || true
-
-# Set strict permissions
-chown -R $WEB_USER:$WEB_USER "$APP_DIR"
-find "$APP_DIR" -type d -exec chmod 750 {} \\;
-find "$APP_DIR" -type f -exec chmod 640 {} \\;
-
-# 5. Configure NGINX Server Block
-echo "[5/6] Configuring NGINX Server Block..."
-cat << 'EOF' > /etc/nginx/sites-available/eop-antispam.conf
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${cfg.appUrl.replace('https://', '').replace('http://', '')};
-
-    root /var/www/eop-antispam;
-    index index.php index.html;
-
-    client_max_body_size 16M;
-
-    # Security Headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-
-    # Primary Routing
-    location / {
-        try_files \$uri \$uri/ /index.php?\$args;
-    }
-
-    # Pass PHP scripts to PHP-FPM
-    location ~ \\.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    # Protect sensitive files
-    location ~* ^/(\\..*|config\\.php|installed\\.lock|.*\\.sql|.*\\.ps1|.*\\.sh|.*\\.key|.*\\.pem) {
-        deny all;
-        return 403;
-    }
-
-    location ~ /\\. {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-
-    access_log /var/log/nginx/eop_access.log combined;
-    error_log /var/log/nginx/eop_error.log warn;
-}
-EOF
-
-# Enable NGINX site and disable default site
-ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
-
-# Test configuration and restart services
-nginx -t
-systemctl restart php*-fpm || systemctl restart php-fpm
-systemctl restart nginx
-
-# 6. Setup crontab for automatic 15-minute PULL from EOP (Cron is strictly Pull-Only)
-echo "[6/6] Setting up crontab entry for automated EOP pull sync (pull-only)..."
-CRON_JOB="*/15 * * * * $WEB_USER /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy=\"${cfg.defaultPolicyName}\" --action=pull >> /var/log/eop-sync.log 2>&1"
-(crontab -l 2>/dev/null | grep -F -v "cron-sync.php" ; echo "$CRON_JOB") | crontab -
-
-echo "=========================================================="
-echo "Deployment Complete with NGINX!"
-echo "Web URL: http://$(hostname -I | awk '{print $1}')/setup.php"
-echo "Navigate to /setup.php to run the Page-by-Page Setup Wizard."
-echo "The wizard connects to MariaDB, populates all 9 schema tables,"
-echo "configures AD LDAP and Exchange Online Protection, and permanently locks."
-echo "=========================================================="
-`
-  },
-
-  // 13. nginx.conf
+  // 12. nginx.conf
   {
     name: 'eop-nginx.conf',
     path: 'nginx.conf',
@@ -4882,11 +4754,22 @@ eop-antispam-php-mariadb/
 ├── actions.php           # REST-style handler for add, delete, import, export, and sync
 ├── sync-exchange.ps1     # Linux PowerShell sync automation script (Pull & Push modes)
 ├── cron-sync.php         # Scheduled Pull-Only background CLI sync daemon
-├── install-debian.sh     # Automated Debian 11/12 deployment script
-├── eop-nginx.conf        # Hardened NGINX Server Block configuration
+├── nginx.conf            # Hardened NGINX Server Block configuration
 ├── .env.example          # Environment variable template
 └── README.md             # Complete technical and deployment documentation
 \`\`\`
+
+---
+
+## System Requirements
+
+- **Operating System**: Debian 11 (Bullseye) or Debian 12 (Bookworm) (or Ubuntu 22.04/24.04 LTS)
+- **Web Server**: NGINX 1.18+ with FastCGI / PHP-FPM
+- **PHP**: PHP 8.1, 8.2, or 8.3 with \`php-fpm\`, \`php-cli\`, \`php-mysql\` (PDO), \`php-ldap\`, \`php-curl\`, \`php-mbstring\`, \`php-xml\`, \`php-zip\`, \`php-openssl\`
+- **Database Server**: Remote MariaDB 10.5+ / 10.6+ / 10.11+ LTS or MySQL 8.0+ reachable on TCP port 3306
+- **Directory Services**: Active Directory Domain Services with standard LDAP (Port 389 - plain LDAP supported, no certs required) or LDAPS (Port 636) / StartTLS, plus authorized Service Account Bind DN & Bind Password
+- **Microsoft 365**: Entra ID App Registration with \`Exchange.ManageAsApp\` application permission, RSA certificate & private key for Certificate-Based Authentication (CBA), PowerShell 7.2+ (\`pwsh\`), and \`ExchangeOnlineManagement\` 3.0+ module
+- **Client**: Any modern web browser with HTML5 and JavaScript enabled (Chrome, Edge, Firefox, Safari)
 
 ---
 
@@ -4905,28 +4788,49 @@ GRANT ALL PRIVILEGES ON \`${cfg.dbName}\`.* TO '${cfg.dbUser}'@'YOUR_DEBIAN_IP';
 FLUSH PRIVILEGES;
 \`\`\`
 
-### Step 2: Deploy to Debian Server
-Run the automated installer on your Debian server:
-\`\`\`bash
-chmod +x install-debian.sh
-sudo ./install-debian.sh
-\`\`\`
-
-Or manually install packages:
+### Step 2: Install Packages on Debian Server
+Install NGINX, PHP-FPM, PHP modules, and MariaDB client:
 \`\`\`bash
 sudo apt-get update
-sudo apt-get install -y nginx php-fpm php-cli php-ldap php-mysql php-curl php-mbstring mariadb-client
+sudo apt-get install -y nginx php-fpm php-cli php-ldap php-mysql php-curl php-mbstring php-xml php-zip mariadb-client curl wget
 \`\`\`
 
-### Step 3: Active Directory LDAP Configuration
+### Step 3: Deploy Application Files & Set Permissions
+Extract the project archive to \`/var/www/eop-antispam\` and apply secure permissions:
+\`\`\`bash
+sudo mkdir -p /var/www/eop-antispam
+sudo cp -r ./* /var/www/eop-antispam/
+sudo chown -R www-data:www-data /var/www/eop-antispam
+sudo find /var/www/eop-antispam -type d -exec chmod 750 {} \\;
+sudo find /var/www/eop-antispam -type f -exec chmod 640 {} \\;
+\`\`\`
+
+### Step 4: Configure NGINX Server Block
+\`\`\`bash
+sudo cp /var/www/eop-antispam/nginx.conf /etc/nginx/sites-available/eop-antispam.conf
+sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
+sudo systemctl restart nginx
+\`\`\`
+
+### Step 5: Active Directory LDAP Configuration
 Because **plain LDAP (port 389)** is supported, you do **not** need to install or configure certificates on Debian!
 If your organization requires LDAPS (port 636) with an internal enterprise CA:
 Add \`TLS_REQCERT allow\` to \`/etc/ldap/ldap.conf\` and restart PHP-FPM and NGINX (\`sudo systemctl restart php-fpm nginx\`).
 
-### Step 4: Login & Manage
+### Step 6: Login & Manage
 Navigate to \`https://${cfg.appUrl.replace('https://', '')}\` and sign in with any Active Directory account belonging to:
 \`${cfg.ldapGroupDn}\`
 Toggle between Dark Mode and Light Mode at any time using the moon/sun icon in the top header.
+
+---
+
+## Contributors & Credits
+
+- **Shaun Thomas McCloud** - Creator & Lead Maintainer (<shaun.thomas.mccloud@gmail.com>)
+- **AI Studio** - Co-Contributor
 `
   }
 ];
