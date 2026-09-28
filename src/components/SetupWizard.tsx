@@ -30,7 +30,9 @@ import {
   ChevronUp,
   ExternalLink,
   Upload,
-  X
+  X,
+  FileText,
+  Download
 } from 'lucide-react';
 
 interface SetupWizardProps {
@@ -138,6 +140,61 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
   // Step 5: Finalizing lock state
   const [finalizing, setFinalizing] = useState(false);
   const [isOnlySiteOnServer, setIsOnlySiteOnServer] = useState(config.isOnlySiteOnServer !== false);
+  const [showEnvPreview, setShowEnvPreview] = useState(false);
+  const [copiedEnv, setCopiedEnv] = useState(false);
+
+  const generateEnvString = () => {
+    return `# ==============================================================================
+# Exchange Online Protection (EOP) Anti-Spam Policy Manager
+# Environment Configuration (.env)
+# Automatically written and synchronized by setup wizard
+# ==============================================================================
+
+# Remote MariaDB Database Configuration
+DB_HOST="${dbHost}"
+DB_PORT=${dbPort}
+DB_NAME="${dbName}"
+DB_USER="${dbUser}"
+DB_PASS="${dbPass}"
+DB_CHARSET="utf8mb4"
+
+# Microsoft Active Directory (LDAP) Settings
+LDAP_PROTOCOL="${ldapProtocol}"
+LDAP_HOST="${ldapHost}"
+LDAP_PORT=${ldapPort}
+LDAP_BASE_DN="${ldapBaseDn}"
+LDAP_AUTHORIZED_GROUP_DN="${ldapGroupDn}"
+LDAP_BIND_DN="${ldapBindDn}"
+LDAP_BIND_PASSWORD="${ldapBindPass}"
+
+# Microsoft 365 Exchange Online Protection Settings
+M365_TENANT_ID="${tenantId}"
+M365_CLIENT_ID="${clientId}"
+M365_CERT_THUMBPRINT="${certThumbprint}"
+M365_ORGANIZATION="${orgDomain}"
+EOP_POLICY_NAME="${defaultPolicy}"
+
+# Application Security
+AUTH_MASTER_ENCRYPTION_KEY="eop_master_aes256_secret_key_2026_debian"
+APP_URL="https://eop.corp.example.com"
+`;
+  };
+
+  const handleDownloadEnv = () => {
+    const element = document.createElement('a');
+    const file = new Blob([generateEnvString()], { type: 'text/plain' });
+    element.href = URL.createObjectURL(file);
+    element.download = '.env';
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+  };
+
+  const handleCopyEnv = () => {
+    navigator.clipboard.writeText(generateEnvString());
+    setCopiedEnv(true);
+    setTimeout(() => setCopiedEnv(false), 2000);
+  };
 
   // Validate fallback admin password (12+ chars, 3 of 4: uppercase, lowercase, numbers, symbols)
   const validateFallbackPassword = (pwd: string) => {
@@ -344,6 +401,12 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
               <div className="flex justify-between items-center pb-2 border-b border-slate-200 dark:border-slate-700">
                 <span className="text-slate-500 dark:text-slate-400 font-sans font-semibold">Lockfile Path (Debian):</span>
                 <span className="text-blue-600 dark:text-blue-400">/var/www/eop-antispam/installed.lock</span>
+              </div>
+              <div className="flex justify-between items-center pb-2 border-b border-slate-200 dark:border-slate-700">
+                <span className="text-slate-500 dark:text-slate-400 font-sans font-semibold">Environment Config (.env):</span>
+                <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-semibold">
+                  <Check className="w-3.5 h-3.5" /> /var/www/eop-antispam/.env (Written)
+                </span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 dark:text-slate-400 font-sans font-semibold">MariaDB Tracking Table:</span>
@@ -641,6 +704,15 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                     </div>
                   </div>
                 )}
+                <div className="p-2.5 rounded-lg bg-emerald-100/70 dark:bg-emerald-900/40 border border-emerald-300 dark:border-emerald-700/60 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-emerald-950 dark:text-emerald-200 text-xs">
+                    <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>Database parameters synchronized for <strong>.env</strong> file (<code>DB_HOST="{dbHost}"</code>, <code>DB_PORT={dbPort}</code>, <code>DB_NAME="{dbName}"</code>, <code>DB_USER="{dbUser}"</code>)</span>
+                  </div>
+                  <span className="font-mono text-[10px] bg-emerald-200 dark:bg-emerald-800 px-2 py-0.5 rounded text-emerald-800 dark:text-emerald-200 font-bold shrink-0">
+                    .env Synced
+                  </span>
+                </div>
               </div>
             )}
 
@@ -1400,7 +1472,7 @@ $cert.Thumbprint`}
             {/* Configuration Summary Review */}
             <div className="space-y-3">
               <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200">Configuration Summary Review:</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono">
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
                   <div className="font-sans font-bold text-purple-600 dark:text-purple-400 mb-1 flex items-center gap-1">
                     <Database className="w-3.5 h-3.5" /> MariaDB Database
@@ -1410,6 +1482,18 @@ $cert.Thumbprint`}
                     <div>Database: {dbName}</div>
                     <div>User: {dbUser}</div>
                     <div className="text-emerald-600 font-sans font-semibold mt-1">9 Tables Populated</div>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                  <div className="font-sans font-bold text-emerald-600 dark:text-emerald-400 mb-1 flex items-center gap-1">
+                    <FileText className="w-3.5 h-3.5" /> Environment (.env)
+                  </div>
+                  <div className="text-[11px] space-y-0.5 text-slate-600 dark:text-slate-300">
+                    <div>File: .env (chmod 0640)</div>
+                    <div>DB_HOST: {dbHost}</div>
+                    <div>DB_USER: {dbUser}</div>
+                    <div className="text-emerald-600 font-sans font-semibold mt-1">Persisted on Setup</div>
                   </div>
                 </div>
 
@@ -1438,6 +1522,62 @@ $cert.Thumbprint`}
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Expandable .env Preview Box */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden bg-slate-50/50 dark:bg-slate-800/40">
+              <div
+                className="p-3.5 flex items-center justify-between cursor-pointer hover:bg-slate-100/60 dark:hover:bg-slate-800/70 transition"
+                onClick={() => setShowEnvPreview(!showEnvPreview)}
+              >
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                    View Generated Production <code>.env</code> File Content
+                  </span>
+                  <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-full font-mono font-semibold">
+                    Live Values
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {showEnvPreview ? (
+                    <ChevronUp className="w-4 h-4 text-slate-400" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-slate-400" />
+                  )}
+                </div>
+              </div>
+
+              {showEnvPreview && (
+                <div className="p-4 border-t border-slate-200 dark:border-slate-700 space-y-3 bg-white dark:bg-slate-900">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                      Target Path: <strong>/var/www/eop-antispam/.env</strong> (permissions: 0640)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleCopyEnv}
+                        className="px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>{copiedEnv ? 'Copied!' : 'Copy .env'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDownloadEnv}
+                        className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>Download .env</span>
+                      </button>
+                    </div>
+                  </div>
+                  <pre className="p-3 bg-slate-900 text-slate-200 rounded-lg text-[11px] font-mono overflow-x-auto max-h-56 leading-relaxed border border-slate-800">
+                    {generateEnvString()}
+                  </pre>
+                </div>
+              )}
             </div>
 
             {/* Server Hosting Option Selector */}
@@ -1496,7 +1636,7 @@ $cert.Thumbprint`}
                 <span>Security Notice: Setup Cannot Be Run Again</span>
               </div>
               <p>
-                Clicking <strong>Complete Installation &amp; Lock Setup</strong> will generate your production <code>config.php</code> file, create the Debian filesystem lockfile <code>installed.lock</code>, and record the setup completion in the MariaDB table <code>eop_setup_lock</code>.
+                Clicking <strong>Complete Installation, Write .env &amp; Lock Setup</strong> will persist your database settings and environment configuration to <code>.env</code>, generate your production <code>config.php</code> file, create the Debian filesystem lockfile <code>installed.lock</code>, and record the setup completion in the MariaDB table <code>eop_setup_lock</code>.
               </p>
               <p className="font-semibold text-amber-800 dark:text-amber-300">
                 Once locked, any subsequent attempts to visit <code>setup.php</code> will be strictly blocked with a 403 Forbidden status.
@@ -1521,7 +1661,7 @@ $cert.Thumbprint`}
                 className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center gap-2 transition cursor-pointer"
               >
                 {finalizing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                <span>{finalizing ? 'Writing Lock & Finalizing...' : 'Complete Installation & Lock Setup'}</span>
+                <span>{finalizing ? 'Writing .env, Lock & Finalizing...' : 'Complete Installation, Write .env & Lock Setup'}</span>
               </button>
             </div>
           </div>

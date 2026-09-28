@@ -38,6 +38,35 @@ if (isset($_SESSION['LAST_ACTIVITY']) && (time() - $_SESSION['LAST_ACTIVITY'] > 
 $_SESSION['LAST_ACTIVITY'] = time();
 
 // --------------------------------------------------------------------------
+// 1b. Load Environment Variables from .env
+// Automatically loads .env written by setup.php or administrator
+// --------------------------------------------------------------------------
+$envFilePath = __DIR__ . '/.env';
+if (file_exists($envFilePath) && is_readable($envFilePath)) {
+    $envLines = @file($envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if ($envLines !== false) {
+        foreach ($envLines as $envLine) {
+            $envLine = trim($envLine);
+            if ($envLine === '' || str_starts_with($envLine, '#') || str_starts_with($envLine, ';')) {
+                continue;
+            }
+            if (strpos($envLine, '=') !== false) {
+                [$envKey, $envVal] = explode('=', $envLine, 2);
+                $envKey = trim($envKey);
+                $envVal = trim($envVal);
+                if ((str_starts_with($envVal, '"') && str_ends_with($envVal, '"')) ||
+                    (str_starts_with($envVal, "'") && str_ends_with($envVal, "'"))) {
+                    $envVal = substr($envVal, 1, -1);
+                }
+                putenv("{$envKey}={$envVal}");
+                $_ENV[$envKey] = $envVal;
+                $_SERVER[$envKey] = $envVal;
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
 // 2. Remote MariaDB Database Settings
 // --------------------------------------------------------------------------
 define('DB_HOST', getenv('DB_HOST') ?: '192.168.10.50');

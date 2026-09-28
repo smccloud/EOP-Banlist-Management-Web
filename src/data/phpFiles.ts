@@ -93,6 +93,35 @@ if (isset($_SESSION['LAST_ACTIVITY']) && (time() - $_SESSION['LAST_ACTIVITY'] > 
 $_SESSION['LAST_ACTIVITY'] = time();
 
 // --------------------------------------------------------------------------
+// 1b. Load Environment Variables from .env
+// Automatically loads .env written by setup.php or administrator
+// --------------------------------------------------------------------------
+$envFilePath = __DIR__ . '/.env';
+if (file_exists($envFilePath) && is_readable($envFilePath)) {
+    $envLines = @file($envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if ($envLines !== false) {
+        foreach ($envLines as $envLine) {
+            $envLine = trim($envLine);
+            if ($envLine === '' || str_starts_with($envLine, '#') || str_starts_with($envLine, ';')) {
+                continue;
+            }
+            if (strpos($envLine, '=') !== false) {
+                [$envKey, $envVal] = explode('=', $envLine, 2);
+                $envKey = trim($envKey);
+                $envVal = trim($envVal);
+                if ((str_starts_with($envVal, '"') && str_ends_with($envVal, '"')) ||
+                    (str_starts_with($envVal, "'") && str_ends_with($envVal, "'"))) {
+                    $envVal = substr($envVal, 1, -1);
+                }
+                putenv("{$envKey}={$envVal}");
+                $_ENV[$envKey] = $envVal;
+                $_SERVER[$envKey] = $envVal;
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
 // 2. Remote MariaDB Database Settings
 // --------------------------------------------------------------------------
 define('DB_HOST', getenv('DB_HOST') ?: '${cfg.dbHost}');
@@ -2824,6 +2853,101 @@ if (!isset($_SESSION['wizard'])) {
     ];
 }
 
+/**
+ * Write or update the Debian .env file with verified database and system settings
+ */
+function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = null): bool {
+    $envPath = __DIR__ . '/.env';
+    $existing = [];
+
+    if (file_exists($envPath) && is_readable($envPath)) {
+        $lines = @file($envPath, FILE_IGNORE_NEW_LINES);
+        if ($lines !== false) {
+            foreach ($lines as $line) {
+                $trimmed = trim($line);
+                if ($trimmed !== '' && !str_starts_with($trimmed, '#') && !str_starts_with($trimmed, ';') && strpos($trimmed, '=') !== false) {
+                    [$k, $v] = explode('=', $trimmed, 2);
+                    $k = trim($k);
+                    $v = trim($v);
+                    if ((str_starts_with($v, '"') && str_ends_with($v, '"')) ||
+                        (str_starts_with($v, "'") && str_ends_with($v, "'"))) {
+                        $v = substr($v, 1, -1);
+                    }
+                    $existing[$k] = $v;
+                }
+            }
+        }
+    }
+
+    $dbHost = $db['host'] ?? ($existing['DB_HOST'] ?? '127.0.0.1');
+    $dbPort = (int)($db['port'] ?? ($existing['DB_PORT'] ?? 3306));
+    $dbName = $db['name'] ?? ($existing['DB_NAME'] ?? 'eop_antispam_db');
+    $dbUser = $db['user'] ?? ($existing['DB_USER'] ?? 'root');
+    $dbPass = $db['pass'] ?? ($existing['DB_PASS'] ?? '');
+
+    $ldapHost = $ldap['host'] ?? ($existing['LDAP_HOST'] ?? 'dc01.corp.example.com');
+    $ldapPort = (int)($ldap['port'] ?? ($existing['LDAP_PORT'] ?? 389));
+    $ldapProto = $ldap['protocol'] ?? ($existing['LDAP_PROTOCOL'] ?? 'ldap');
+    $ldapBase = $ldap['base_dn'] ?? ($existing['LDAP_BASE_DN'] ?? 'DC=corp,DC=example,DC=com');
+    $ldapGrp = $ldap['group_dn'] ?? ($existing['LDAP_AUTHORIZED_GROUP_DN'] ?? 'CN=Exchange-Admins,OU=Security Groups,DC=corp,DC=example,DC=com');
+    $ldapBind = $ldap['bind_dn'] ?? ($existing['LDAP_BIND_DN'] ?? 'CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com');
+    $ldapPass = $ldap['bind_pass'] ?? ($existing['LDAP_BIND_PASSWORD'] ?? '');
+
+    $tenantId = $eop['tenant_id'] ?? ($existing['M365_TENANT_ID'] ?? '11111111-2222-3333-4444-555555555555');
+    $clientId = $eop['client_id'] ?? ($existing['M365_CLIENT_ID'] ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    $thumb = $eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80');
+    $org = $eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com');
+    $policy = $eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy');
+    $masterKey = $existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16));
+    $appUrl = $existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com'));
+
+    $dateStr = date('Y-m-d H:i:s');
+    $content = "# ==============================================================================\n"
+             . "# Exchange Online Protection (EOP) Anti-Spam Policy Manager\n"
+             . "# Environment Configuration (.env)\n"
+             . "# Automatically updated by setup wizard on {$dateStr}\n"
+             . "# ==============================================================================\n\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "# Remote MariaDB Database Settings\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "DB_HOST=\"{$dbHost}\"\n"
+             . "DB_PORT=\"{$dbPort}\"\n"
+             . "DB_NAME=\"{$dbName}\"\n"
+             . "DB_USER=\"{$dbUser}\"\n"
+             . "DB_PASS=\"{$dbPass}\"\n"
+             . "DB_CHARSET=\"utf8mb4\"\n\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "# Active Directory LDAP Settings (seeded to eop_ldap_config)\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "LDAP_HOST=\"{$ldapHost}\"\n"
+             . "LDAP_PORT=\"{$ldapPort}\"\n"
+             . "LDAP_PROTOCOL=\"{$ldapProto}\"\n"
+             . "LDAP_BASE_DN=\"{$ldapBase}\"\n"
+             . "LDAP_AUTHORIZED_GROUP_DN=\"{$ldapGrp}\"\n"
+             . "LDAP_BIND_DN=\"{$ldapBind}\"\n"
+             . "LDAP_BIND_PASSWORD=\"{$ldapPass}\"\n\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "# Microsoft 365 Exchange Online Protection Settings (seeded to eop_auth_config)\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "M365_TENANT_ID=\"{$tenantId}\"\n"
+             . "M365_CLIENT_ID=\"{$clientId}\"\n"
+             . "M365_CERT_THUMBPRINT=\"{$thumb}\"\n"
+             . "M365_ORGANIZATION=\"{$org}\"\n"
+             . "EOP_POLICY_NAME=\"{$policy}\"\n\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "# Security & Master Keys\n"
+             . "# ------------------------------------------------------------------------------\n"
+             . "AUTH_MASTER_ENCRYPTION_KEY=\"{$masterKey}\"\n"
+             . "APP_URL=\"{$appUrl}\"\n";
+
+    $written = @file_put_contents($envPath, $content);
+    if ($written !== false) {
+        @chmod($envPath, 0640);
+        return true;
+    }
+    return false;
+}
+
 $error = null;
 $success = null;
 
@@ -3003,6 +3127,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'populated' => true,
                 'tables' => array_keys($tables)
             ];
+
+            // Immediately write database connection parameters to .env file
+            updateEnvConfiguration($_SESSION['wizard']['db']);
+
             $_SESSION['wizard']['step'] = 3;
             header('Location: setup.php?step=3');
             exit;
@@ -3170,13 +3298,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':org' => $eop['org_domain']
             ]);
 
-            // 5. Create Debian lockfile installed.lock
+            // 5. Write full finalized environment settings to .env file
+            updateEnvConfiguration($db, $ldap, $eop);
+
+            // 6. Create Debian lockfile installed.lock
             $lockData = json_encode([
                 'status' => 'LOCKED',
                 'completed_at' => date('Y-m-d H:i:s'),
                 'installer_ip' => $ip,
                 'db_host' => $db['host'],
                 'db_name' => $db['name'],
+                'env_written' => true,
                 'version' => '1.0.0'
             ], JSON_PRETTY_PRINT);
             @file_put_contents($lockFile, $lockData);
@@ -3599,7 +3731,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                 </div>
 
                 <!-- Subsystem Overview Cards -->
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
                     <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 text-xs">
                         <div class="font-bold text-purple-400 mb-1 flex items-center gap-1">
                             <span>MariaDB Database</span>
@@ -3608,6 +3740,17 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                             <div>Host: <?php echo htmlspecialchars($_SESSION['wizard']['db']['host'] ?? '127.0.0.1'); ?></div>
                             <div>Database: <?php echo htmlspecialchars($_SESSION['wizard']['db']['name'] ?? 'eop_antispam_db'); ?></div>
                             <div class="text-emerald-400 font-sans font-semibold mt-1">9 Tables Populated</div>
+                        </div>
+                    </div>
+
+                    <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 text-xs">
+                        <div class="font-bold text-emerald-400 mb-1 flex items-center gap-1">
+                            <span>Environment (.env)</span>
+                        </div>
+                        <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
+                            <div>File: /var/www/eop-antispam/.env</div>
+                            <div>Host: <?php echo htmlspecialchars($_SESSION['wizard']['db']['host'] ?? '127.0.0.1'); ?></div>
+                            <div class="text-emerald-400 font-sans font-semibold mt-1">Persisted &amp; chmod 0640</div>
                         </div>
                     </div>
 
@@ -3640,7 +3783,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         <span>Security Lockout Notice: Setup Cannot Be Run Again</span>
                     </div>
                     <p>
-                        Clicking <strong>Complete Installation &amp; Lock Setup</strong> will permanently create the Debian filesystem lockfile <code>installed.lock</code> and record the installation timestamp in MariaDB table <code>eop_setup_lock</code>.
+                        Clicking <strong>Complete Installation, Write .env &amp; Lock Setup</strong> will permanently persist database and system settings to <code>.env</code>, create the Debian filesystem lockfile <code>installed.lock</code>, and record the installation timestamp in MariaDB table <code>eop_setup_lock</code>.
                     </p>
                     <p class="font-semibold text-amber-300">
                         Once locked, this <code>setup.php</code> routine will immediately respond with <strong>403 Forbidden</strong> and will never execute again.
@@ -3652,7 +3795,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     <div class="flex items-center justify-between pt-4 border-t border-slate-700">
                         <a href="?step=4" class="text-xs text-slate-400 hover:text-white">&larr; Back to EOP Setup</a>
                         <button type="submit" class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
-                            Complete Installation &amp; Lock Setup
+                            Complete Installation, Write .env &amp; Lock Setup
                         </button>
                     </div>
                 </form>
@@ -4718,7 +4861,51 @@ FALLBACK_ADMIN_USER="${cfg.fallbackAdminUsername || 'eopadmin'}"
 `
   },
 
-  // 15. README.md
+  // 15. .env
+  {
+    name: '.env',
+    path: '.env',
+    description: 'Production environment variables file automatically written and synchronized by setup.php with live database and system credentials.',
+    category: 'config',
+    generateContent: (cfg) => `# ==============================================================================
+# Exchange Online Protection Anti-Spam Policy Manager - Environment Variables
+# Host: Debian Linux | Database: Remote MariaDB | Auth: Active Directory LDAP
+# Automatically written and synchronized by setup.php
+# ==============================================================================
+
+# Remote MariaDB Database Configuration
+DB_HOST="${cfg.dbHost}"
+DB_PORT=${cfg.dbPort}
+DB_NAME="${cfg.dbName}"
+DB_USER="${cfg.dbUser}"
+DB_PASS="${cfg.dbPass}"
+DB_CHARSET="utf8mb4"
+
+# Microsoft Active Directory (LDAP) Settings
+LDAP_PROTOCOL="${cfg.ldapProtocol || 'ldap'}"
+LDAP_HOST="${cfg.ldapHost}"
+LDAP_PORT=${cfg.ldapPort}
+LDAP_USE_SSL=${cfg.ldapUseSsl ? 'true' : 'false'}
+LDAP_USE_TLS=${cfg.ldapUseTls ? 'true' : 'false'}
+LDAP_BASE_DN="${cfg.ldapBaseDn}"
+LDAP_AUTHORIZED_GROUP_DN="${cfg.ldapGroupDn}"
+LDAP_BIND_DN="${cfg.ldapBindDn}"
+LDAP_BIND_PASSWORD="${cfg.ldapBindPass}"
+
+# Microsoft 365 Exchange Online Protection Settings
+M365_TENANT_ID="${cfg.tenantId}"
+M365_CLIENT_ID="${cfg.clientId}"
+M365_CERT_THUMBPRINT="${cfg.certificateThumbprint}"
+M365_ORGANIZATION="${cfg.organization || 'corp.example.com'}"
+EOP_POLICY_NAME="${cfg.defaultPolicyName}"
+
+# Master key for AES-256-GCM encryption of private key passwords stored in database
+AUTH_MASTER_ENCRYPTION_KEY="eop_master_aes256_secret_key_2026_debian"
+APP_URL="${cfg.appUrl || 'https://eop.corp.example.com'}"
+`
+  },
+
+  // 16. README.md
   {
     name: 'README.md',
     path: 'README.md',
