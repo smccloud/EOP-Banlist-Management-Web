@@ -19,10 +19,10 @@ export const DebianGuide: React.FC<DebianGuideProps> = ({ config }) => {
     {
       title: 'Step 1: Install Required Packages on Debian 11/12',
       icon: <Terminal className="w-5 h-5 text-blue-500" />,
-      description: 'Update Debian APT repositories and install Apache2, PHP 8.x, php-ldap, php-mysql, and the MariaDB client.',
+      description: 'Update Debian APT repositories and install NGINX, PHP 8.x (PHP-FPM), php-ldap, php-mysql, and the MariaDB client.',
       command: `sudo apt-get update -y
-sudo apt-get install -y apache2 \\
-    php php-cli php-fpm php-mysql php-ldap php-curl php-mbstring php-xml php-zip \\
+sudo apt-get install -y nginx \\
+    php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip \\
     mariadb-client curl wget git`,
     },
     {
@@ -59,7 +59,7 @@ mariadb -h ${config.dbHost} -u ${config.dbUser} -p'${config.dbPass}' -D ${config
     {
       title: 'Step 4: Deploy Web Application Files to /var/www/eop-antispam',
       icon: <FileCode className="w-5 h-5 text-amber-500" />,
-      description: 'Extract the project archive, set proper file permissions, and enable the Apache virtual host.',
+      description: 'Extract the project archive, set proper file permissions, and enable the NGINX server block.',
       command: `# Create application directory:
 sudo mkdir -p /var/www/eop-antispam
 
@@ -71,11 +71,15 @@ sudo chown -R www-data:www-data /var/www/eop-antispam
 sudo find /var/www/eop-antispam -type d -exec chmod 750 {} \\;
 sudo find /var/www/eop-antispam -type f -exec chmod 640 {} \\;
 
-# Enable Apache site and required modules:
-sudo cp /var/www/eop-antispam/apache.conf /etc/apache2/sites-available/eop-antispam.conf
-sudo a2enmod rewrite ssl headers
-sudo a2ensite eop-antispam.conf
-sudo systemctl restart apache2`,
+# Enable NGINX site configuration:
+sudo cp /var/www/eop-antispam/nginx.conf /etc/nginx/sites-available/eop-antispam.conf
+sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# Test NGINX configuration and restart services:
+sudo nginx -t
+sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
+sudo systemctl restart nginx`,
     },
     {
       title: 'Step 5: Install PowerShell 7 & Exchange Module (For Sync Engine)',

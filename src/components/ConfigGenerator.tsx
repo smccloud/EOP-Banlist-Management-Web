@@ -67,7 +67,7 @@ export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setCon
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">Setup Parameters Generator</h2>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-            Customize initial parameters for Debian Apache virtual hosts, remote MariaDB database credentials, and defaults.
+            Customize initial parameters for Debian NGINX server blocks, remote MariaDB database credentials, and defaults.
             Standard LDAP (port 389) is supported without requiring LDAPS.
           </p>
         </div>

@@ -31,7 +31,7 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
   - [Step 1: Remote MariaDB Database Setup](#step-1-remote-mariadb-database-setup)
   - [Step 2: Automated Installation on Debian](#step-2-automated-installation-on-debian)
   - [Step 3: Manual Debian Setup (Alternative)](#step-3-manual-debian-setup-alternative)
-  - [Step 4: Apache VirtualHost Configuration](#step-4-apache-virtualhost-configuration)
+  - [Step 4: NGINX Server Block Configuration](#step-4-nginx-server-block-configuration)
   - [Step 5: Exchange Online Management on Linux](#step-5-exchange-online-management-on-linux)
 - [Project File Structure & Inventory](#project-file-structure--inventory)
 - [Configuration Reference (`config.php`, `.env`, & Database Tables)](#configuration-reference-configphp-env--database-tables)
@@ -420,11 +420,11 @@ sudo ./install-debian.sh
 ```
 
 The script automatically:
-1. Installs Apache2, PHP 8, `php-ldap`, `php-mysql`, `php-curl`, `php-mbstring`, and `mariadb-client`.
+1. Installs NGINX, PHP 8 (PHP-FPM), `php-ldap`, `php-mysql`, `php-curl`, `php-mbstring`, and `mariadb-client`.
 2. Copies files to `/var/www/eop-antispam`.
 3. Sets secure permissions (`chown -R www-data:www-data`, directories 750, files 640).
-4. Enables required Apache modules (`rewrite`, `ssl`, `headers`).
-5. Configures the Apache VirtualHost site.
+4. Configures the NGINX fastcgi pass to the PHP-FPM UNIX socket and sensitive file rules.
+5. Enables the NGINX server block and restarts `nginx` and `php-fpm`.
 
 ### Step 3: Manual Debian Setup (Alternative)
 
@@ -432,8 +432,8 @@ If you prefer installing packages manually:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y apache2 \
-    php php-cli php-fpm php-mysql php-ldap php-curl php-mbstring php-xml php-zip \
+sudo apt-get install -y nginx \
+    php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip \
     mariadb-client curl wget
 ```
 
@@ -453,37 +453,65 @@ ldapsearch -x -H ldap://dc01.corp.example.com:389 \
   -w "ServiceAccountPassword" "(sAMAccountName=*)" dn
 ```
 
-### Step 4: Apache VirtualHost Configuration
+### Step 4: NGINX Server Block Configuration
 
-Create `/etc/apache2/sites-available/eop-antispam.conf`:
+Create `/etc/nginx/sites-available/eop-antispam.conf`:
 
-```apache
-<VirtualHost *:80>
-    ServerName eop.corp.example.com
-    DocumentRoot /var/www/eop-antispam
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name eop.corp.example.com;
 
-    <Directory /var/www/eop-antispam>
-        Options -Indexes +FollowSymLinks
-        AllowOverride None
-        Require all granted
+    root /var/www/eop-antispam;
+    index index.php index.html;
 
-        # Block direct browser access to config, scripts, keys, and SQL files
-        <FilesMatch "^(\..*|.*\.sql|.*\.ps1|.*\.sh|.*\.key|.*\.pem|config\.php)$">
-            Require all denied
-        </FilesMatch>
-    </Directory>
+    client_max_body_size 16M;
 
-    ErrorLog ${APACHE_LOG_DIR}/eop_error.log
-    CustomLog ${APACHE_LOG_DIR}/eop_access.log combined
-</VirtualHost>
+    # Security Headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Primary Routing
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    # Pass PHP scripts to PHP-FPM
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    # Block direct browser access to config, scripts, keys, and SQL files
+    location ~* ^/(\..*|config\.php|installed\.lock|.*\.sql|.*\.ps1|.*\.sh|.*\.key|.*\.pem) {
+        deny all;
+        return 403;
+    }
+
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    access_log /var/log/nginx/eop_access.log combined;
+    error_log /var/log/nginx/eop_error.log warn;
+}
 ```
 
-Enable the site and restart Apache:
+Enable the site, disable the default site, test configuration, and restart NGINX + PHP-FPM:
 
 ```bash
-sudo a2enmod rewrite headers
-sudo a2ensite eop-antispam.conf
-sudo systemctl restart apache2
+sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
+sudo systemctl restart nginx
 ```
 
 ### Step 5: Exchange Online Management on Linux
@@ -526,7 +554,7 @@ eop-antispam-php-mariadb/
 ├── sync-exchange.ps1     # Linux PowerShell sync automation script (Pull & Push modes)
 ├── cron-sync.php         # Scheduled Pull-Only background CLI sync daemon
 ├── install-debian.sh     # Automated Debian 11/12 deployment script
-├── eop-apache.conf       # Hardened Apache2 VirtualHost configuration
+├── eop-nginx.conf        # Hardened NGINX Server Block configuration
 ├── .env.example          # Environment variable template
 └── README.md             # Complete technical and deployment documentation
 ```
@@ -581,8 +609,8 @@ To prevent accidental policy overwrites or race conditions in Microsoft 365, aut
 1. On your remote MariaDB server, check `/etc/mysql/mariadb.conf.d/50-server.cnf` and verify `bind-address = 0.0.0.0` (or your internal LAN subnet IP).
 2. Ensure you executed `GRANT ALL PRIVILEGES ON eop_antispam_db.* TO 'eop_app_user'@'DEBIAN_IP'; FLUSH PRIVILEGES;`.
 
-#### Q: Can I run this behind an HTTPS reverse proxy (e.g. Nginx, Cloudflare, Traefik)?
-Yes. Configure your reverse proxy to forward requests to Apache with `X-Forwarded-Proto https` and `X-Forwarded-For`. The application includes security headers (`X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`) to protect your deployment.
+#### Q: Can I run this behind an HTTPS reverse proxy (e.g. Cloudflare, Traefik, HAProxy, AWS ALB)?
+Yes. Configure your upstream reverse proxy to forward requests to NGINX with `X-Forwarded-Proto https`, `X-Forwarded-Host`, and `X-Forwarded-For`. The application and NGINX configuration include security headers (`X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`) to protect your deployment.
 
 ---
 

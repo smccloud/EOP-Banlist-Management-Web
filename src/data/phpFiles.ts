@@ -4525,18 +4525,18 @@ if (file_exists($psScript)) {
   {
     name: 'install-debian.sh',
     path: 'install-debian.sh',
-    description: 'Automated Bash setup script for Debian 11/12 installing Apache, PHP 8.2, LDAP, MySQL extensions, mariadb-client, permissions, and directory structure.',
+    description: 'Automated Bash setup script for Debian 11/12 installing NGINX, PHP-FPM 8.2/8.3, LDAP, MySQL extensions, mariadb-client, permissions, and directory structure.',
     category: 'debian',
     generateContent: (cfg) => `#!/usr/bin/env bash
 # ==============================================================================
 # Automated Debian 11 / 12 Deployment Script for EOP Anti-Spam Manager
-# Installs: Apache2, PHP 8.2/8.3, php-ldap, php-mysql, php-curl, mariadb-client, pwsh
+# Installs: NGINX, PHP-FPM (8.2/8.3), php-ldap, php-mysql, php-curl, mariadb-client, pwsh
 # ==============================================================================
 
 set -euo pipefail
 
 echo "=========================================================="
-echo "Installing EOP Anti-Spam Web App on Debian Linux..."
+echo "Installing EOP Anti-Spam Web App with NGINX on Debian..."
 echo "=========================================================="
 
 if [ "$EUID" -ne 0 ]; then
@@ -4552,10 +4552,10 @@ echo "[1/6] Updating APT repositories..."
 apt-get update -y
 apt-get install -y lsb-release ca-certificates apt-transport-https software-properties-common curl wget gnupg
 
-# 2. Install Apache2 & PHP with required extensions (including LDAP and MariaDB client)
-echo "[2/6] Installing Apache2, PHP, LDAP, and MariaDB extensions..."
-apt-get install -y apache2 \\
-    php php-cli php-fpm php-mysql php-ldap php-curl php-mbstring php-xml php-zip \\
+# 2. Install NGINX & PHP-FPM with required extensions (including LDAP and MariaDB client)
+echo "[2/6] Installing NGINX, PHP-FPM, LDAP, and MariaDB extensions..."
+apt-get install -y nginx \\
+    php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip \\
     mariadb-client
 
 # 3. Configure Active Directory LDAP TLS Settings
@@ -4576,32 +4576,63 @@ chown -R $WEB_USER:$WEB_USER "$APP_DIR"
 find "$APP_DIR" -type d -exec chmod 750 {} \\;
 find "$APP_DIR" -type f -exec chmod 640 {} \\;
 
-# 5. Configure Apache VirtualHost
-echo "[5/6] Configuring Apache VirtualHost..."
-cat << 'EOF' > /etc/apache2/sites-available/eop-antispam.conf
-<VirtualHost *:80>
-    ServerName ${cfg.appUrl.replace('https://', '').replace('http://', '')}
-    DocumentRoot /var/www/eop-antispam
+# 5. Configure NGINX Server Block
+echo "[5/6] Configuring NGINX Server Block..."
+cat << 'EOF' > /etc/nginx/sites-available/eop-antispam.conf
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${cfg.appUrl.replace('https://', '').replace('http://', '')};
 
-    <Directory /var/www/eop-antispam>
-        Options -Indexes +FollowSymLinks
-        AllowOverride All
-        Require all granted
+    root /var/www/eop-antispam;
+    index index.php index.html;
 
-        # Protect sensitive files
-        <FilesMatch "^(\\..*|.*\\.sql|.*\\.ps1|.*\\.sh|config\\.php)$">
-            Require all denied
-        </FilesMatch>
-    </Directory>
+    client_max_body_size 16M;
 
-    ErrorLog \${APACHE_LOG_DIR}/eop_error.log
-    CustomLog \${APACHE_LOG_DIR}/eop_access.log combined
-</VirtualHost>
+    # Security Headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Primary Routing
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    # Pass PHP scripts to PHP-FPM
+    location ~ \\.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    # Protect sensitive files
+    location ~* ^/(\\..*|config\\.php|installed\\.lock|.*\\.sql|.*\\.ps1|.*\\.sh|.*\\.key|.*\\.pem) {
+        deny all;
+        return 403;
+    }
+
+    location ~ /\\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    access_log /var/log/nginx/eop_access.log combined;
+    error_log /var/log/nginx/eop_error.log warn;
+}
 EOF
 
-a2enmod rewrite ssl headers
-a2ensite eop-antispam.conf
-systemctl restart apache2
+# Enable NGINX site and disable default site
+ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Test configuration and restart services
+nginx -t
+systemctl restart php*-fpm || systemctl restart php-fpm
+systemctl restart nginx
 
 # 6. Setup crontab for automatic 15-minute PULL from EOP (Cron is strictly Pull-Only)
 echo "[6/6] Setting up crontab entry for automated EOP pull sync (pull-only)..."
@@ -4609,7 +4640,7 @@ CRON_JOB="*/15 * * * * $WEB_USER /usr/bin/php /var/www/eop-antispam/cron-sync.ph
 (crontab -l 2>/dev/null | grep -F -v "cron-sync.php" ; echo "$CRON_JOB") | crontab -
 
 echo "=========================================================="
-echo "Deployment Complete!"
+echo "Deployment Complete with NGINX!"
 echo "Web URL: http://$(hostname -I | awk '{print $1}')/setup.php"
 echo "Navigate to /setup.php to run the Page-by-Page Setup Wizard."
 echo "The wizard connects to MariaDB, populates all 9 schema tables,"
@@ -4618,45 +4649,88 @@ echo "=========================================================="
 `
   },
 
-  // 13. apache.conf
+  // 13. nginx.conf
   {
-    name: 'eop-apache.conf',
-    path: 'apache.conf',
-    description: 'Production Apache 2.4 VirtualHost with TLS, security headers, and file protection.',
+    name: 'eop-nginx.conf',
+    path: 'nginx.conf',
+    description: 'Production NGINX Server Block configuration with PHP-FPM socket, security headers, and file protection.',
     category: 'debian',
-    generateContent: (cfg) => `<VirtualHost *:80>
-    ServerName ${cfg.appUrl.replace('https://', '').replace('http://', '')}
-    Redirect permanent / https://${cfg.appUrl.replace('https://', '').replace('http://', '')}/
-</VirtualHost>
+    generateContent: (cfg) => `# ==============================================================================
+# Production NGINX Server Block for EOP Anti-Spam Policy Manager
+# Debian 11 (Bullseye) / Debian 12 (Bookworm) with PHP-FPM
+# ==============================================================================
 
-<VirtualHost *:443>
-    ServerName ${cfg.appUrl.replace('https://', '').replace('http://', '')}
-    DocumentRoot /var/www/eop-antispam
+# HTTP -> HTTPS Redirect
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${cfg.appUrl.replace('https://', '').replace('http://', '')};
 
-    SSLEngine on
-    SSLCertificateFile /etc/ssl/certs/ssl-cert-snakeoil.pem
-    SSLCertificateKeyFile /etc/ssl/private/ssl-cert-snakeoil.key
+    return 301 https://\$host\$request_uri;
+}
+
+# Primary HTTPS Virtual Host
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${cfg.appUrl.replace('https://', '').replace('http://', '')};
+
+    root /var/www/eop-antispam;
+    index index.php index.html;
+
+    # SSL Configuration (Replace with your enterprise or Let's Encrypt certificates)
+    ssl_certificate /etc/ssl/certs/ssl-cert-snakeoil.pem;
+    ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
 
     # Security Headers
-    Header always set X-Content-Type-Options "nosniff"
-    Header always set X-Frame-Options "SAMEORIGIN"
-    Header always set X-XSS-Protection "1; mode=block"
-    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-    <Directory /var/www/eop-antispam>
-        Options -Indexes +FollowSymLinks
-        AllowOverride None
-        Require all granted
+    # Maximum upload size for bulk imports and certificate key uploads
+    client_max_body_size 16M;
 
-        # Protect configuration, sql, scripts, and environment files from direct HTTP access
-        <FilesMatch "^(\\..*|.*\\.sql|.*\\.ps1|.*\\.sh|config\\.php)$">
-            Require all denied
-        </FilesMatch>
-    </Directory>
+    # Primary Routing
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
 
-    ErrorLog \${APACHE_LOG_DIR}/eop_error.log
-    CustomLog \${APACHE_LOG_DIR}/eop_access.log combined
-</VirtualHost>
+    # Pass PHP scripts to PHP-FPM UNIX socket
+    location ~ \\.php$ {
+        include snippets/fastcgi-php.conf;
+        # Debian standard PHP-FPM socket path (adjust version if needed):
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_intercept_errors on;
+        fastcgi_buffer_size 128k;
+        fastcgi_buffers 4 256k;
+        fastcgi_busy_buffers_size 256k;
+    }
+
+    # Deny direct browser access to sensitive configs, keys, SQL, scripts, and locks
+    location ~* ^/(\\..*|config\\.php|installed\\.lock|.*\\.sql|.*\\.ps1|.*\\.sh|.*\\.key|.*\\.pem) {
+        deny all;
+        return 403;
+    }
+
+    # Deny access to hidden files (.htaccess, .git, etc.)
+    location ~ /\\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    # Logging
+    access_log /var/log/nginx/eop_access.log combined;
+    error_log /var/log/nginx/eop_error.log warn;
+}
 `
   },
 
@@ -4809,7 +4883,7 @@ eop-antispam-php-mariadb/
 ├── sync-exchange.ps1     # Linux PowerShell sync automation script (Pull & Push modes)
 ├── cron-sync.php         # Scheduled Pull-Only background CLI sync daemon
 ├── install-debian.sh     # Automated Debian 11/12 deployment script
-├── eop-apache.conf       # Hardened Apache2 VirtualHost configuration
+├── eop-nginx.conf        # Hardened NGINX Server Block configuration
 ├── .env.example          # Environment variable template
 └── README.md             # Complete technical and deployment documentation
 \`\`\`
@@ -4841,13 +4915,13 @@ sudo ./install-debian.sh
 Or manually install packages:
 \`\`\`bash
 sudo apt-get update
-sudo apt-get install -y apache2 php php-ldap php-mysql php-curl php-mbstring mariadb-client
+sudo apt-get install -y nginx php-fpm php-cli php-ldap php-mysql php-curl php-mbstring mariadb-client
 \`\`\`
 
 ### Step 3: Active Directory LDAP Configuration
 Because **plain LDAP (port 389)** is supported, you do **not** need to install or configure certificates on Debian!
 If your organization requires LDAPS (port 636) with an internal enterprise CA:
-Add \`TLS_REQCERT allow\` to \`/etc/ldap/ldap.conf\` and restart Apache (\`sudo systemctl restart apache2\`).
+Add \`TLS_REQCERT allow\` to \`/etc/ldap/ldap.conf\` and restart PHP-FPM and NGINX (\`sudo systemctl restart php-fpm nginx\`).
 
 ### Step 4: Login & Manage
 Navigate to \`https://${cfg.appUrl.replace('https://', '')}\` and sign in with any Active Directory account belonging to:
