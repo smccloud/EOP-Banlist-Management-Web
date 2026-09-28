@@ -4524,7 +4524,7 @@ if (file_exists($psScript)) {
 
   // 12. nginx.conf
   {
-    name: 'eop-nginx.conf',
+    name: 'nginx.conf',
     path: 'nginx.conf',
     description: 'Production NGINX Server Block configuration with PHP-FPM socket, security headers, and file protection.',
     category: 'debian',
