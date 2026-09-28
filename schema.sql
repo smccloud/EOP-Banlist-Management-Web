@@ -173,11 +173,13 @@ CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_auth_config` (
     KEY `idx_thumbprint` (`certificate_thumbprint`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Insert initial active row for EOP certificate & private key authentication
+-- Insert a disabled placeholder row. The setup wizard inserts the real active
+-- record, so this row must stay is_active = 0 to avoid a second active record
+-- competing with it. No secrets are stored here.
 INSERT INTO `eop_antispam_db`.`eop_auth_config` 
     (`tenant_id`, `client_id`, `certificate_thumbprint`, `key_filename`, `private_key`, `encrypted_password`, `encryption_iv`, `encryption_tag`, `key_type`, `organization`, `is_active`, `uploaded_by`)
 VALUES 
-    ('11111111-2222-3333-4444-555555555555', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80', 'eop-cert-private.key', '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g...[INITIAL_SEED_PRIVATE_KEY]...\n-----END RSA PRIVATE KEY-----', 'tq8fWk6y/7bH...[AES-256-GCM-ENCRYPTED-CIPHERTEXT]...', 'G1a8V0kLm9Pq', 'Xy8Z2n9Q1v0mK4lP7s3w8A==', 'RSA_PEM', 'corp.example.com', 1, 'SYSTEM')
+    ('11111111-2222-3333-4444-555555555555', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80', 'eop-cert-private.key', '[PLACEHOLDER_REPLACED_BY_SETUP_WIZARD]', '', NULL, NULL, 'RSA_PEM', 'corp.example.com', 0, 'SYSTEM')
 ON DUPLICATE KEY UPDATE `updated_at` = NOW();
 
 -- ----------------------------------------------------------------------------

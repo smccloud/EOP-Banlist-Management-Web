@@ -99,37 +99,41 @@ putenv('EOP_CLIENT_ID=' . $authConfig['client_id']);
 putenv('EOP_CERT_THUMBPRINT=' . $authConfig['certificate_thumbprint']);
 putenv('EOP_ORGANIZATION=' . ($authConfig['organization'] ?? ''));
 
-// Certificate material. eop_auth_config stores the private key only, and
-// certificate authentication on Linux needs a PKCS#12 bundle holding the
-// certificate together with its key. The bundle is taken from an uploaded .pfx
-// record when one exists, otherwise from a provisioned path on disk.
+// Certificate material. Certificate authentication on Linux needs a PKCS#12
+// bundle holding the certificate together with its key. The bundle is taken from
+// the encrypted pkcs12_bundle column when one is stored, otherwise from a
+// provisioned path on disk.
 $pfxPath = getenv('EOP_CERT_PFX_PATH') ?: '/etc/eop-antispam/eop-cert.pfx';
 $tempPfx = null;
+$pfxFromDatabase = false;
 
-if (strtoupper((string)($authConfig['key_type'] ?? '')) === 'PKCS12_PFX' && !empty($authConfig['private_key'])) {
-    $blob = base64_decode((string)preg_replace('/\s+/', '', $authConfig['private_key']), true);
-    if ($blob !== false && str_starts_with($blob, "\x30")) {
-        $tempPfx = tempnam(sys_get_temp_dir(), 'eopcert_');
-        file_put_contents($tempPfx, $blob);
-        chmod($tempPfx, 0600);
-        $pfxPath = $tempPfx;
+$storedBundle = trim((string)($authConfig['pkcs12_bundle'] ?? ''));
+if ($storedBundle !== '') {
+    $blob = base64_decode((string)preg_replace('/\s+/', '', $storedBundle), true);
+    if ($blob === false || !str_starts_with($blob, "\x30")) {
+        fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: the stored PKCS#12 bundle in eop_auth_config is not a DER bundle.\n");
+        Database::updatePolicySyncStatus($policy, 'failed', 'Stored PKCS#12 bundle is malformed');
+        exit(1);
     }
+
+    $tempPfx = tempnam(sys_get_temp_dir(), 'eopcert_');
+    file_put_contents($tempPfx, $blob);
+    chmod($tempPfx, 0600);
+    $pfxPath = $tempPfx;
+    $pfxFromDatabase = true;
 }
 
 if (!is_readable($pfxPath)) {
     fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: no readable PKCS#12 certificate bundle at {$pfxPath}.\n");
-    fwrite(STDERR, "Certificate authentication needs a .pfx containing the certificate and its private key. Set EOP_CERT_PFX_PATH or provision one at {$pfxPath}.\n");
+    fwrite(STDERR, "Certificate authentication needs a .pfx containing the certificate and its private key. Upload one in the Web UI or set EOP_CERT_PFX_PATH.\n");
     Database::updatePolicySyncStatus($policy, 'failed', "PKCS#12 certificate not readable at {$pfxPath}");
     exit(1);
 }
 
-$pfxPassword = '';
-if (!empty($authConfig['encrypted_password'])) {
-    $pfxPassword = Database::decryptKeyPassword(
-        $authConfig['encrypted_password'],
-        $authConfig['encryption_iv'] ?? '',
-        $authConfig['encryption_tag'] ?? ''
-    ) ?? '';
+$pfxPassword = (string)($authConfig['encrypted_password'] ?? '');
+
+if ($pfxFromDatabase && $pfxPassword === '') {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] NOTICE: no stored passphrase for the PKCS#12 bundle, attempting an empty passphrase.\n");
 }
 
 // Paths and the policy name are passed to PowerShell through the environment

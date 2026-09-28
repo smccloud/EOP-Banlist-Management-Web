@@ -98,6 +98,9 @@ define('TABLE_LOCAL_ADMINS',    'eop_local_admins');
 
 define('AUTH_MASTER_ENCRYPTION_KEY', getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: 'eop_master_aes256_secret_key_2026_debian');
 
+// Shared AES-256-GCM envelope shared with database.php at runtime
+require_once __DIR__ . '/crypto.php';
+
 define('LDAP_HOST', getenv('LDAP_HOST') ?: 'dc01.corp.example.com');
 define('LDAP_PORT', (int)(getenv('LDAP_PORT') ?: 389));
 define('LDAP_PROTOCOL', getenv('LDAP_PROTOCOL') ?: 'ldap');
@@ -821,21 +824,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $thumbprint = trim($_POST['thumbprint'] ?? '');
         $orgDomain = trim($_POST['org_domain'] ?? '');
         $policy = trim($_POST['policy'] ?? 'Default Inbound Anti-Spam Policy');
-        $privateKey = trim($_POST['private_key'] ?? '');
-        if (!empty($_FILES['private_key_file']['tmp_name']) && is_uploaded_file($_FILES['private_key_file']['tmp_name'])) {
-            $uploadedKey = file_get_contents($_FILES['private_key_file']['tmp_name']);
-            if (!empty($uploadedKey)) {
-                $privateKey = trim($uploadedKey);
-            }
-        }
+        $privateKey = '';
         $passphrase = $_POST['passphrase'] ?? '';
         $pkcs12Bundle = '';
         $pkcs12Filename = '';
 
-        // The PKCS#12 bundle is the artefact Exchange Online certificate
-        // authentication actually needs on Linux, so it is validated up front
-        // rather than discovered at the first sync run.
-        if (!empty($_FILES['pkcs12_file']['tmp_name']) && is_uploaded_file($_FILES['pkcs12_file']['tmp_name'])) {
+        // Only a full PKCS#12 bundle is accepted. A bare PEM private key would
+        // produce a record that can never authenticate the scheduled pull, so the
+        // wizard refuses it up front rather than failing at the first sync run.
+        if (empty($_FILES['pkcs12_file']['tmp_name']) || !is_uploaded_file($_FILES['pkcs12_file']['tmp_name'])) {
+            $error = "A PKCS#12 (.pfx or .p12) certificate bundle is required. PEM private keys are not accepted.";
+        } else {
             $upload = $_FILES['pkcs12_file'];
             if ($upload['error'] !== UPLOAD_ERR_OK) {
                 $error = "PKCS#12 upload failed (error code {$upload['error']}).";
@@ -850,6 +849,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pkcs12Bundle = base64_encode($rawBundle);
                     $pkcs12Filename = basename($upload['name']);
 
+                    // The private key column is kept populated from the bundle for
+                    // compatibility with anything that still reads the PEM column.
+                    $privateKey = $certs['pkey'];
+
                     // Derive the real thumbprint from the uploaded certificate so the
                     // stored value cannot drift from the material being used.
                     $fingerprint = strtoupper(str_replace(':', '', (string)openssl_x509_fingerprint($certs['cert'], 'sha1', true)));
@@ -858,12 +861,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $thumbprint = $fingerprint;
                             $notice = "Certificate thumbprint was set from the uploaded PKCS#12 file: {$fingerprint}.";
                         }
-                    }
-
-                    // Keep the private key column populated when only a bundle was
-                    // supplied, so key verification in the UI still works.
-                    if ($privateKey === '') {
-                        $privateKey = $certs['pkey'];
                     }
                 }
             }
@@ -939,25 +936,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
             }
 
-            // 4. Save EOP Auth config (AES encrypted password)
-            $aesKey = hash('sha256', $eop['tenant_id'] . 'EOP_SALT_2026', true);
-            $iv = openssl_random_pseudo_bytes(12);
-            $tag = '';
-            $ciphertext = openssl_encrypt($eop['passphrase'], 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
-
+            // 4. Save EOP Auth config. The private key, the PKCS#12 bundle and the
+            // passphrase are each encrypted with AES-256-GCM via the shared envelope
+            // in crypto.php, so the wizard and the runtime agree on the format and
+            // the key is always AUTH_MASTER_ENCRYPTION_KEY rather than something
+            // derived from data stored in the same row.
             $authStmt = $pdo->prepare("INSERT INTO `eop_auth_config` 
                 (`tenant_id`, `client_id`, `certificate_thumbprint`, `key_filename`, `private_key`, `pkcs12_bundle`, `encrypted_password`, `encryption_iv`, `encryption_tag`, `organization`, `key_type`, `is_active`, `uploaded_by`)
-                VALUES (:tid, :cid, :thumb, :filename, :pem, :p12, :cipher, :iv_b64, :tag_b64, :org, :ktype, 1, 'INITIAL_SETUP')");
+                VALUES (:tid, :cid, :thumb, :filename, :pem, :p12, :cipher, NULL, NULL, :org, :ktype, 1, 'INITIAL_SETUP')");
             $authStmt->execute([
                 ':tid' => $eop['tenant_id'],
                 ':cid' => $eop['client_id'],
                 ':thumb' => $eop['thumbprint'],
                 ':filename' => $eop['pkcs12_filename'] ?: 'eop-cert-private.key',
-                ':pem' => $eop['private_key'],
-                ':p12' => $eop['pkcs12_bundle'] ?: null,
-                ':cipher' => base64_encode($ciphertext ?: ''),
-                ':iv_b64' => base64_encode($iv),
-                ':tag_b64' => base64_encode($tag),
+                ':pem' => eopEncryptSecret($eop['private_key']),
+                ':p12' => !empty($eop['pkcs12_bundle']) ? eopEncryptSecret($eop['pkcs12_bundle']) : null,
+                ':cipher' => eopEncryptSecret($eop['passphrase']),
                 ':org' => $eop['org_domain'],
                 ':ktype' => !empty($eop['pkcs12_bundle']) ? 'PKCS12_PFX' : 'RSA_PEM'
             ]);
@@ -1359,35 +1353,21 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     </div>
 
                     <div>
-                        <label class="block text-xs font-medium text-slate-300 mb-1">PKCS#12 Certificate Bundle (.pfx / .p12)</label>
-                        <input type="file" name="pkcs12_file" accept=".pfx,.p12"
+                        <label class="block text-xs font-medium text-slate-300 mb-1">PKCS#12 Certificate Bundle (.pfx / .p12) <span class="text-amber-400">*</span></label>
+                        <input type="file" name="pkcs12_file" accept=".pfx,.p12" required
                                class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-1 file:text-xs file:text-white focus:outline-hidden focus:border-blue-500">
-                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">Required for the cron sync. The certificate and private key are stored in <code>eop_auth_config.pkcs12_bundle</code> and imported into the certificate store on every pull. The thumbprint above is derived from this file.</p>
+                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                            The only accepted certificate format. The bundle must contain the certificate and its private key; bare PEM
+                            private keys are rejected. The certificate and key are encrypted with AES-256-GCM into
+                            <code>eop_auth_config.pkcs12_bundle</code> and imported into the certificate store on every pull, and the
+                            thumbprint above is derived from this file.
+                        </p>
                     </div>
 
                     <div>
-                        <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-                            <label class="block text-xs font-medium text-slate-300">RSA Certificate Private Key (PEM format)</label>
-                            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold cursor-pointer shadow-xs transition">
-                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                                <span>Upload Private Key File (.pem, .key)</span>
-                                <input type="file" name="private_key_file" id="pemFileInput" accept=".pem,.key,.crt,.txt" class="hidden" onchange="handlePemFileUpload(this)">
-                            </label>
-                        </div>
-                        <div id="pemUploadStatus" class="hidden mb-2 p-2 rounded-lg bg-emerald-950/70 border border-emerald-700/70 text-emerald-300 text-[11px] flex items-center justify-between">
-                            <span id="pemUploadStatusText">✓ Key file loaded successfully</span>
-                            <button type="button" onclick="clearUploadedPem()" class="text-xs text-slate-400 hover:text-white">&times; Clear</button>
-                        </div>
-                        <textarea id="privateKeyTextarea" name="private_key" rows="4" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500"><?php echo htmlspecialchars($_SESSION['wizard']['eop']['private_key'] ?? "-----BEGIN RSA PRIVATE KEY-----
-MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
------END RSA PRIVATE KEY-----"); ?></textarea>
-                        <p class="text-[11px] text-slate-400 mt-1">Upload your <code class="font-mono bg-slate-950 px-1 py-0.5 rounded text-amber-300">eop-cert-private.key</code> file or paste the unencrypted/passphrase-protected RSA PEM key block.</p>
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-medium text-slate-300 mb-1">Private Key AES-256 Passphrase</label>
-                        <input type="password" name="passphrase" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['passphrase'] ?? 'P@ssphrase_Secure_Cert_2026'); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
-                        <p class="text-[11px] text-slate-400 mt-1">This key is encrypted in MariaDB via AES-256-GCM authenticated cipher.</p>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">PKCS#12 Passphrase</label>
+                        <input type="password" name="passphrase" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500" autocomplete="new-password">
+                        <p class="text-[11px] text-slate-400 mt-1">Leave empty if the bundle has no passphrase. The passphrase is encrypted in MariaDB via AES-256-GCM authenticated cipher.</p>
                     </div>
 
                     <div class="flex items-center justify-between pt-4 border-t border-slate-700">
@@ -1490,38 +1470,5 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
         <?php endif; ?>
 
     </div>
-
-    <script>
-    function handlePemFileUpload(input) {
-        if (input.files && input.files[0]) {
-            const file = input.files[0];
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const content = e.target.result;
-                const textarea = document.getElementById('privateKeyTextarea');
-                if (textarea) {
-                    textarea.value = (content || '').trim();
-                }
-                const statusBox = document.getElementById('pemUploadStatus');
-                const statusText = document.getElementById('pemUploadStatusText');
-                if (statusBox && statusText) {
-                    const sizeStr = file.size < 1024 ? file.size + ' B' : (file.size / 1024).toFixed(1) + ' KB';
-                    statusText.textContent = '✓ Loaded: ' + file.name + ' (' + sizeStr + ')';
-                    statusBox.classList.remove('hidden');
-                }
-            };
-            reader.readAsText(file);
-        }
-    }
-
-    function clearUploadedPem() {
-        const textarea = document.getElementById('privateKeyTextarea');
-        if (textarea) textarea.value = '';
-        const fileInput = document.getElementById('pemFileInput');
-        if (fileInput) fileInput.value = '';
-        const statusBox = document.getElementById('pemUploadStatus');
-        if (statusBox) statusBox.classList.add('hidden');
-    }
-    </script>
 </body>
 </html>

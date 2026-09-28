@@ -540,24 +540,21 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                                 <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
 
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs mb-5">
-                                    <!-- File Upload for Private Key -->
+                                    <!-- Only a full PKCS#12 bundle is accepted -->
                                     <div class="col-span-1 md:col-span-2">
                                         <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                            Upload Private Key File (.pem, .key, .pfx, .crt):
+                                            PKCS#12 Certificate Bundle (.pfx / .p12) <span class="text-rose-500">*</span>
                                         </label>
-                                        <input type="file" name="private_key_file" accept=".pem,.key,.pfx,.cer,.crt,.txt"
+                                        <input type="file" name="pfx_file" accept=".pfx,.p12" required
                                                class="w-full text-xs text-slate-500 dark:text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-950/80 dark:file:text-blue-300 hover:file:bg-blue-100 dark:hover:file:bg-blue-900 border border-slate-300 dark:border-slate-700 rounded-lg p-2 bg-slate-50 dark:bg-slate-800">
-                                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">Upload the RSA or PKCS#8 private key associated with your Azure AD App Registration certificate.</p>
+                                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                                            The bundle must contain the certificate and its private key; bare PEM private keys are rejected. It is
+                                            stored AES-256-GCM encrypted in <code>eop_auth_config.pkcs12_bundle</code> and imported into the
+                                            certificate store on every sync. The thumbprint is read from this file, so a mismatch with the field
+                                            below is reported and the bundle wins.
+                                        </p>
                                     </div>
 
-                                    <!-- Direct Paste Option -->
-                                    <div class="col-span-1 md:col-span-2">
-                                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                            Or Paste Private Key Text (PEM format):
-                                        </label>
-                                        <textarea name="private_key_text" rows="4" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
-                                                  class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg p-3 text-slate-900 dark:text-white font-mono text-[11px] focus:ring-2 focus:ring-blue-500 focus:outline-hidden"></textarea>
-                                    </div>
 
                                     <!-- Private Key Passphrase (Encrypted via AES-256-GCM) -->
                                     <div class="col-span-1">

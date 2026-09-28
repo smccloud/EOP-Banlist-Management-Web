@@ -19,6 +19,8 @@ if (!file_exists(__DIR__ . '/config.php')) {
     require_once __DIR__ . '/config.php';
 }
 
+require_once __DIR__ . '/crypto.php';
+
 class Database {
     private static ?PDO $instance = null;
 
@@ -490,54 +492,43 @@ class Database {
     }
 
     /**
-     * Encrypt private key passphrase/password using AES-256-GCM before database storage
+     * Encrypt a secret for storage using the shared AES-256-GCM envelope
+     * (see crypto.php). The IV and tag travel inside the ciphertext, so the
+     * encryption_iv / encryption_tag columns are written as NULL. They are left in
+     * the schema for compatibility with the previous column-per-field format and
+     * are no longer read or written by any code path.
      */
-    public static function encryptKeyPassword(string $password): array {
-        if ($password === '') {
-            return ['ciphertext' => '', 'iv' => '', 'tag' => ''];
-        }
-        $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') ? AUTH_MASTER_ENCRYPTION_KEY : 'eop_master_secret';
-        $key = hash('sha256', $secret, true);
-        $iv = random_bytes(12); // Standard 96-bit IV for GCM
-        $tag = '';
-        $ciphertext = openssl_encrypt($password, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16);
-        return [
-            'ciphertext' => base64_encode($ciphertext),
-            'iv'         => base64_encode($iv),
-            'tag'        => base64_encode($tag),
-        ];
+    public static function encryptKeyPassword(string $password): string {
+        return eopEncryptSecret($password);
     }
 
     /**
-     * Decrypt private key passphrase/password using AES-256-GCM
+     * Decrypt a stored secret. Returns null when the value cannot be decrypted,
+     * for example when AUTH_MASTER_ENCRYPTION_KEY does not match the record.
      */
-    public static function decryptKeyPassword(string $ciphertextB64, string $ivB64, string $tagB64): ?string {
-        if ($ciphertextB64 === '') {
-            return '';
-        }
-        try {
-            $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') ? AUTH_MASTER_ENCRYPTION_KEY : 'eop_master_secret';
-            $key = hash('sha256', $secret, true);
-            $ciphertext = base64_decode($ciphertextB64);
-            $iv = base64_decode($ivB64);
-            $tag = base64_decode($tagB64);
-            $decrypted = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
-            return $decrypted !== false ? $decrypted : null;
-        } catch (Exception $e) {
-            error_log('[Database::decryptKeyPassword Error] ' . $e->getMessage());
-            return null;
-        }
+    public static function decryptKeyPassword(?string $stored): ?string {
+        return eopDecryptSecret($stored);
     }
 
     /**
-     * Fetch active EOP private key & certificate authentication record from database table eop_auth_config
+     * Fetch active EOP private key & certificate authentication record from database table eop_auth_config.
+     * The private key, PKCS#12 bundle and passphrase are decrypted here so every caller
+     * receives plaintext; a null field means the value could not be decrypted.
      */
     public static function getEopAuthConfig(): ?array {
         try {
             $pdo = self::getConnection();
             $stmt = $pdo->query("SELECT * FROM " . TABLE_EOP_AUTH_CONFIG . " WHERE is_active = 1 ORDER BY id DESC LIMIT 1");
             $config = $stmt->fetch();
-            return $config ?: null;
+            if (!$config) {
+                return null;
+            }
+
+            $config['private_key'] = self::decryptKeyPassword($config['private_key'] ?? '');
+            $config['pkcs12_bundle'] = self::decryptKeyPassword($config['pkcs12_bundle'] ?? '');
+            $config['encrypted_password'] = self::decryptKeyPassword($config['encrypted_password'] ?? '');
+
+            return $config;
         } catch (Exception $e) {
             error_log('[Database::getEopAuthConfig Error] ' . $e->getMessage());
             return null;
@@ -552,9 +543,7 @@ class Database {
             $pdo = self::getConnection();
             $stmt = $pdo->prepare("INSERT INTO " . TABLE_EOP_AUTH_CONFIG . " 
                 (tenant_id, client_id, certificate_thumbprint, key_filename, private_key, pkcs12_bundle, encrypted_password, encryption_iv, encryption_tag, key_type, organization, is_active, uploaded_by, created_at, updated_at)
-                VALUES (:tenant, :client, :thumbprint, :filename, :privkey, :p12, :enc_pass, :iv, :tag, :ktype, :org, 1, :user, NOW(), NOW())");
-
-            $enc = self::encryptKeyPassword($data['password'] ?? '');
+                VALUES (:tenant, :client, :thumbprint, :filename, :privkey, :p12, :enc_pass, NULL, NULL, :ktype, :org, 1, :user, NOW(), NOW())");
 
             $thumbprint = strtoupper(preg_replace('/[^a-zA-Z0-9]/', '', $data['certificate_thumbprint'] ?? ''));
             $pkcs12 = trim((string)($data['pkcs12_bundle'] ?? ''));
@@ -565,11 +554,9 @@ class Database {
                 ':client'     => trim($data['client_id'] ?? (defined('M365_CLIENT_ID') ? M365_CLIENT_ID : '')),
                 ':thumbprint' => $thumbprint ?: (defined('M365_CERT_THUMBPRINT') ? M365_CERT_THUMBPRINT : ''),
                 ':filename'   => trim($data['key_filename'] ?? 'eop-cert-private.key'),
-                ':privkey'    => trim($data['private_key']),
-                ':p12'        => $pkcs12 !== '' ? $pkcs12 : null,
-                ':enc_pass'   => $enc['ciphertext'],
-                ':iv'         => $enc['iv'],
-                ':tag'        => $enc['tag'],
+                ':privkey'    => self::encryptKeyPassword(trim((string)($data['private_key'] ?? ''))),
+                ':p12'        => $pkcs12 !== '' ? self::encryptKeyPassword($pkcs12) : null,
+                ':enc_pass'   => self::encryptKeyPassword((string)($data['password'] ?? '')),
                 ':ktype'      => $keyType,
                 ':org'        => trim($data['organization'] ?? (defined('M365_ORGANIZATION') ? M365_ORGANIZATION : 'corp.example.com')),
                 ':user'       => $uploadedBy,
@@ -595,7 +582,8 @@ class Database {
             $pdo = self::getConnection();
             $stmt = $pdo->prepare("SELECT id, tenant_id, client_id, certificate_thumbprint, key_filename, key_type, organization, is_active, uploaded_by, created_at, updated_at, 
                                    IF(encrypted_password != '', 1, 0) as has_encrypted_password,
-                                   SUBSTRING(private_key, 1, 60) as key_preview
+                                   IF(pkcs12_bundle IS NOT NULL AND pkcs12_bundle != '', 1, 0) as has_pkcs12,
+                                   IF(private_key LIKE 'EOPENC1:%', 1, 0) as private_key_encrypted
                                    FROM " . TABLE_EOP_AUTH_CONFIG . " ORDER BY id DESC LIMIT :limit");
             $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
             $stmt->execute();

@@ -348,89 +348,133 @@ if ($action === 'update_ldap_config') {
 }
 
 // --------------------------------------------------------------------------
-// 7. Upload & Save EOP Private Key with AES-256 Encrypted Passphrase (eop_auth_config)
+// 7. Upload & Save EOP PKCS#12 Certificate Bundle (eop_auth_config)
+//    Only a full PKCS#12 (.pfx/.p12) bundle is accepted. A bare PEM private key
+//    is rejected: Connect-ExchangeOnline needs the certificate and its key
+//    together, so a PEM-only record could never authenticate the scheduled pull.
 // --------------------------------------------------------------------------
 if ($action === 'upload_eop_key') {
-    $privateKeyContent = '';
-    $fileName = 'eop-cert-private.key';
+    $passphrase = (string)($_POST['key_password'] ?? '');
+    $redirect = "Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center";
 
-    // 1. Check for file upload first
-    if (!empty($_FILES['private_key_file']['tmp_name']) && is_uploaded_file($_FILES['private_key_file']['tmp_name'])) {
-        $uploadedContent = file_get_contents($_FILES['private_key_file']['tmp_name']);
-        if ($uploadedContent !== false && trim($uploadedContent) !== '') {
-            $privateKeyContent = trim($uploadedContent);
-            $fileName = basename($_FILES['private_key_file']['name'] ?? 'eop-cert-private.key');
-        }
-    }
-
-    // 2. Fall back to pasted text area
-    if (empty($privateKeyContent) && !empty($_POST['private_key_text'])) {
-        $privateKeyContent = trim($_POST['private_key_text']);
-        $fileName = 'pasted-private-key.pem';
-    }
-
-    if (empty($privateKeyContent)) {
-        setFlash('error', 'No private key file uploaded or pasted. Please select a file or paste PEM content.');
-        header("Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center");
+    if (empty($_FILES['pfx_file']['tmp_name']) || !is_uploaded_file($_FILES['pfx_file']['tmp_name'])) {
+        setFlash('error', 'A PKCS#12 (.pfx or .p12) bundle is required. PEM private keys are not accepted.');
+        header($redirect);
         exit;
     }
 
-    $authData = [
-        'private_key'           => $privateKeyContent,
+    $upload = $_FILES['pfx_file'];
+    if (($upload['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+        setFlash('error', "PKCS#12 upload failed (error code {$upload['error']}).");
+        header($redirect);
+        exit;
+    }
+
+    $pkcs12Raw = file_get_contents($upload['tmp_name']);
+    if ($pkcs12Raw === false || $pkcs12Raw === '') {
+        setFlash('error', 'The uploaded PKCS#12 file could not be read.');
+        header($redirect);
+        exit;
+    }
+
+    // openssl_pkcs12_read only succeeds on a real bundle, so this also proves the
+    // file is a PKCS#12 and not a renamed PEM, CER or P7B.
+    $parsed = [];
+    if (!openssl_pkcs12_read($pkcs12Raw, $parsed, $passphrase)) {
+        $err = openssl_error_string() ?: 'not a valid PKCS#12 bundle';
+        setFlash('error', "PKCS#12 validation failed: {$err}. Check that the passphrase is correct and the file really is a .pfx/.p12 bundle.");
+        header($redirect);
+        exit;
+    }
+
+    if (empty($parsed['cert']) || empty($parsed['pkey'])) {
+        setFlash('error', 'The PKCS#12 bundle must contain both a certificate and its private key.');
+        header($redirect);
+        exit;
+    }
+
+    $fileName = basename((string)($upload['name'] ?? 'eop-cert.pfx'));
+
+    // The bundle holds the certificate that Connect-ExchangeOnline will import, so
+    // its thumbprint is authoritative. Fall back to the typed value only when the
+    // fingerprint cannot be derived (openssl_x509_fingerprint is PHP 8.1+).
+    $thumbprint = trim($_POST['certificate_thumbprint'] ?? '');
+    $derived = function_exists('openssl_x509_fingerprint')
+        ? strtoupper(str_replace(':', '', (string)openssl_x509_fingerprint($parsed['cert'], 'sha1')))
+        : '';
+
+    if ($derived !== '') {
+        if ($thumbprint !== '' && $thumbprint !== $derived) {
+            setFlash('warning', "Thumbprint overridden: the form said {$thumbprint} but the uploaded bundle is {$derived}. The bundle is what gets imported, so {$derived} was stored.");
+        }
+        $thumbprint = $derived;
+    }
+
+    if ($thumbprint === '') {
+        setFlash('error', 'Certificate Thumbprint could not be determined from the bundle and was not supplied.');
+        header($redirect);
+        exit;
+    }
+
+    $saved = Database::saveEopAuthConfig([
+        // private_key is kept populated from the bundle so the record stays usable
+        // by anything that still reads the PEM column.
+        'private_key'           => trim($parsed['pkey']),
+        'pkcs12_bundle'         => base64_encode($pkcs12Raw),
         'key_filename'          => $fileName,
-        'password'              => $_POST['key_password'] ?? '',
-        'certificate_thumbprint'=> trim($_POST['certificate_thumbprint'] ?? ''),
+        'password'              => $passphrase,
+        'certificate_thumbprint'=> $thumbprint,
         'tenant_id'             => trim($_POST['tenant_id'] ?? ''),
         'client_id'             => trim($_POST['client_id'] ?? ''),
         'organization'          => trim($_POST['organization'] ?? 'corp.example.com'),
-        'key_type'              => str_contains($privateKeyContent, 'ENCRYPTED') ? 'PKCS8_PEM' : 'RSA_PEM',
-    ];
+        'key_type'              => 'PKCS12_PFX',
+    ], $user['username']);
 
-    if (empty($authData['certificate_thumbprint'])) {
-        setFlash('error', 'Certificate Thumbprint cannot be empty.');
-        header("Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center");
-        exit;
-    }
-
-    $saved = Database::saveEopAuthConfig($authData, $user['username']);
     if ($saved) {
-        $msg = "Private key '{$fileName}' and its AES-256 encrypted password were saved successfully into MariaDB table 'eop_auth_config'!";
-        setFlash('success', $msg);
+        setFlash(
+            'success',
+            "PKCS#12 bundle '{$fileName}' (thumbprint {$thumbprint}) was AES-256-GCM encrypted and saved into MariaDB table 'eop_auth_config'."
+        );
     } else {
-        setFlash('error', 'Failed to save private key configuration into database table.');
+        setFlash('error', 'Failed to save the certificate configuration into database table.');
     }
 
-    header("Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center");
+    header($redirect);
     exit;
 }
 
 // --------------------------------------------------------------------------
 // 8. Test EOP Private Key Decryption & Signature Verification
 // --------------------------------------------------------------------------
+// 8. Test EOP Certificate: AES-256-GCM decryption + PKCS#12 readability
+// --------------------------------------------------------------------------
 if ($action === 'test_eop_key') {
     $activeAuth = Database::getEopAuthConfig();
-    if (!$activeAuth || empty($activeAuth['private_key'])) {
-        setFlash('error', 'No active private key record found in MariaDB table eop_auth_config.');
+    if (!$activeAuth) {
+        setFlash('error', 'No active certificate record found in MariaDB table eop_auth_config.');
+    } elseif (empty($activeAuth['pkcs12_bundle'])) {
+        setFlash('error', 'The active record has no PKCS#12 bundle. Upload a .pfx, otherwise the scheduled pull cannot authenticate.');
     } else {
-        $passphrase = '';
-        if (!empty($activeAuth['encrypted_password'])) {
-            $decrypted = Database::decryptKeyPassword(
-                $activeAuth['encrypted_password'],
-                $activeAuth['encryption_iv'] ?? '',
-                $activeAuth['encryption_tag'] ?? ''
-            );
-            $passphrase = $decrypted ?? '';
-        }
+        // getEopAuthConfig already decrypts the stored secrets
+        $passphrase = (string)($activeAuth['encrypted_password'] ?? '');
+        $blob = base64_decode((string)$activeAuth['pkcs12_bundle'], true);
 
-        $privKeyObj = openssl_pkey_get_private($activeAuth['private_key'], $passphrase);
-        if ($privKeyObj) {
-            $details = openssl_pkey_get_details($privKeyObj);
-            $bits = $details['bits'] ?? 'unknown';
-            $type = ($details['type'] === OPENSSL_KEYTYPE_RSA) ? 'RSA' : 'Other';
-            setFlash('success', "Private key parsed and verified successfully! Key type: {$type}, Bits: {$bits}, AES-256 passphrase decrypted OK. Ready for Exchange Online certificate token signing.");
+        if ($blob === false || $blob === '') {
+            setFlash('error', 'The decrypted PKCS#12 bundle is not valid base64. The record is corrupt.');
         } else {
-            $err = openssl_error_string() ?: 'Invalid private key or incorrect passphrase';
-            setFlash('error', "OpenSSL private key verification failed: {$err}");
+            // Verify the same artifact the cron imports, not just the extracted PEM
+            $parsed = [];
+            if (!openssl_pkcs12_read($blob, $parsed, $passphrase)) {
+                $err = openssl_error_string() ?: 'unreadable with the stored passphrase';
+                setFlash('error', "Decryption succeeded but the PKCS#12 bundle could not be opened: {$err}. The stored passphrase may not match the bundle.");
+            } elseif (empty($parsed['pkey'])) {
+                setFlash('error', 'The PKCS#12 bundle contains no private key.');
+            } else {
+                $details = openssl_pkey_get_details(openssl_pkey_get_private($parsed['pkey']));
+                $bits = $details['bits'] ?? 'unknown';
+                $type = ($details['type'] === OPENSSL_KEYTYPE_RSA) ? 'RSA' : 'Other';
+                setFlash('success', "Certificate verified: AES-256-GCM decryption OK, PKCS#12 opened, key type {$type}, {$bits} bits, thumbprint {$activeAuth['certificate_thumbprint']}. Ready for Exchange Online certificate authentication.");
+            }
         }
     }
 
