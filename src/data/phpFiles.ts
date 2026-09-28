@@ -2902,43 +2902,51 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
     $appUrl = $existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com'));
 
     $dateStr = date('Y-m-d H:i:s');
-    $content = "# ==============================================================================\n"
-             . "# Exchange Online Protection (EOP) Anti-Spam Policy Manager\n"
-             . "# Environment Configuration (.env)\n"
-             . "# Automatically updated by setup wizard on {$dateStr}\n"
-             . "# ==============================================================================\n\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "# Remote MariaDB Database Settings\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "DB_HOST=\"{$dbHost}\"\n"
-             . "DB_PORT=\"{$dbPort}\"\n"
-             . "DB_NAME=\"{$dbName}\"\n"
-             . "DB_USER=\"{$dbUser}\"\n"
-             . "DB_PASS=\"{$dbPass}\"\n"
-             . "DB_CHARSET=\"utf8mb4\"\n\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "# Active Directory LDAP Settings (seeded to eop_ldap_config)\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "LDAP_HOST=\"{$ldapHost}\"\n"
-             . "LDAP_PORT=\"{$ldapPort}\"\n"
-             . "LDAP_PROTOCOL=\"{$ldapProto}\"\n"
-             . "LDAP_BASE_DN=\"{$ldapBase}\"\n"
-             . "LDAP_AUTHORIZED_GROUP_DN=\"{$ldapGrp}\"\n"
-             . "LDAP_BIND_DN=\"{$ldapBind}\"\n"
-             . "LDAP_BIND_PASSWORD=\"{$ldapPass}\"\n\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "# Microsoft 365 Exchange Online Protection Settings (seeded to eop_auth_config)\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "M365_TENANT_ID=\"{$tenantId}\"\n"
-             . "M365_CLIENT_ID=\"{$clientId}\"\n"
-             . "M365_CERT_THUMBPRINT=\"{$thumb}\"\n"
-             . "M365_ORGANIZATION=\"{$org}\"\n"
-             . "EOP_POLICY_NAME=\"{$policy}\"\n\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "# Security & Master Keys\n"
-             . "# ------------------------------------------------------------------------------\n"
-             . "AUTH_MASTER_ENCRYPTION_KEY=\"{$masterKey}\"\n"
-             . "APP_URL=\"{$appUrl}\"\n";
+    $lines = [
+        '# ==============================================================================',
+        '# Exchange Online Protection (EOP) Anti-Spam Policy Manager',
+        '# Environment Configuration (.env)',
+        '# Automatically updated by setup wizard on ' . $dateStr,
+        '# ==============================================================================',
+        '',
+        '# ------------------------------------------------------------------------------',
+        '# Remote MariaDB Database Settings',
+        '# ------------------------------------------------------------------------------',
+        'DB_HOST="' . $dbHost . '"',
+        'DB_PORT="' . $dbPort . '"',
+        'DB_NAME="' . $dbName . '"',
+        'DB_USER="' . $dbUser . '"',
+        'DB_PASS="' . $dbPass . '"',
+        'DB_CHARSET="utf8mb4"',
+        '',
+        '# ------------------------------------------------------------------------------',
+        '# Active Directory LDAP Settings (seeded to eop_ldap_config)',
+        '# ------------------------------------------------------------------------------',
+        'LDAP_HOST="' . $ldapHost . '"',
+        'LDAP_PORT="' . $ldapPort . '"',
+        'LDAP_PROTOCOL="' . $ldapProto . '"',
+        'LDAP_BASE_DN="' . $ldapBase . '"',
+        'LDAP_AUTHORIZED_GROUP_DN="' . $ldapGrp . '"',
+        'LDAP_BIND_DN="' . $ldapBind . '"',
+        'LDAP_BIND_PASSWORD="' . $ldapPass . '"',
+        '',
+        '# ------------------------------------------------------------------------------',
+        '# Microsoft 365 Exchange Online Protection Settings (seeded to eop_auth_config)',
+        '# ------------------------------------------------------------------------------',
+        'M365_TENANT_ID="' . $tenantId . '"',
+        'M365_CLIENT_ID="' . $clientId . '"',
+        'M365_CERT_THUMBPRINT="' . $thumb . '"',
+        'M365_ORGANIZATION="' . $org . '"',
+        'EOP_POLICY_NAME="' . $policy . '"',
+        '',
+        '# ------------------------------------------------------------------------------',
+        '# Security & Master Keys',
+        '# ------------------------------------------------------------------------------',
+        'AUTH_MASTER_ENCRYPTION_KEY="' . $masterKey . '"',
+        'APP_URL="' . $appUrl . '"',
+        ''
+    ];
+    $content = implode("\\n", $lines);
 
     $written = @file_put_contents($envPath, $content);
     if ($written !== false) {
