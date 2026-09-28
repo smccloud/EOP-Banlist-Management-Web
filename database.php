@@ -288,14 +288,43 @@ class Database {
     }
 
     /**
-     * Update policy sync status
+     * Update policy sync status with automatic column verification & graceful fallback
      */
     public static function updatePolicySyncStatus(string $policyName, string $status, string $message = ''): void {
-        $pdo = self::getConnection();
-        $stmt = $pdo->prepare("INSERT INTO " . TABLE_POLICIES . " (policy_name, last_synced_at, sync_status, sync_message, updated_at)
-                               VALUES (:name, NOW(), :status, :msg, NOW())
-                               ON DUPLICATE KEY UPDATE last_synced_at = NOW(), sync_status = VALUES(sync_status), sync_message = VALUES(sync_message), updated_at = NOW()");
-        $stmt->execute([':name' => $policyName, ':status' => $status, ':msg' => $message]);
+        try {
+            $pdo = self::getConnection();
+
+            // Check if sync_status column exists in TABLE_POLICIES; if not, dynamically add it
+            static $columnsChecked = false;
+            if (!$columnsChecked) {
+                try {
+                    $check = $pdo->query("SHOW COLUMNS FROM " . TABLE_POLICIES . " LIKE 'sync_status'");
+                    if ($check && $check->rowCount() === 0) {
+                        @$pdo->exec("ALTER TABLE " . TABLE_POLICIES . " ADD COLUMN sync_status ENUM('synced', 'pending', 'failed') NOT NULL DEFAULT 'pending'");
+                        @$pdo->exec("ALTER TABLE " . TABLE_POLICIES . " ADD COLUMN sync_message TEXT NULL");
+                        @$pdo->exec("ALTER TABLE " . TABLE_POLICIES . " ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+                    }
+                    $columnsChecked = true;
+                } catch (Exception $e) {
+                    // Ignore column check error, will fall back below
+                }
+            }
+
+            try {
+                $stmt = $pdo->prepare("INSERT INTO " . TABLE_POLICIES . " (policy_name, last_synced_at, sync_status, sync_message, updated_at)
+                                       VALUES (:name, NOW(), :status, :msg, NOW())
+                                       ON DUPLICATE KEY UPDATE last_synced_at = NOW(), sync_status = VALUES(sync_status), sync_message = VALUES(sync_message), updated_at = NOW()");
+                $stmt->execute([':name' => $policyName, ':status' => $status, ':msg' => $message]);
+            } catch (PDOException $pdoEx) {
+                // Graceful fallback for legacy tables without sync_status column
+                $fallbackStmt = $pdo->prepare("INSERT INTO " . TABLE_POLICIES . " (policy_name, last_synced_at)
+                                               VALUES (:name, NOW())
+                                               ON DUPLICATE KEY UPDATE last_synced_at = NOW()");
+                $fallbackStmt->execute([':name' => $policyName]);
+            }
+        } catch (Exception $e) {
+            error_log('[Database::updatePolicySyncStatus Error] ' . $e->getMessage());
+        }
     }
 
     /**

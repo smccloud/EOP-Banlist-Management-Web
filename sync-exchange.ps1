@@ -25,7 +25,7 @@ param (
 
 Write-Host "=========================================================="
 Write-Host "EOP Anti-Spam Sync: Policy='$PolicyName' | Action=$Action"
-Write-Host "Database Host: $DbHost:$DbPort | DB: $DbName"
+Write-Host "Database Host: ${DbHost}:${DbPort} | DB: $DbName"
 if ($Action -eq "Pull") {
     Write-Host "CRON MODE: PULL ONLY (Exchange Online -> MariaDB)" -ForegroundColor Yellow
     Write-Host "Cron job will only pull changes from EOP; local entries are NOT pushed." -ForegroundColor Yellow

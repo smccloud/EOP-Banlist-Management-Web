@@ -303,7 +303,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     `description` TEXT NULL,
                     `is_default` TINYINT(1) NOT NULL DEFAULT 0,
                     `last_synced_at` DATETIME NULL,
-                    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    `sync_status` ENUM('synced', 'pending', 'failed') NOT NULL DEFAULT 'pending',
+                    `sync_message` TEXT NULL,
+                    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
                 'eop_ldap_config' => "CREATE TABLE IF NOT EXISTS `eop_ldap_config` (
@@ -363,6 +366,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             foreach ($tables as $tblSql) {
                 $pdo->exec($tblSql);
+            }
+
+            // Ensure eop_policies has sync_status, sync_message, updated_at columns if table already existed
+            try {
+                $check = $pdo->query("SHOW COLUMNS FROM `eop_policies` LIKE 'sync_status'");
+                if ($check && $check->rowCount() === 0) {
+                    @$pdo->exec("ALTER TABLE `eop_policies` ADD COLUMN sync_status ENUM('synced', 'pending', 'failed') NOT NULL DEFAULT 'pending'");
+                    @$pdo->exec("ALTER TABLE `eop_policies` ADD COLUMN sync_message TEXT NULL");
+                    @$pdo->exec("ALTER TABLE `eop_policies` ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+                }
+            } catch (Exception $colEx) {
+                // Ignore if migration fails
             }
 
             // Seed default policy
