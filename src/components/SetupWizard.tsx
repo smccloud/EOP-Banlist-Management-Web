@@ -1713,30 +1713,79 @@ $cert.Thumbprint`}
               {showEnvPreview && (
                 <div className="p-4 border-t border-slate-200 dark:border-slate-700 space-y-3 bg-white dark:bg-slate-900">
                   <div className="flex items-center justify-between flex-wrap gap-2">
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-                      Target Path: <strong>/var/www/eop-antispam/.env</strong> (permissions: 0640)
-                    </span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg">
                       <button
                         type="button"
-                        onClick={handleCopyEnv}
-                        className="px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                        onClick={() => setActivePreviewTab('.env')}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                          activePreviewTab === '.env'
+                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                        }`}
                       >
-                        <Copy className="w-3 h-3" />
-                        <span>{copiedEnv ? 'Copied!' : 'Copy .env'}</span>
+                        .env
                       </button>
                       <button
                         type="button"
-                        onClick={handleDownloadEnv}
-                        className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                        onClick={() => setActivePreviewTab('config.php')}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                          activePreviewTab === 'config.php'
+                            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                        }`}
                       >
-                        <Download className="w-3 h-3" />
-                        <span>Download .env</span>
+                        config.php
                       </button>
                     </div>
+
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                      Target: <strong>/var/www/eop-antispam/{activePreviewTab}</strong> (permissions: {activePreviewTab === '.env' ? '0640' : '0644'})
+                    </span>
+
+                    <div className="flex items-center gap-2">
+                      {activePreviewTab === '.env' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleCopyEnv}
+                            className="px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>{copiedEnv ? 'Copied!' : 'Copy .env'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDownloadEnv}
+                            className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Download .env</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleCopyConfigPhp}
+                            className="px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>{copiedConfigPhp ? 'Copied!' : 'Copy config.php'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDownloadConfigPhp}
+                            className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Download config.php</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <pre className="p-3 bg-slate-900 text-slate-200 rounded-lg text-[11px] font-mono overflow-x-auto max-h-56 leading-relaxed border border-slate-800">
-                    {generateEnvString()}
+                  <pre className="p-3 bg-slate-900 text-slate-200 rounded-lg text-[11px] font-mono overflow-x-auto max-h-64 leading-relaxed border border-slate-800">
+                    {activePreviewTab === '.env' ? generateEnvString() : generateConfigPhpString()}
                   </pre>
                 </div>
               )}
