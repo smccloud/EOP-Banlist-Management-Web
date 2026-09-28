@@ -17,13 +17,13 @@ export const DebianGuide: React.FC<DebianGuideProps> = ({ config }) => {
 
   const steps = [
     {
-      title: 'Step 1: Install Required Packages on Debian 11/12',
+      title: 'Step 1: Install Required Packages on Debian 11/12 (apt install)',
       icon: <Terminal className="w-5 h-5 text-blue-500" />,
-      description: 'Update Debian APT repositories and install NGINX, PHP 8.x (PHP-FPM), php-ldap, php-mysql, and the MariaDB client.',
-      command: `sudo apt-get update -y
-sudo apt-get install -y nginx \\
+      description: 'Update Debian APT repositories and install NGINX, PHP 8.x (PHP-FPM), php-ldap, php-mysql, ldap-utils, and the MariaDB client.',
+      command: `sudo apt update && sudo apt install -y \\
+    nginx \\
     php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip \\
-    mariadb-client curl wget git`,
+    mariadb-client ldap-utils curl wget git`,
     },
     {
       title: 'Step 2: Configure Remote MariaDB Permissions & Initialize Schema',

@@ -11,6 +11,7 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
   - [Hardware & Virtual Machine Recommendations](#hardware--virtual-machine-recommendations)
   - [Operating System & Web Server](#operating-system--web-server)
   - [PHP Runtime & Extensions](#php-runtime--extensions)
+  - [Package Installation (APT Install Command)](#package-installation-apt-install-command)
   - [Remote MariaDB Database Server](#remote-mariadb-database-server)
   - [Microsoft Active Directory & LDAP](#microsoft-active-directory--ldap)
   - [Microsoft 365 Exchange Online Protection](#microsoft-365-exchange-online-protection)
@@ -110,6 +111,33 @@ The application is engineered for enterprise reliability, predictable performanc
   - `xml` (`php-xml`): XML / DOM parser utilities
   - `zip` (`php-zip`): Bulk archive generation and import processing
   - `openssl` (`php-openssl`): AES-256-GCM encryption for CBA private keys and TLS handshakes
+
+### Package Installation (APT Install Command)
+
+To install all required packages, NGINX web server, PHP-FPM runtime, mandatory extensions, Active Directory LDAP utilities, and the MariaDB client in a single command on Debian 11/12 or Ubuntu 22.04/24.04:
+
+```bash
+sudo apt update && sudo apt install -y \
+    nginx \
+    php-fpm \
+    php-cli \
+    php-mysql \
+    php-ldap \
+    php-curl \
+    php-mbstring \
+    php-xml \
+    php-zip \
+    mariadb-client \
+    ldap-utils \
+    curl \
+    wget \
+    git
+```
+
+> **One-liner copy & paste**:
+> ```bash
+> sudo apt update && sudo apt install -y nginx php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip mariadb-client ldap-utils curl wget git
+> ```
 
 ### Remote MariaDB Database Server
 
@@ -581,13 +609,13 @@ FLUSH PRIVILEGES;
 
 ### Step 2: Install Packages on Debian 11 / 12
 
-Update Debian APT repositories and install NGINX, PHP-FPM, PHP modules, and the MariaDB client:
+Update Debian APT repositories and install NGINX, PHP-FPM, PHP modules, Active Directory LDAP utilities, and the MariaDB client:
 
 ```bash
-sudo apt-get update -y
-sudo apt-get install -y nginx \
+sudo apt update && sudo apt install -y \
+    nginx \
     php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip \
-    mariadb-client curl wget git
+    mariadb-client ldap-utils curl wget git
 ```
 
 Test remote MariaDB connectivity from your Debian server:
@@ -599,7 +627,6 @@ mariadb -h 192.168.10.50 -P 3306 -u eop_app_user -p'YourStrongPasswordHere' -D e
 Test Active Directory LDAP connectivity over standard port 389 with your service account:
 
 ```bash
-sudo apt-get install -y ldap-utils
 ldapsearch -x -H ldap://dc01.corp.example.com:389 \
   -b "DC=corp,DC=example,DC=com" \
   -D "CN=svc-eop,OU=Service Accounts,DC=corp,DC=example,DC=com" \

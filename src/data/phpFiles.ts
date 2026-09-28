@@ -4788,11 +4788,12 @@ GRANT ALL PRIVILEGES ON \`${cfg.dbName}\`.* TO '${cfg.dbUser}'@'YOUR_DEBIAN_IP';
 FLUSH PRIVILEGES;
 \`\`\`
 
-### Step 2: Install Packages on Debian Server
-Install NGINX, PHP-FPM, PHP modules, and MariaDB client:
+### Step 2: Install Packages on Debian Server (apt install)
+Install NGINX, PHP-FPM, PHP modules, Active Directory LDAP utilities, and MariaDB client:
 \`\`\`bash
-sudo apt-get update
-sudo apt-get install -y nginx php-fpm php-cli php-ldap php-mysql php-curl php-mbstring php-xml php-zip mariadb-client curl wget
+sudo apt update && sudo apt install -y \
+    nginx php-fpm php-cli php-ldap php-mysql php-curl php-mbstring php-xml php-zip \
+    mariadb-client ldap-utils curl wget git
 \`\`\`
 
 ### Step 3: Deploy Application Files & Set Permissions
