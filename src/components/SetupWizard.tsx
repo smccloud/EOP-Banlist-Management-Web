@@ -141,7 +141,9 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
   const [finalizing, setFinalizing] = useState(false);
   const [isOnlySiteOnServer, setIsOnlySiteOnServer] = useState(config.isOnlySiteOnServer !== false);
   const [showEnvPreview, setShowEnvPreview] = useState(false);
+  const [activePreviewTab, setActivePreviewTab] = useState<'.env' | 'config.php'>('.env');
   const [copiedEnv, setCopiedEnv] = useState(false);
+  const [copiedConfigPhp, setCopiedConfigPhp] = useState(false);
 
   const generateEnvString = () => {
     return `# ==============================================================================
@@ -162,10 +164,17 @@ DB_CHARSET="utf8mb4"
 LDAP_PROTOCOL="${ldapProtocol}"
 LDAP_HOST="${ldapHost}"
 LDAP_PORT=${ldapPort}
+LDAP_USE_SSL=${ldapProtocol === 'ldaps' ? 'true' : 'false'}
+LDAP_USE_TLS=${ldapProtocol === 'starttls' ? 'true' : 'false'}
 LDAP_BASE_DN="${ldapBaseDn}"
 LDAP_AUTHORIZED_GROUP_DN="${ldapGroupDn}"
 LDAP_BIND_DN="${ldapBindDn}"
 LDAP_BIND_PASSWORD="${ldapBindPass}"
+LDAP_DOMAIN="${ldapDomain}"
+
+# Emergency Non-LDAP Fallback Administrator Account
+FALLBACK_ADMIN_ENABLED=${fallbackAdminEnabled ? 'true' : 'false'}
+FALLBACK_ADMIN_USER="${fallbackAdminUsername || 'eopadmin'}"
 
 # Microsoft 365 Exchange Online Protection Settings
 M365_TENANT_ID="${tenantId}"
@@ -173,10 +182,142 @@ M365_CLIENT_ID="${clientId}"
 M365_CERT_THUMBPRINT="${certThumbprint}"
 M365_ORGANIZATION="${orgDomain}"
 EOP_POLICY_NAME="${defaultPolicy}"
+M365_CLIENT_SECRET="YOUR_AZURE_APP_CLIENT_SECRET"
 
 # Application Security
 AUTH_MASTER_ENCRYPTION_KEY="eop_master_aes256_secret_key_2026_debian"
-APP_URL="https://eop.corp.example.com"
+APP_URL="https://${orgDomain ? `eop.${orgDomain}` : 'eop.corp.example.com'}"
+`;
+  };
+
+  const generateConfigPhpString = () => {
+    return `<?php
+/**
+ * Exchange Online Protection (EOP) Anti-Spam Policy Manager
+ * Application Configuration File
+ * Environment: Debian Linux / PHP 8.x / Remote MariaDB / Active Directory LDAP
+ * Automatically written by setup wizard
+ */
+
+declare(strict_types=1);
+
+if (basename(__FILE__) === basename($_SERVER['SCRIPT_FILENAME'] ?? '')) {
+    http_response_code(403);
+    exit('Direct access forbidden.');
+}
+
+// 1. Session & Security Configuration
+ini_set('session.cookie_httponly', '1');
+ini_set('session.use_only_cookies', '1');
+ini_set('session.cookie_samesite', 'Lax');
+if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+    ini_set('session.cookie_secure', '1');
+}
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+$sessionTimeoutSeconds = 60 * 60;
+if (isset($_SESSION['LAST_ACTIVITY']) && (time() - $_SESSION['LAST_ACTIVITY'] > $sessionTimeoutSeconds)) {
+    session_unset();
+    session_destroy();
+    header('Location: login.php?msg=timeout');
+    exit;
+}
+$_SESSION['LAST_ACTIVITY'] = time();
+
+// 1b. Load Environment Variables from .env
+$envFilePath = __DIR__ . '/.env';
+if (file_exists($envFilePath) && is_readable($envFilePath)) {
+    $envLines = @file($envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if ($envLines !== false) {
+        foreach ($envLines as $envLine) {
+            $envLine = trim($envLine);
+            if ($envLine === '' || str_starts_with($envLine, '#') || str_starts_with($envLine, ';')) {
+                continue;
+            }
+            if (strpos($envLine, '=') !== false) {
+                [$envKey, $envVal] = explode('=', $envLine, 2);
+                $envKey = trim($envKey);
+                $envVal = trim($envVal);
+                if ((str_starts_with($envVal, '"') && str_ends_with($envVal, '"')) ||
+                    (str_starts_with($envVal, "'") && str_ends_with($envVal, "'"))) {
+                    $envVal = substr($envVal, 1, -1);
+                }
+                putenv($envKey . '=' . $envVal);
+                $_ENV[$envKey] = $envVal;
+                $_SERVER[$envKey] = $envVal;
+            }
+        }
+    }
+}
+
+// Helper function to safely fetch environment variable with fallback
+if (!function_exists('eopEnv')) {
+    function eopEnv(string $key, string $default = ''): string {
+        if (isset($_ENV[$key]) && $_ENV[$key] !== '') return (string)$_ENV[$key];
+        if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') return (string)$_SERVER[$key];
+        $val = getenv($key);
+        if ($val !== false && $val !== '') return (string)$val;
+        return $default;
+    }
+}
+
+// 2. Remote MariaDB Database Settings
+define('DB_HOST', eopEnv('DB_HOST', '${dbHost}'));
+define('DB_PORT', (int)eopEnv('DB_PORT', '${dbPort}'));
+define('DB_NAME', eopEnv('DB_NAME', '${dbName}'));
+define('DB_USER', eopEnv('DB_USER', '${dbUser}'));
+define('DB_PASS', eopEnv('DB_PASS', '${dbPass}'));
+define('DB_CHARSET', 'utf8mb4');
+
+define('TABLE_ALLOWED_SENDERS', 'eop_allowed_senders');
+define('TABLE_BLOCKED_SENDERS', 'eop_blocked_senders');
+define('TABLE_ALLOWED_DOMAINS', 'eop_allowed_domains');
+define('TABLE_BLOCKED_DOMAINS', 'eop_blocked_domains');
+define('TABLE_AUDIT_LOG',       'eop_audit_log');
+define('TABLE_POLICIES',        'eop_policies');
+define('TABLE_LDAP_CONFIG',     'eop_ldap_config');
+define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config');
+define('TABLE_LOCAL_ADMINS',    'eop_local_admins');
+
+define('AUTH_MASTER_ENCRYPTION_KEY', eopEnv('AUTH_MASTER_ENCRYPTION_KEY', 'eop_master_aes256_secret_key_2026_debian'));
+
+// 3. Microsoft Active Directory (LDAP) Settings
+define('LDAP_HOST', eopEnv('LDAP_HOST', '${ldapHost}'));
+define('LDAP_PORT', (int)eopEnv('LDAP_PORT', '${ldapPort}'));
+define('LDAP_PROTOCOL', eopEnv('LDAP_PROTOCOL', '${ldapProtocol}'));
+define('LDAP_USE_SSL', LDAP_PROTOCOL === 'ldaps');
+define('LDAP_USE_TLS', LDAP_PROTOCOL === 'starttls');
+define('LDAP_BASE_DN', eopEnv('LDAP_BASE_DN', '${ldapBaseDn}'));
+define('LDAP_AUTHORIZED_GROUP_DN', eopEnv('LDAP_AUTHORIZED_GROUP_DN', '${ldapGroupDn}'));
+define('LDAP_BIND_DN', eopEnv('LDAP_BIND_DN', '${ldapBindDn}'));
+define('LDAP_BIND_PASSWORD', eopEnv('LDAP_BIND_PASSWORD', '${ldapBindPass}'));
+define('LDAP_ACCOUNT_SUFFIX', '@${orgDomain || 'corp.example.com'}');
+define('LDAP_NETBIOS_DOMAIN', '${ldapDomain}');
+
+define('FALLBACK_ADMIN_ENABLED', ${fallbackAdminEnabled ? 'true' : 'false'});
+define('FALLBACK_ADMIN_USERNAME', eopEnv('FALLBACK_ADMIN_USER', '${fallbackAdminUsername || 'eopadmin'}'));
+define('FALLBACK_ADMIN_PASSWORD_HASH', '$2y$12$EmergencyFallbackAdminHash2026SecureBcrypt');
+
+define('DEFAULT_POLICY_NAME', eopEnv('EOP_POLICY_NAME', '${defaultPolicy}'));
+define('APP_TITLE', 'EOP Anti-Spam Policy Manager');
+define('APP_URL', eopEnv('APP_URL', 'https://${orgDomain ? `eop.${orgDomain}` : 'eop.corp.example.com'}'));
+
+$GLOBALS['AVAILABLE_POLICIES'] = [
+    '${defaultPolicy}' => 'Default Inbound Anti-Spam Policy (Applied to all recipients)',
+    'Strict Anti-Spam Policy'  => 'Strict Security Baseline (Targeted VIPs & High Value Mailboxes)',
+    'Executive Inbound Policy' => 'Custom Executive Mailbox Inbound Filtering',
+    'Custom Inbound Filter'    => 'Custom Departmental Filter Policy'
+];
+
+define('M365_TENANT_ID', eopEnv('M365_TENANT_ID', '${tenantId}'));
+define('M365_CLIENT_ID', eopEnv('M365_CLIENT_ID', '${clientId}'));
+define('M365_CERT_THUMBPRINT', eopEnv('M365_CERT_THUMBPRINT', '${certThumbprint}'));
+define('M365_ORGANIZATION', eopEnv('M365_ORGANIZATION', '${orgDomain}'));
+define('M365_CLIENT_SECRET', eopEnv('M365_CLIENT_SECRET', 'YOUR_AZURE_APP_CLIENT_SECRET'));
+define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');
 `;
   };
 
@@ -194,6 +335,22 @@ APP_URL="https://eop.corp.example.com"
     navigator.clipboard.writeText(generateEnvString());
     setCopiedEnv(true);
     setTimeout(() => setCopiedEnv(false), 2000);
+  };
+
+  const handleDownloadConfigPhp = () => {
+    const element = document.createElement('a');
+    const file = new Blob([generateConfigPhpString()], { type: 'text/plain' });
+    element.href = URL.createObjectURL(file);
+    element.download = 'config.php';
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+  };
+
+  const handleCopyConfigPhp = () => {
+    navigator.clipboard.writeText(generateConfigPhpString());
+    setCopiedConfigPhp(true);
+    setTimeout(() => setCopiedConfigPhp(false), 2000);
   };
 
   // Validate fallback admin password (12+ chars, 3 of 4: uppercase, lowercase, numbers, symbols)
@@ -318,18 +475,18 @@ APP_URL="https://eop.corp.example.com"
     setTimeout(() => {
       setFinalizing(false);
       setLockTimestamp(now);
-      localStorage.setItem('eop_setup_completed', 'true');
-      localStorage.setItem('eop_setup_locked_at', now);
-      setConfig((prev) => ({
-        ...prev,
+      const updatedConfig: AppConfig = {
+        ...config,
         dbHost,
-        dbPort,
+        dbPort: Number(dbPort),
         dbName,
         dbUser,
         dbPass,
         ldapHost,
-        ldapPort,
+        ldapPort: Number(ldapPort),
         ldapProtocol,
+        ldapUseSsl: ldapProtocol === 'ldaps',
+        ldapUseTls: ldapProtocol === 'starttls',
         ldapBaseDn,
         ldapGroupDn,
         ldapBindDn,
@@ -346,7 +503,11 @@ APP_URL="https://eop.corp.example.com"
         privateKeyPem,
         keyPassword,
         isOnlySiteOnServer,
-      }));
+      };
+      localStorage.setItem('eop_app_config', JSON.stringify(updatedConfig));
+      localStorage.setItem('eop_setup_completed', 'true');
+      localStorage.setItem('eop_setup_locked_at', now);
+      setConfig(updatedConfig);
       setIsLocked(true);
       onFinishSetup();
     }, 1400);
@@ -356,6 +517,7 @@ APP_URL="https://eop.corp.example.com"
   const handleSimulationReset = () => {
     localStorage.removeItem('eop_setup_completed');
     localStorage.removeItem('eop_setup_locked_at');
+    localStorage.removeItem('eop_app_config');
     setIsLocked(false);
     setCurrentStep(1);
     setDbTestResult(null);

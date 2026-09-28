@@ -229,6 +229,13 @@ if (!isset($_SESSION['wizard'])) {
  */
 function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = null): bool {
     $envPath = __DIR__ . '/.env';
+    if ($ldap === null && !empty($_SESSION['wizard']['ldap'])) {
+        $ldap = $_SESSION['wizard']['ldap'];
+    }
+    if ($eop === null && !empty($_SESSION['wizard']['eop'])) {
+        $eop = $_SESSION['wizard']['eop'];
+    }
+
     $existing = [];
 
     if (file_exists($envPath) && is_readable($envPath)) {
@@ -263,6 +270,12 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
     $ldapGrp = $ldap['group_dn'] ?? ($existing['LDAP_AUTHORIZED_GROUP_DN'] ?? 'CN=Exchange-Admins,OU=Security Groups,DC=corp,DC=example,DC=com');
     $ldapBind = $ldap['bind_dn'] ?? ($existing['LDAP_BIND_DN'] ?? 'CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com');
     $ldapPass = $ldap['bind_pass'] ?? ($existing['LDAP_BIND_PASSWORD'] ?? '');
+    $ldapDomain = $ldap['domain'] ?? ($existing['LDAP_DOMAIN'] ?? 'CORP');
+
+    $fallbackEnabled = isset($ldap['fallback_admin_enabled'])
+        ? ($ldap['fallback_admin_enabled'] ? 'true' : 'false')
+        : ($existing['FALLBACK_ADMIN_ENABLED'] ?? 'true');
+    $fallbackUser = $ldap['fallback_admin_username'] ?? ($existing['FALLBACK_ADMIN_USER'] ?? 'eopadmin');
 
     $tenantId = $eop['tenant_id'] ?? ($existing['M365_TENANT_ID'] ?? '11111111-2222-3333-4444-555555555555');
     $clientId = $eop['client_id'] ?? ($existing['M365_CLIENT_ID'] ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
@@ -296,10 +309,19 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
         'LDAP_HOST="' . $ldapHost . '"',
         'LDAP_PORT="' . $ldapPort . '"',
         'LDAP_PROTOCOL="' . $ldapProto . '"',
+        'LDAP_USE_SSL="' . ($ldapProto === 'ldaps' ? 'true' : 'false') . '"',
+        'LDAP_USE_TLS="' . ($ldapProto === 'starttls' ? 'true' : 'false') . '"',
         'LDAP_BASE_DN="' . $ldapBase . '"',
         'LDAP_AUTHORIZED_GROUP_DN="' . $ldapGrp . '"',
         'LDAP_BIND_DN="' . $ldapBind . '"',
         'LDAP_BIND_PASSWORD="' . $ldapPass . '"',
+        'LDAP_DOMAIN="' . $ldapDomain . '"',
+        '',
+        '# ------------------------------------------------------------------------------',
+        '# Emergency Non-LDAP Fallback Administrator Account',
+        '# ------------------------------------------------------------------------------',
+        'FALLBACK_ADMIN_ENABLED="' . $fallbackEnabled . '"',
+        'FALLBACK_ADMIN_USER="' . $fallbackUser . '"',
         '',
         '# ------------------------------------------------------------------------------',
         '# Microsoft 365 Exchange Online Protection Settings (seeded to eop_auth_config)',
@@ -309,6 +331,7 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
         'M365_CERT_THUMBPRINT="' . $thumb . '"',
         'M365_ORGANIZATION="' . $org . '"',
         'EOP_POLICY_NAME="' . $policy . '"',
+        'M365_CLIENT_SECRET="' . ($existing['M365_CLIENT_SECRET'] ?? 'YOUR_AZURE_APP_CLIENT_SECRET') . '"',
         '',
         '# ------------------------------------------------------------------------------',
         '# Security & Master Keys',
@@ -322,6 +345,204 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
     $written = @file_put_contents($envPath, $content);
     if ($written !== false) {
         @chmod($envPath, 0640);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Write or update config.php with verified database, LDAP, and system settings
+ */
+function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): bool {
+    $cfgPath = __DIR__ . '/config.php';
+    if ($ldap === null && !empty($_SESSION['wizard']['ldap'])) {
+        $ldap = $_SESSION['wizard']['ldap'];
+    }
+    if ($eop === null && !empty($_SESSION['wizard']['eop'])) {
+        $eop = $_SESSION['wizard']['eop'];
+    }
+
+    $existing = [];
+    $envPath = __DIR__ . '/.env';
+    if (file_exists($envPath) && is_readable($envPath)) {
+        $lines = @file($envPath, FILE_IGNORE_NEW_LINES);
+        if ($lines !== false) {
+            foreach ($lines as $line) {
+                $trimmed = trim($line);
+                if ($trimmed !== '' && !str_starts_with($trimmed, '#') && !str_starts_with($trimmed, ';') && strpos($trimmed, '=') !== false) {
+                    [$k, $v] = explode('=', $trimmed, 2);
+                    $k = trim($k);
+                    $v = trim($v);
+                    if ((str_starts_with($v, '"') && str_ends_with($v, '"')) ||
+                        (str_starts_with($v, "'") && str_ends_with($v, "'"))) {
+                        $v = substr($v, 1, -1);
+                    }
+                    $existing[$k] = $v;
+                }
+            }
+        }
+    }
+
+    $dbHost = addslashes($db['host'] ?? ($existing['DB_HOST'] ?? '127.0.0.1'));
+    $dbPort = (int)($db['port'] ?? ($existing['DB_PORT'] ?? 3306));
+    $dbName = addslashes($db['name'] ?? ($existing['DB_NAME'] ?? 'eop_antispam_db'));
+    $dbUser = addslashes($db['user'] ?? ($existing['DB_USER'] ?? 'root'));
+    $dbPass = addslashes($db['pass'] ?? ($existing['DB_PASS'] ?? ''));
+
+    $ldapHost = addslashes($ldap['host'] ?? ($existing['LDAP_HOST'] ?? 'dc01.corp.example.com'));
+    $ldapPort = (int)($ldap['port'] ?? ($existing['LDAP_PORT'] ?? 389));
+    $ldapProto = addslashes($ldap['protocol'] ?? ($existing['LDAP_PROTOCOL'] ?? 'ldap'));
+    $ldapBase = addslashes($ldap['base_dn'] ?? ($existing['LDAP_BASE_DN'] ?? 'DC=corp,DC=example,DC=com'));
+    $ldapGrp = addslashes($ldap['group_dn'] ?? ($existing['LDAP_AUTHORIZED_GROUP_DN'] ?? 'CN=Exchange-Admins,OU=Security Groups,DC=corp,DC=example,DC=com'));
+    $ldapBind = addslashes($ldap['bind_dn'] ?? ($existing['LDAP_BIND_DN'] ?? 'CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com'));
+    $ldapPass = addslashes($ldap['bind_pass'] ?? ($existing['LDAP_BIND_PASSWORD'] ?? ''));
+    $ldapDomain = addslashes($ldap['domain'] ?? ($existing['LDAP_DOMAIN'] ?? 'CORP'));
+
+    $fallbackEnabled = !empty($ldap['fallback_admin_enabled']) ? 'true' : 'false';
+    $fallbackUser = addslashes($ldap['fallback_admin_username'] ?? ($existing['FALLBACK_ADMIN_USER'] ?? 'eopadmin'));
+
+    $tenantId = addslashes($eop['tenant_id'] ?? ($existing['M365_TENANT_ID'] ?? '11111111-2222-3333-4444-555555555555'));
+    $clientId = addslashes($eop['client_id'] ?? ($existing['M365_CLIENT_ID'] ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'));
+    $thumb = addslashes($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'));
+    $org = addslashes($eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com'));
+    $policy = addslashes($eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy'));
+    $masterKey = addslashes($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16)));
+    $appUrl = addslashes($existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com')));
+    $dateStr = date('Y-m-d H:i:s');
+
+    $cfg = "<?php\n" .
+"/**\n" .
+" * Exchange Online Protection (EOP) Anti-Spam Policy Manager\n" .
+" * Application Configuration File\n" .
+" * Environment: Debian Linux / PHP 8.x / Remote MariaDB / Active Directory LDAP\n" .
+" * Automatically written by setup wizard on {$dateStr}\n" .
+" */\n\n" .
+"declare(strict_types=1);\n\n" .
+"// Prevent direct script execution\n" .
+"if (basename(__FILE__) === basename(\$_SERVER['SCRIPT_FILENAME'] ?? '')) {\n" .
+"    http_response_code(403);\n" .
+"    exit('Direct access forbidden.');\n" .
+"}\n\n" .
+"// --------------------------------------------------------------------------\n" .
+"// 1. Session & Security Configuration\n" .
+"// --------------------------------------------------------------------------\n" .
+"ini_set('session.cookie_httponly', '1');\n" .
+"ini_set('session.use_only_cookies', '1');\n" .
+"ini_set('session.cookie_samesite', 'Lax');\n" .
+"if (!empty(\$_SERVER['HTTPS']) && \$_SERVER['HTTPS'] !== 'off') {\n" .
+"    ini_set('session.cookie_secure', '1');\n" .
+"}\n\n" .
+"if (session_status() === PHP_SESSION_NONE) {\n" .
+"    session_start();\n" .
+"}\n\n" .
+"\$sessionTimeoutSeconds = 60 * 60;\n" .
+"if (isset(\$_SESSION['LAST_ACTIVITY']) && (time() - \$_SESSION['LAST_ACTIVITY'] > \$sessionTimeoutSeconds)) {\n" .
+"    session_unset();\n" .
+"    session_destroy();\n" .
+"    header('Location: login.php?msg=timeout');\n" .
+"    exit;\n" .
+"}\n" .
+"\$_SESSION['LAST_ACTIVITY'] = time();\n\n" .
+"// --------------------------------------------------------------------------\n" .
+"// 1b. Load Environment Variables from .env\n" .
+"// Automatically loads .env written by setup.php or administrator\n" .
+"// --------------------------------------------------------------------------\n" .
+"\$envFilePath = __DIR__ . '/.env';\n" .
+"if (file_exists(\$envFilePath) && is_readable(\$envFilePath)) {\n" .
+"    \$envLines = @file(\$envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);\n" .
+"    if (\$envLines !== false) {\n" .
+"        foreach (\$envLines as \$envLine) {\n" .
+"            \$envLine = trim(\$envLine);\n" .
+"            if (\$envLine === '' || str_starts_with(\$envLine, '#') || str_starts_with(\$envLine, ';')) {\n" .
+"                continue;\n" .
+"            }\n" .
+"            if (strpos(\$envLine, '=') !== false) {\n" .
+"                [\$envKey, \$envVal] = explode('=', \$envLine, 2);\n" .
+"                \$envKey = trim(\$envKey);\n" .
+"                \$envVal = trim(\$envVal);\n" .
+"                if ((str_starts_with(\$envVal, '\"') && str_ends_with(\$envVal, '\"')) ||\n" .
+"                    (str_starts_with(\$envVal, \"'\") && str_ends_with(\$envVal, \"'\"))) {\n" .
+"                    \$envVal = substr(\$envVal, 1, -1);\n" .
+"                }\n" .
+"                putenv(\"{\$envKey}={\$envVal}\");\n" .
+"                \$_ENV[\$envKey] = \$envVal;\n" .
+"                \$_SERVER[\$envKey] = \$envVal;\n" .
+"            }\n" .
+"        }\n" .
+"    }\n" .
+"}\n\n" .
+"// Helper function to safely fetch environment variable with fallback\n" .
+"if (!function_exists('eopEnv')) {\n" .
+"    function eopEnv(string \$key, string \$default = ''): string {\n" .
+"        if (isset(\$_ENV[\$key]) && \$_ENV[\$key] !== '') {\n" .
+"            return (string)\$_ENV[\$key];\n" .
+"        }\n" .
+"        if (isset(\$_SERVER[\$key]) && \$_SERVER[\$key] !== '') {\n" .
+"            return (string)\$_SERVER[\$key];\n" .
+"        }\n" .
+"        \$val = getenv(\$key);\n" .
+"        if (\$val !== false && \$val !== '') {\n" .
+"            return (string)\$val;\n" .
+"        }\n" .
+"        return \$default;\n" .
+"    }\n" .
+"}\n\n" .
+"// --------------------------------------------------------------------------\n" .
+"// 2. Remote MariaDB Database Settings\n" .
+"// --------------------------------------------------------------------------\n" .
+"define('DB_HOST', eopEnv('DB_HOST', '{$dbHost}'));\n" .
+"define('DB_PORT', (int)eopEnv('DB_PORT', '{$dbPort}'));\n" .
+"define('DB_NAME', eopEnv('DB_NAME', '{$dbName}'));\n" .
+"define('DB_USER', eopEnv('DB_USER', '{$dbUser}'));\n" .
+"define('DB_PASS', eopEnv('DB_PASS', '{$dbPass}'));\n" .
+"define('DB_CHARSET', 'utf8mb4');\n\n" .
+"// Individual MariaDB tables per list requirement\n" .
+"define('TABLE_ALLOWED_SENDERS', 'eop_allowed_senders');\n" .
+"define('TABLE_BLOCKED_SENDERS', 'eop_blocked_senders');\n" .
+"define('TABLE_ALLOWED_DOMAINS', 'eop_allowed_domains');\n" .
+"define('TABLE_BLOCKED_DOMAINS', 'eop_blocked_domains');\n" .
+"define('TABLE_AUDIT_LOG',       'eop_audit_log');\n" .
+"define('TABLE_POLICIES',        'eop_policies');\n" .
+"define('TABLE_LDAP_CONFIG',     'eop_ldap_config');\n" .
+"define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config');\n" .
+"define('TABLE_LOCAL_ADMINS',    'eop_local_admins');\n\n" .
+"define('AUTH_MASTER_ENCRYPTION_KEY', eopEnv('AUTH_MASTER_ENCRYPTION_KEY', '{$masterKey}'));\n\n" .
+"// --------------------------------------------------------------------------\n" .
+"// 3. Microsoft Active Directory (LDAP) Settings\n" .
+"// --------------------------------------------------------------------------\n" .
+"define('LDAP_HOST', eopEnv('LDAP_HOST', '{$ldapHost}'));\n" .
+"define('LDAP_PORT', (int)eopEnv('LDAP_PORT', '{$ldapPort}'));\n" .
+"define('LDAP_PROTOCOL', eopEnv('LDAP_PROTOCOL', '{$ldapProto}'));\n" .
+"define('LDAP_USE_SSL', LDAP_PROTOCOL === 'ldaps');\n" .
+"define('LDAP_USE_TLS', LDAP_PROTOCOL === 'starttls');\n" .
+"define('LDAP_BASE_DN', eopEnv('LDAP_BASE_DN', '{$ldapBase}'));\n" .
+"define('LDAP_AUTHORIZED_GROUP_DN', eopEnv('LDAP_AUTHORIZED_GROUP_DN', '{$ldapGrp}'));\n" .
+"define('LDAP_BIND_DN', eopEnv('LDAP_BIND_DN', '{$ldapBind}'));\n" .
+"define('LDAP_BIND_PASSWORD', eopEnv('LDAP_BIND_PASSWORD', '{$ldapPass}'));\n" .
+"define('LDAP_ACCOUNT_SUFFIX', '@' . '{$org}');\n" .
+"define('LDAP_NETBIOS_DOMAIN', '{$ldapDomain}');\n\n" .
+"define('FALLBACK_ADMIN_ENABLED', {$fallbackEnabled});\n" .
+"define('FALLBACK_ADMIN_USERNAME', eopEnv('FALLBACK_ADMIN_USER', '{$fallbackUser}'));\n" .
+"define('FALLBACK_ADMIN_PASSWORD_HASH', '\$2y\$12\$EmergencyFallbackAdminHash2026SecureBcrypt');\n\n" .
+"define('DEFAULT_POLICY_NAME', eopEnv('EOP_POLICY_NAME', '{$policy}'));\n" .
+"define('APP_TITLE', 'EOP Anti-Spam Policy Manager');\n" .
+"define('APP_URL', eopEnv('APP_URL', '{$appUrl}'));\n\n" .
+"\$GLOBALS['AVAILABLE_POLICIES'] = [\n" .
+"    '{$policy}' => 'Default Inbound Anti-Spam Policy (Applied to all recipients)',\n" .
+"    'Strict Anti-Spam Policy'  => 'Strict Security Baseline (Targeted VIPs & High Value Mailboxes)',\n" .
+"    'Executive Inbound Policy' => 'Custom Executive Mailbox Inbound Filtering',\n" .
+"    'Custom Inbound Filter'    => 'Custom Departmental Filter Policy'\n" .
+"];\n\n" .
+"define('M365_TENANT_ID', eopEnv('M365_TENANT_ID', '{$tenantId}'));\n" .
+"define('M365_CLIENT_ID', eopEnv('M365_CLIENT_ID', '{$clientId}'));\n" .
+"define('M365_CERT_THUMBPRINT', eopEnv('M365_CERT_THUMBPRINT', '{$thumb}'));\n" .
+"define('M365_ORGANIZATION', eopEnv('M365_ORGANIZATION', '{$org}'));\n" .
+"define('M365_CLIENT_SECRET', eopEnv('M365_CLIENT_SECRET', 'YOUR_AZURE_APP_CLIENT_SECRET'));\n" .
+"define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');\n";
+
+    $written = @file_put_contents($cfgPath, $cfg);
+    if ($written !== false) {
+        @chmod($cfgPath, 0644);
         return true;
     }
     return false;
@@ -522,8 +743,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'tables' => array_keys($tables)
             ];
 
-            // Immediately write database connection parameters to .env file
+            // Immediately write database connection parameters to .env and config.php files
             updateEnvConfiguration($_SESSION['wizard']['db']);
+            updateConfigFile($_SESSION['wizard']['db']);
 
             $_SESSION['wizard']['step'] = 3;
             header('Location: setup.php?step=3');
@@ -692,8 +914,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':org' => $eop['org_domain']
             ]);
 
-            // 5. Write full finalized environment settings to .env file
+            // 5. Write full finalized environment settings to .env and config.php files
             updateEnvConfiguration($db, $ldap, $eop);
+            updateConfigFile($db, $ldap, $eop);
 
             // 6. Create Debian lockfile installed.lock
             $lockData = json_encode([

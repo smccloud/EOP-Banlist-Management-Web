@@ -12,7 +12,25 @@ import { ScreenshotsView } from './components/ScreenshotsView';
 import { ThemeProvider } from './context/ThemeContext';
 
 function AppContent() {
-  const [config, setConfig] = useState<AppConfig>(defaultAppConfig);
+  const [config, setConfig] = useState<AppConfig>(() => {
+    try {
+      const saved = localStorage.getItem('eop_app_config');
+      if (saved) {
+        return { ...defaultAppConfig, ...JSON.parse(saved) };
+      }
+    } catch (e) {
+      console.error('Failed to parse saved eop_app_config:', e);
+    }
+    return defaultAppConfig;
+  });
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('eop_app_config', JSON.stringify(config));
+    } catch (e) {
+      console.error('Failed to persist eop_app_config:', e);
+    }
+  }, [config]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('simulator');
   const [isDownloading, setIsDownloading] = useState(false);
   const [isSetupLocked, setIsSetupLocked] = useState<boolean>(() => {
