@@ -48,20 +48,68 @@ echo "Notice: Local MariaDB changes will NOT be pushed to EOP.\n";
 
 // Execute PowerShell sync script in Pull-only mode on Debian
 $psScript = __DIR__ . '/sync-exchange.ps1';
-if (file_exists($psScript)) {
-    $cmd = sprintf('pwsh -File %s -PolicyName %s -Action Pull 2>&1', escapeshellarg($psScript), escapeshellarg($policy));
-    passthru($cmd, $returnVar);
+if (!file_exists($psScript)) {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: PowerShell script not found at {$psScript}\n");
+    exit(1);
+}
 
-    if ($returnVar === 0) {
-        Database::updatePolicySyncStatus($policy, 'synced', 'Crontab automatic PULL from EOP completed');
-        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', 'Crontab pulled changes from Exchange Online (Pull-Only)', 'CRON_DAEMON');
-        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\n";
-    } else {
-        Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");
-        echo "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}.
-";
+$pwsh = trim((string)shell_exec('command -v pwsh 2>/dev/null'));
+if ($pwsh === '') {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: pwsh not found. Install PowerShell 7 (https://aka.ms/powershell)\n");
+    exit(1);
+}
+
+// Paths and the policy name are passed to PowerShell through the environment
+// rather than interpolated into the command string, so values containing spaces
+// or quotes cannot break out of the PowerShell argument.
+putenv('EOP_PS_SCRIPT=' . $psScript);
+putenv('EOP_POLICY=' . $policy);
+
+// Every pwsh invocation is a separate process, so importing the module here
+// would not carry over to the run below. The import is therefore performed in
+// the *same* session that executes sync-exchange.ps1. The preflight below exists
+// only to report the import failure loudly, instead of letting the script fall
+// through to its own success message.
+$importCmd = 'Import-Module ExchangeOnlineManagement -ErrorAction Stop';
+
+$preflightShell = sprintf(
+    '%s -NoProfile -NonInteractive -Command %s 2>&1',
+    escapeshellarg($pwsh),
+    escapeshellarg($importCmd)
+);
+
+$preflightOutput = [];
+$preflightExit = 0;
+exec($preflightShell, $preflightOutput, $preflightExit);
+
+if ($preflightExit !== 0) {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: could not import ExchangeOnlineManagement (exit {$preflightExit}).\n");
+    foreach ($preflightOutput as $line) {
+        fwrite(STDERR, '    ' . $line . "\n");
     }
+    Database::updatePolicySyncStatus($policy, 'failed', 'ExchangeOnlineManagement module import failed');
+    exit(1);
+}
+
+echo "ExchangeOnlineManagement module imported successfully.\n";
+
+$runShell = sprintf(
+    '%s -NoProfile -NonInteractive -Command %s 2>&1',
+    escapeshellarg($pwsh),
+    escapeshellarg(sprintf(
+        '$ErrorActionPreference = "Stop"; %s; & $env:EOP_PS_SCRIPT -PolicyName $env:EOP_POLICY -Action Pull',
+        $importCmd
+    ))
+);
+
+passthru($runShell, $returnVar);
+
+if ($returnVar === 0) {
+    Database::updatePolicySyncStatus($policy, 'synced', 'Crontab automatic PULL from EOP completed');
+    Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', 'Crontab pulled changes from Exchange Online (Pull-Only)', 'CRON_DAEMON');
+    echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\n";
 } else {
-    echo "Error: PowerShell script not found at {$psScript}
-";
+    Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}\n");
+    exit(1);
 }
