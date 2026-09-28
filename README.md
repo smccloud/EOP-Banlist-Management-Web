@@ -15,6 +15,7 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
   - [Dedicated Table Per List Architecture](#dedicated-table-per-list-architecture)
   - [Exchange Online Certificate-Based Authentication (CBA)](#exchange-online-certificate-based-authentication-cba)
   - [In-App Modals & Duplicate Entry Prevention](#in-app-modals--duplicate-entry-prevention)
+  - [Auto-Dismiss Notification Banners & Staged Pending Strips](#auto-dismiss-notification-banners--staged-pending-strips)
 - [Initial Run Setup Routine (`setup.php`)](#initial-run-setup-routine-setupphp)
 - [Database Schema (9 Dedicated MariaDB Tables)](#database-schema-9-dedicated-mariadb-tables)
 - [Active Directory LDAP Authentication & Authorization](#active-directory-ldap-authentication--authorization)
@@ -133,6 +134,12 @@ The unified intake engine is split into two dedicated, color-coded buttons on th
 - Designed specifically for modern sandboxed environments (where browser `alert()` or `confirm()` are blocked).
 - **Duplicate Entry Warning Modal**: Pops up immediately if an administrator attempts to add an existing email or domain, displaying who added the original record, timestamp, and justification note.
 - **Delete Confirmation Modal**: Clear verification dialog before staging deletions.
+
+### Auto-Dismiss Notification Banners & Staged Pending Strips
+
+To keep the interface clean, compact, and responsive, items that appear dynamically between the action toolbar buttons and the anti-spam list automatically dismiss:
+- **Global Notification Banner**: Success, warning, and operational status alerts (e.g. entry additions, bulk import results, Smart Sorter completions, deletions, and CSV export notices) automatically dismiss after **5 seconds** with a smooth fade animation. An immediate "Dismiss" button with an `X` icon is also available for instant closure.
+- **Staged Pending Changes Notice Strip**: When additions or deletions are staged across any of the 4 tables, an informative blue summary strip appears between the toolbar buttons and the list detailing what was staged, and automatically dismisses after **6 seconds**. Persistent badges on the **"Push All Changes to EOP"** action button and top navigation bar maintain continuous visibility of pending counts without permanently shifting the table layout.
 
 ---
 

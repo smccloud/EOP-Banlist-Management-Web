@@ -1549,15 +1549,29 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
     <!-- Main Container -->
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 grow w-full">
 
-        <!-- Flash Alert -->
+        <!-- Flash Alert (Auto-dismisses in 5s) -->
         <?php if ($flash): ?>
-            <div class="mb-5 p-4 rounded-lg flex items-center justify-between border <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60') ?>">
+            <div id="flashAlertBanner" class="mb-5 p-4 rounded-lg flex items-center justify-between border transition-all duration-300 <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60') ?>">
                 <div class="flex items-center space-x-2">
                     <i class="fa-solid <?= $flash['type'] === 'success' ? 'fa-circle-check text-emerald-600 dark:text-emerald-400' : 'fa-circle-exclamation text-rose-600 dark:text-rose-400' ?>"></i>
                     <span class="text-sm font-medium"><?= htmlspecialchars($flash['message']) ?></span>
                 </div>
-                <button onclick="this.parentElement.remove()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm"><i class="fa-solid fa-xmark"></i></button>
+                <div class="flex items-center space-x-2">
+                    <span class="text-[11px] text-slate-400 font-mono hidden sm:inline">auto-dismissing</span>
+                    <button onclick="this.closest('#flashAlertBanner').remove()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm cursor-pointer p-1"><i class="fa-solid fa-xmark"></i></button>
+                </div>
             </div>
+            <script>
+                setTimeout(function() {
+                    const el = document.getElementById('flashAlertBanner');
+                    if (el) {
+                        el.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+                        el.style.opacity = '0';
+                        el.style.transform = 'translateY(-6px)';
+                        setTimeout(() => el.remove(), 400);
+                    }
+                }, 5000);
+            </script>
         <?php endif; ?>
 
         <!-- Policy Summary Cards -->
@@ -4771,6 +4785,10 @@ The application includes a standard page-by-page setup wizard that runs during f
    - **Smart Sort Allowed**: Paste mixed text of email addresses and domain names to automatically route valid emails to Allowed Senders and domain names to Allowed Domains.
    - **Smart Sort Blocked**: Paste mixed text of email addresses and domain names to automatically route valid emails to Blocked Senders and domain names to Blocked Domains.
    - Live syntax validation, real-time duplicate detection against active policy tables, and preview badge counters before committing.
+
+6. **Auto-Dismiss Notification Banners & Staged Pending Strips**:
+   - **Global Notification Banner**: Status notifications appearing between toolbar buttons and list tables automatically dismiss after 5 seconds with a smooth animation and instant manual dismiss button.
+   - **Staged Pending Changes Notice Strip**: Summarizes staged modifications waiting across all 4 tables and automatically dismisses after 6 seconds while persistent action bar badges maintain visibility.
 
 ---
 

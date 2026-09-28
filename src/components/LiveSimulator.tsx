@@ -134,6 +134,16 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [addError, setAddError] = useState<string | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bannerMessage, setBannerMessage] = useState<{ type: 'success' | 'warning' | 'error'; text: string } | null>(null);
+  const [showPendingStrip, setShowPendingStrip] = useState(false);
+
+  // Auto-dismiss the Global Notification Banner appearing between toolbar buttons and list after 5 seconds
+  useEffect(() => {
+    if (!bannerMessage) return;
+    const timer = setTimeout(() => {
+      setBannerMessage(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [bannerMessage]);
 
   // State for Table 6: eop_auth_config in MariaDB (Private Key & Encrypted Passphrase)
   const [eopAuthRows, setEopAuthRows] = useState<EopAuthConfig[]>([
@@ -412,6 +422,19 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   useEffect(() => {
     onPendingChangesCountChange?.(pendingChanges.length);
   }, [pendingChanges, onPendingChangesCountChange]);
+
+  // Auto-dismiss the Staged Pending Changes Notice Strip appearing between buttons and list after 6 seconds
+  useEffect(() => {
+    if (pendingChanges.length > 0) {
+      setShowPendingStrip(true);
+      const timer = setTimeout(() => {
+        setShowPendingStrip(false);
+      }, 6000);
+      return () => clearTimeout(timer);
+    } else {
+      setShowPendingStrip(false);
+    }
+  }, [pendingChanges.length]);
 
   // Total count of staged entries for active policy
   const totalStagedItems = useMemo(() => {
@@ -1103,6 +1126,10 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
 
     logAction('REMOVE', tab, val, `Deleted from eop_${tab}`);
     setDeleteConfirmItem(null);
+    setBannerMessage({
+      type: 'success',
+      text: `Deleted "${val}" from ${listLabelMap[tab]} (Staged for EOP push)`
+    });
   };
 
   // Trigger simulated Exchange sync (Pull-Only for Cron or Manual Push for Admin)
@@ -1205,6 +1232,10 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     a.download = `eop_${activeTab}_${activePolicy.replace(/\s+/g, '_')}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    setBannerMessage({
+      type: 'success',
+      text: `Exported ${items.length} items from eop_${activeTab} to CSV`
+    });
   };
 
   // Save LDAP config to database table
@@ -2711,9 +2742,9 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
         ) : (
           /* List Table View */
           <div>
-            {/* Global Notification Banner */}
+            {/* Global Notification Banner (Auto-dismisses after 5s) */}
             {bannerMessage && (
-              <div className={`mx-4 sm:mx-6 mt-4 p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+              <div className={`mx-4 sm:mx-6 mt-4 p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 shadow-xs transition-all duration-300 animate-fadeIn ${
                 bannerMessage.type === 'success'
                   ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
                   : bannerMessage.type === 'warning'
@@ -2728,21 +2759,28 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   )}
                   <span className="font-medium">{bannerMessage.text}</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setBannerMessage(null)}
-                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-semibold px-2 py-0.5 rounded cursor-pointer"
-                >
-                  Dismiss
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono hidden sm:inline">
+                    auto-dismissing
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setBannerMessage(null)}
+                    className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-semibold px-2 py-0.5 rounded cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-1"
+                    title="Dismiss notification now"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Dismiss</span>
+                  </button>
+                </div>
               </div>
             )}
 
-            {/* Pending Staged Changes Notification Strip across ALL 4 tables */}
-            {pendingChanges.length > 0 && (
-              <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-blue-900 dark:text-blue-200">
+            {/* Pending Staged Changes Notification Strip across ALL 4 tables (Auto-dismisses after 6s) */}
+            {showPendingStrip && pendingChanges.length > 0 && (
+              <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-blue-900 dark:text-blue-200 shadow-xs transition-all duration-300 animate-fadeIn">
                 <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400 shrink-0"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400 shrink-0 animate-pulse"></span>
                   <div>
                     <span className="font-bold">{pendingChanges.length} Pending Changes Waiting Across All Tables</span>:
                     <span className="text-blue-700 dark:text-blue-300 ml-1.5 text-[11px]">
@@ -2753,15 +2791,25 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                     </span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setShowPushConfirmModal(true)}
-                  disabled={syncLoading}
-                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
-                >
-                  <CloudUpload className="w-3.5 h-3.5" />
-                  <span>Review &amp; Push All Changes</span>
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowPushConfirmModal(true)}
+                    disabled={syncLoading}
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                  >
+                    <CloudUpload className="w-3.5 h-3.5" />
+                    <span>Review &amp; Push All Changes</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowPendingStrip(false)}
+                    className="p-1 text-blue-400 hover:text-blue-700 dark:hover:text-blue-200 rounded cursor-pointer hover:bg-blue-100/50 dark:hover:bg-blue-900/50"
+                    title="Dismiss alert"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             )}
 
