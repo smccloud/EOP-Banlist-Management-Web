@@ -112,33 +112,6 @@ The application is engineered for enterprise reliability, predictable performanc
   - `zip` (`php-zip`): Bulk archive generation and import processing
   - `openssl` (`php-openssl`): AES-256-GCM encryption for CBA private keys and TLS handshakes
 
-### Package Installation (APT Install Command)
-
-To install all required packages, NGINX web server, PHP-FPM runtime, mandatory extensions, Active Directory LDAP utilities, and the MariaDB client in a single command on Debian 11/12 or Ubuntu 22.04/24.04:
-
-```bash
-sudo apt update && sudo apt install -y \
-    nginx \
-    php-fpm \
-    php-cli \
-    php-mysql \
-    php-ldap \
-    php-curl \
-    php-mbstring \
-    php-xml \
-    php-zip \
-    mariadb-client \
-    ldap-utils \
-    curl \
-    wget \
-    git
-```
-
-> **One-liner copy & paste**:
-> ```bash
-> sudo apt update && sudo apt install -y nginx php-fpm php-cli php-mysql php-ldap php-curl php-mbstring php-xml php-zip mariadb-client ldap-utils curl wget git
-> ```
-
 ### Remote MariaDB Database Server
 
 - **Engine**: **MariaDB 10.5+**, **10.6+**, **10.11+ LTS** (or **MySQL 8.0+**)
@@ -660,18 +633,39 @@ Deploy the NGINX configuration block to `/etc/nginx/sites-available/eop-antispam
 sudo cp /var/www/eop-antispam/nginx.conf /etc/nginx/sites-available/eop-antispam.conf
 ```
 
-Verify your server block matches the hardened template:
+The application provides an option to run either as the **only site on the server (dedicated)** or **co-hosted alongside other websites (shared multi-site)**. This option can be configured in the web UI (Configuration Generator or Setup Wizard) or by adjusting your NGINX directives:
+
+#### Hosting Option A: Dedicated Server (Only Site on this Server — Default & Recommended)
+
+When this server is dedicated exclusively to the EOP Anti-Spam Policy Manager, NGINX is configured with the `default_server` directive and `_` wildcard catch-all. Any HTTP/S traffic reaching this Debian server IP or unmapped domain will automatically route to the application:
 
 ```nginx
+# HTTP -> HTTPS Redirect (Default Server Catch-All)
 server {
-    listen 80;
-    listen [::]:80;
-    server_name eop.corp.example.com;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name eop.corp.example.com _;
+
+    return 301 https://$host$request_uri;
+}
+
+# Primary HTTPS Virtual Host (Default Server Catch-All)
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name eop.corp.example.com _;
 
     root /var/www/eop-antispam;
     index index.php index.html;
 
     client_max_body_size 16M;
+
+    # SSL Configuration (Replace with enterprise or Let's Encrypt certificates)
+    ssl_certificate /etc/ssl/certs/ssl-cert-snakeoil.pem;
+    ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
 
     # Security Headers
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -709,11 +703,45 @@ server {
 }
 ```
 
-Enable the site configuration, disable the default site, test syntax, and restart NGINX + PHP-FPM:
+Enable the site configuration, remove Debian's default welcome page, test syntax, and restart NGINX:
 
 ```bash
 sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+# Remove default site so this application serves all inbound traffic exclusively:
 sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
+sudo systemctl restart nginx
+```
+
+#### Hosting Option B: Shared Multi-Site Server (Co-hosted with Other Sites)
+
+If this Debian server hosts other websites or web applications, you should **not** make this the default server or delete the default site. Instead:
+1. In the web application's **Configuration Generator** or **Setup Wizard**, set **Server Hosting Option** to **Shared Multi-Site Server**.
+2. NGINX will listen on port 80 and 443 **without** `default_server`, strictly matching `server_name eop.corp.example.com;`:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name eop.corp.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name eop.corp.example.com;
+    root /var/www/eop-antispam;
+    ...
+```
+
+Enable the virtual host **without** touching `/etc/nginx/sites-enabled/default` or other virtual hosts:
+
+```bash
+sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+# Keep existing default site and other virtual hosts active:
+# (Do NOT delete /etc/nginx/sites-enabled/default)
 sudo nginx -t
 sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
 sudo systemctl restart nginx

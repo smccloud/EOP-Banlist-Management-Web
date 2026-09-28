@@ -23,6 +23,7 @@ export const defaultAppConfig: AppConfig = {
   appTitle: 'EOP Anti-Spam Policy Manager',
   appUrl: 'https://eop.corp.example.com',
   sessionTimeoutMinutes: 60,
+  isOnlySiteOnServer: true, // Dedicated server mode (only site on server) by default
 
   tenantId: '11111111-2222-3333-4444-555555555555',
   clientId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
@@ -4527,25 +4528,30 @@ if (file_exists($psScript)) {
     path: 'nginx.conf',
     description: 'Production NGINX Server Block configuration with PHP-FPM socket, security headers, and file protection.',
     category: 'debian',
-    generateContent: (cfg) => `# ==============================================================================
+    generateContent: (cfg) => {
+      const domain = cfg.appUrl.replace('https://', '').replace('http://', '').split('/')[0];
+      const isOnlySite = cfg.isOnlySiteOnServer !== false;
+
+      return `# ==============================================================================
 # Production NGINX Server Block for EOP Anti-Spam Policy Manager
 # Debian 11 (Bullseye) / Debian 12 (Bookworm) with PHP-FPM
+# Hosting Mode: ${isOnlySite ? 'DEDICATED SERVER (Only site on this server - default_server catch-all)' : 'SHARED MULTI-SITE (Co-hosted with other virtual hosts)'}
 # ==============================================================================
 
 # HTTP -> HTTPS Redirect
 server {
-    listen 80;
-    listen [::]:80;
-    server_name ${cfg.appUrl.replace('https://', '').replace('http://', '')};
+    listen 80${isOnlySite ? ' default_server' : ''};
+    listen [::]:80${isOnlySite ? ' default_server' : ''};
+    server_name ${domain}${isOnlySite ? ' _' : ''};
 
     return 301 https://\$host\$request_uri;
 }
 
 # Primary HTTPS Virtual Host
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name ${cfg.appUrl.replace('https://', '').replace('http://', '')};
+    listen 443 ssl http2${isOnlySite ? ' default_server' : ''};
+    listen [::]:443 ssl http2${isOnlySite ? ' default_server' : ''};
+    server_name ${domain}${isOnlySite ? ' _' : ''};
 
     root /var/www/eop-antispam;
     index index.php index.html;
@@ -4603,7 +4609,8 @@ server {
     access_log /var/log/nginx/eop_access.log combined;
     error_log /var/log/nginx/eop_error.log warn;
 }
-`
+`;
+    }
   },
 
   // 14. .env.example
@@ -4788,7 +4795,7 @@ GRANT ALL PRIVILEGES ON \`${cfg.dbName}\`.* TO '${cfg.dbUser}'@'YOUR_DEBIAN_IP';
 FLUSH PRIVILEGES;
 \`\`\`
 
-### Step 2: Install Packages on Debian Server (apt install)
+### Step 2: Install Packages on Debian Server
 Install NGINX, PHP-FPM, PHP modules, Active Directory LDAP utilities, and MariaDB client:
 \`\`\`bash
 sudo apt update && sudo apt install -y \
@@ -4807,10 +4814,25 @@ sudo find /var/www/eop-antispam -type f -exec chmod 640 {} \\;
 \`\`\`
 
 ### Step 4: Configure NGINX Server Block
+
+#### Option A: Dedicated Server (Only Site on Server - Recommended)
+When configuring this server to host only this application, the generated \`nginx.conf\` uses \`default_server\` and the \`_\` catch-all hostname. Remove the default Debian welcome site:
 \`\`\`bash
 sudo cp /var/www/eop-antispam/nginx.conf /etc/nginx/sites-available/eop-antispam.conf
 sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+# Remove default site so this application handles all server traffic:
 sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
+sudo systemctl restart nginx
+\`\`\`
+
+#### Option B: Shared Server (Co-hosted with Other Sites)
+If this Debian server hosts other websites, do not remove the default site or use \`default_server\`. Set \`isOnlySiteOnServer\` to false in the Configuration Generator so NGINX matches strictly by domain name:
+\`\`\`bash
+sudo cp /var/www/eop-antispam/nginx.conf /etc/nginx/sites-available/eop-antispam.conf
+sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
+# Keep /etc/nginx/sites-enabled/default and other virtual host configs intact!
 sudo nginx -t
 sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
 sudo systemctl restart nginx

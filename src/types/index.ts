@@ -22,6 +22,9 @@ export interface AppConfig {
   appUrl: string;
   sessionTimeoutMinutes: number;
 
+  // Web Server / Virtual Host Option
+  isOnlySiteOnServer?: boolean; // When true, NGINX is configured as default_server catch-all (dedicated server)
+
   tenantId: string;
   clientId: string;
   clientSecret: string;

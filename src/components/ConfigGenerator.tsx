@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AppConfig } from '../types';
-import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight, Eye, EyeOff } from 'lucide-react';
+import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight, Eye, EyeOff, Server, Globe } from 'lucide-react';
 import { defaultAppConfig } from '../data/phpFiles';
 
 interface ConfigGeneratorProps {
@@ -401,6 +401,71 @@ export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setCon
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                 placeholder="60"
               />
+            </div>
+
+            {/* Server Hosting Option: Only site on server vs Shared Multi-site */}
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
+              <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Server className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Server Hosting Option (NGINX Server Block)</span>
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                  config.isOnlySiteOnServer !== false
+                    ? 'bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                    : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                }`}>
+                  {config.isOnlySiteOnServer !== false ? 'DEDICATED / ONLY SITE' : 'SHARED MULTI-SITE'}
+                </span>
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleChange('isOnlySiteOnServer', true)}
+                  className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                    config.isOnlySiteOnServer !== false
+                      ? 'border-blue-500 bg-blue-50/70 dark:bg-blue-950/40 text-blue-950 dark:text-blue-100 shadow-xs ring-1 ring-blue-500'
+                      : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-bold text-xs flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${config.isOnlySiteOnServer !== false ? 'bg-blue-500' : 'bg-slate-300 dark:bg-slate-600'}`}></span>
+                      Only Site on this Server
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-200/80 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200 font-mono">
+                      default_server
+                    </span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed opacity-90">
+                    Makes this application the default catch-all on ports 80/443. Any inbound traffic to the server IP or domain routes here. Default Debian site is removed.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleChange('isOnlySiteOnServer', false)}
+                  className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                    config.isOnlySiteOnServer === false
+                      ? 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/40 text-amber-950 dark:text-amber-100 shadow-xs ring-1 ring-amber-500'
+                      : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-bold text-xs flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${config.isOnlySiteOnServer === false ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-600'}`}></span>
+                      Shared Multi-Site Server
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-200/80 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 font-mono">
+                      domain-only
+                    </span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed opacity-90">
+                    NGINX strictly matches the configured FQDN. Coexists safely with other websites and virtual hosts on the same Debian server without intercepting other traffic.
+                  </p>
+                </button>
+              </div>
             </div>
           </div>
         </div>

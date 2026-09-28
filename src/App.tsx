@@ -140,7 +140,7 @@ function AppContent() {
             onOpenConfigPage={() => setActiveTab('config_page')}
           />
         )}
-        {activeTab === 'guide' && <DebianGuide config={config} />}
+        {activeTab === 'guide' && <DebianGuide config={config} setConfig={setConfig} />}
         {activeTab === 'screenshots' && <ScreenshotsView />}
       </main>
 

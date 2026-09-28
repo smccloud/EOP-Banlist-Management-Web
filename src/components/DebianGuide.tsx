@@ -4,10 +4,22 @@ import { Terminal, Copy, Check, Server, Shield, Database, Clock, AlertCircle, Fi
 
 interface DebianGuideProps {
   config: AppConfig;
+  setConfig?: React.Dispatch<React.SetStateAction<AppConfig>>;
 }
 
-export const DebianGuide: React.FC<DebianGuideProps> = ({ config }) => {
+export const DebianGuide: React.FC<DebianGuideProps> = ({ config, setConfig }) => {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const isOnlySite = config.isOnlySiteOnServer !== false;
+
+  const setHostingMode = (onlySite: boolean) => {
+    if (setConfig) {
+      setConfig((prev) => ({
+        ...prev,
+        isOnlySiteOnServer: onlySite,
+      }));
+    }
+  };
 
   const handleCopy = (text: string, index: number) => {
     navigator.clipboard.writeText(text);
@@ -17,7 +29,7 @@ export const DebianGuide: React.FC<DebianGuideProps> = ({ config }) => {
 
   const steps = [
     {
-      title: 'Step 1: Install Required Packages on Debian 11/12 (apt install)',
+      title: 'Step 1: Install Required Packages on Debian 11/12',
       icon: <Terminal className="w-5 h-5 text-blue-500" />,
       description: 'Update Debian APT repositories and install NGINX, PHP 8.x (PHP-FPM), php-ldap, php-mysql, ldap-utils, and the MariaDB client.',
       command: `sudo apt update && sudo apt install -y \\
@@ -57,9 +69,11 @@ mariadb -h ${config.dbHost} -P ${config.dbPort} -u ${config.dbUser} -p'${config.
 mariadb -h ${config.dbHost} -u ${config.dbUser} -p'${config.dbPass}' -D ${config.dbName} -e "SELECT id, certificate_thumbprint, key_filename, is_active FROM eop_auth_config; SELECT id, host, port, protocol, base_dn, is_active FROM eop_ldap_config;"`,
     },
     {
-      title: 'Step 4: Deploy Web Application Files to /var/www/eop-antispam',
+      title: `Step 4: Deploy Web Application Files & Configure NGINX (${isOnlySite ? 'Dedicated Server' : 'Shared Multi-Site'})`,
       icon: <FileCode className="w-5 h-5 text-amber-500" />,
-      description: 'Extract the project archive, set proper file permissions, and enable the NGINX server block.',
+      description: isOnlySite
+        ? 'Deploy application files and enable NGINX as the only/default site on this server (replaces default site with default_server catch-all).'
+        : 'Deploy application files and enable NGINX virtual host alongside other websites without touching the default site.',
       command: `# Create application directory:
 sudo mkdir -p /var/www/eop-antispam
 
@@ -74,7 +88,9 @@ sudo find /var/www/eop-antispam -type f -exec chmod 640 {} \\;
 # Enable NGINX site configuration:
 sudo cp /var/www/eop-antispam/nginx.conf /etc/nginx/sites-available/eop-antispam.conf
 sudo ln -sf /etc/nginx/sites-available/eop-antispam.conf /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
+${isOnlySite ? `# Option: Only site on server - remove default welcome site:
+sudo rm -f /etc/nginx/sites-enabled/default` : `# Option: Shared server - keep default site and other virtual hosts active:
+# (Do NOT delete /etc/nginx/sites-enabled/default)`}
 
 # Test NGINX configuration and restart services:
 sudo nginx -t
@@ -139,6 +155,59 @@ sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUser
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
             Native Linux pwsh script updates <code>Set-HostedContentFilterPolicy -Identity "{config.defaultPolicyName}"</code> on demand or every 15 minutes.
           </p>
+        </div>
+      </div>
+
+      {/* Server Hosting Mode Selector */}
+      <div className="mb-8 p-4 sm:p-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center space-x-2.5">
+            <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400">
+              <Server className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Server Hosting Option</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Select whether this server runs solely this application or co-hosts multiple sites</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setHostingMode(true)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                isOnlySite
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Check className={`w-3.5 h-3.5 ${isOnlySite ? 'opacity-100' : 'opacity-0'}`} />
+              <span>Only Site on Server (Dedicated)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setHostingMode(false)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                !isOnlySite
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Check className={`w-3.5 h-3.5 ${!isOnlySite ? 'opacity-100' : 'opacity-0'}`} />
+              <span>Shared Multi-Site Server</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+          {isOnlySite ? (
+            <p>
+              <strong className="text-slate-900 dark:text-white font-semibold">Dedicated Mode active:</strong> NGINX is configured with <code className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 font-mono text-[11px] text-blue-600 dark:text-blue-400">default_server</code> catch-all on ports 80/443. All inbound HTTP/S requests to this IP will route here. Step 4 below instructs removing the Debian default placeholder site.
+            </p>
+          ) : (
+            <p>
+              <strong className="text-slate-900 dark:text-white font-semibold">Shared Multi-Site active:</strong> NGINX matches strictly by domain name <code className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 font-mono text-[11px] text-amber-600 dark:text-amber-400">{config.appUrl.replace('https://', '').replace('http://', '').split('/')[0]}</code>. Step 4 preserves existing virtual hosts and the default site config.
+            </p>
+          )}
         </div>
       </div>
 

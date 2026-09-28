@@ -109,6 +109,7 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
 
   // Step 5: Finalizing lock state
   const [finalizing, setFinalizing] = useState(false);
+  const [isOnlySiteOnServer, setIsOnlySiteOnServer] = useState(config.isOnlySiteOnServer !== false);
 
   // Validate fallback admin password (12+ chars, 3 of 4: uppercase, lowercase, numbers, symbols)
   const validateFallbackPassword = (pwd: string) => {
@@ -234,6 +235,33 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
       setLockTimestamp(now);
       localStorage.setItem('eop_setup_completed', 'true');
       localStorage.setItem('eop_setup_locked_at', now);
+      setConfig((prev) => ({
+        ...prev,
+        dbHost,
+        dbPort,
+        dbName,
+        dbUser,
+        dbPass,
+        ldapHost,
+        ldapPort,
+        ldapProtocol,
+        ldapBaseDn,
+        ldapGroupDn,
+        ldapBindDn,
+        ldapBindPass,
+        ldapDomain,
+        fallbackAdminEnabled,
+        fallbackAdminUsername,
+        fallbackAdminPassword,
+        tenantId,
+        clientId,
+        certificateThumbprint: certThumbprint,
+        organization: orgDomain,
+        defaultPolicyName: defaultPolicy,
+        privateKeyPem,
+        keyPassword,
+        isOnlySiteOnServer,
+      }));
       setIsLocked(true);
       onFinishSetup();
     }, 1400);
@@ -1193,6 +1221,55 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                     <div className="text-emerald-600 font-sans font-semibold mt-1">AES-256 Key Saved</div>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            {/* Server Hosting Option Selector */}
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Server className="w-4 h-4 text-blue-500" />
+                  <span className="text-xs font-bold text-slate-900 dark:text-white">Server Hosting Option:</span>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                  isOnlySiteOnServer
+                    ? 'bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                    : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                }`}>
+                  {isOnlySiteOnServer ? 'DEDICATED / ONLY SITE' : 'SHARED MULTI-SITE'}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setIsOnlySiteOnServer(true)}
+                  className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
+                    isOnlySiteOnServer
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 text-blue-950 dark:text-blue-100 ring-1 ring-blue-500'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  <div className="font-bold flex items-center justify-between mb-0.5">
+                    <span>Only Site on this Server</span>
+                    <span className="font-mono text-[10px] text-blue-600">default_server</span>
+                  </div>
+                  <p className="text-[11px] opacity-80">Configures NGINX as default_server catch-all. Handles all server traffic exclusively.</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsOnlySiteOnServer(false)}
+                  className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
+                    !isOnlySiteOnServer
+                      ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/50 text-amber-950 dark:text-amber-100 ring-1 ring-amber-500'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  <div className="font-bold flex items-center justify-between mb-0.5">
+                    <span>Shared Multi-Site Server</span>
+                    <span className="font-mono text-[10px] text-amber-600">domain-only</span>
+                  </div>
+                  <p className="text-[11px] opacity-80">Strictly matches domain name. Coexists safely with other virtual hosts on Debian.</p>
+                </button>
               </div>
             </div>
 
