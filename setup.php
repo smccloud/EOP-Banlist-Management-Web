@@ -349,6 +349,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $orgDomain = trim($_POST['org_domain'] ?? '');
         $policy = trim($_POST['policy'] ?? 'Default Inbound Anti-Spam Policy');
         $privateKey = trim($_POST['private_key'] ?? '');
+        if (!empty($_FILES['private_key_file']['tmp_name']) && is_uploaded_file($_FILES['private_key_file']['tmp_name'])) {
+            $uploadedKey = file_get_contents($_FILES['private_key_file']['tmp_name']);
+            if (!empty($uploadedKey)) {
+                $privateKey = trim($uploadedKey);
+            }
+        }
         $passphrase = $_POST['passphrase'] ?? '';
 
         if (empty($tenantId) || empty($clientId) || empty($thumbprint)) {
@@ -791,7 +797,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     </div>
                 </div>
 
-                <form method="POST" class="space-y-4">
+                <form method="POST" enctype="multipart/form-data" class="space-y-4">
                     <input type="hidden" name="action" value="step4_eop">
 
                     <div>
@@ -822,10 +828,22 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     </div>
 
                     <div>
-                        <label class="block text-xs font-medium text-slate-300 mb-1">RSA Certificate Private Key (PEM format)</label>
-                        <textarea name="private_key" rows="4" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500"><?php echo htmlspecialchars($_SESSION['wizard']['eop']['private_key'] ?? "-----BEGIN RSA PRIVATE KEY-----
+                        <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+                            <label class="block text-xs font-medium text-slate-300">RSA Certificate Private Key (PEM format)</label>
+                            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold cursor-pointer shadow-xs transition">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                                <span>Upload Private Key File (.pem, .key)</span>
+                                <input type="file" name="private_key_file" id="pemFileInput" accept=".pem,.key,.crt,.txt" class="hidden" onchange="handlePemFileUpload(this)">
+                            </label>
+                        </div>
+                        <div id="pemUploadStatus" class="hidden mb-2 p-2 rounded-lg bg-emerald-950/70 border border-emerald-700/70 text-emerald-300 text-[11px] flex items-center justify-between">
+                            <span id="pemUploadStatusText">✓ Key file loaded successfully</span>
+                            <button type="button" onclick="clearUploadedPem()" class="text-xs text-slate-400 hover:text-white">&times; Clear</button>
+                        </div>
+                        <textarea id="privateKeyTextarea" name="private_key" rows="4" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500"><?php echo htmlspecialchars($_SESSION['wizard']['eop']['private_key'] ?? "-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
 -----END RSA PRIVATE KEY-----"); ?></textarea>
+                        <p class="text-[11px] text-slate-400 mt-1">Upload your <code class="font-mono bg-slate-950 px-1 py-0.5 rounded text-amber-300">eop-cert-private.key</code> file or paste the unencrypted/passphrase-protected RSA PEM key block.</p>
                     </div>
 
                     <div>
@@ -917,5 +935,38 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
         <?php endif; ?>
 
     </div>
+
+    <script>
+    function handlePemFileUpload(input) {
+        if (input.files && input.files[0]) {
+            const file = input.files[0];
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                const textarea = document.getElementById('privateKeyTextarea');
+                if (textarea) {
+                    textarea.value = (content || '').trim();
+                }
+                const statusBox = document.getElementById('pemUploadStatus');
+                const statusText = document.getElementById('pemUploadStatusText');
+                if (statusBox && statusText) {
+                    const sizeStr = file.size < 1024 ? file.size + ' B' : (file.size / 1024).toFixed(1) + ' KB';
+                    statusText.textContent = '✓ Loaded: ' + file.name + ' (' + sizeStr + ')';
+                    statusBox.classList.remove('hidden');
+                }
+            };
+            reader.readAsText(file);
+        }
+    }
+
+    function clearUploadedPem() {
+        const textarea = document.getElementById('privateKeyTextarea');
+        if (textarea) textarea.value = '';
+        const fileInput = document.getElementById('pemFileInput');
+        if (fileInput) fileInput.value = '';
+        const statusBox = document.getElementById('pemUploadStatus');
+        if (statusBox) statusBox.classList.add('hidden');
+    }
+    </script>
 </body>
 </html>

@@ -335,6 +335,7 @@ The application features an automated initial setup routine (`setup.php`) execut
    - Optionally configures the emergency non-LDAP fallback administrator.
 4. **Step 4 - Microsoft 365 Exchange Online Protection (EOP)**:
    - Configures Tenant ID, Client App ID, Certificate Thumbprint, Organization Domain, target anti-spam policy name, and RSA Private Key with AES-256-GCM encrypted passphrase.
+   - **Upload Private Key Button**: Directly upload `.pem`, `.key`, or `.txt` private key files with client-side parsing and server-side multipart support, or paste the PEM block manually.
 5. **Step 5 - Review & Permanent Security Lock**:
    - Summarizes all configured parameters.
    - Writes `config.php` and creates a filesystem lock file (`installed.lock`) alongside the MariaDB `eop_setup_lock` table.
@@ -662,7 +663,7 @@ Once you have generated `eop-cert-public.crt` (or `.cer`):
 You have two simple ways to provide the private key to the application:
 
 1. **During Initial Setup Wizard (`setup.php`)**:
-   - In **Step 4**, paste the content of `eop-cert-private.key` into the **Private Key PEM** field.
+   - In **Step 4**, click **Upload Private Key File (.pem, .key)** to choose your local certificate key file, or paste the content of `eop-cert-private.key` into the **RSA Certificate Private Key (PEM format)** field.
    - Enter your passphrase into the **Private Key Passphrase** field.
    - Enter the **Certificate Thumbprint**, **Client ID**, and **Tenant ID**.
    - Click **Test EOP Key Authentication** to verify encryption roundtrip.

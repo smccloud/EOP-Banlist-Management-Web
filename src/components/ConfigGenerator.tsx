@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AppConfig } from '../types';
-import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight, Eye, EyeOff, Server, Globe, Terminal, FileKey, Copy, ChevronDown, ChevronUp, Check } from 'lucide-react';
+import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight, Eye, EyeOff, Server, Globe, Terminal, FileKey, Copy, ChevronDown, ChevronUp, Check, Upload, X, FileCheck } from 'lucide-react';
 import { defaultAppConfig } from '../data/phpFiles';
 
 interface ConfigGeneratorProps {
@@ -14,6 +14,22 @@ export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setCon
   const [showConfigCertDirections, setShowConfigCertDirections] = useState(false);
   const [configCertTab, setConfigCertTab] = useState<'openssl' | 'powershell'>('openssl');
   const [copiedConfigCertCmd, setCopiedConfigCertCmd] = useState(false);
+  const [uploadedKeyName, setUploadedKeyName] = useState<string | null>(null);
+  const configKeyInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleKeyFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (text) {
+        handleChange('privateKeyPem', text.trim());
+        setUploadedKeyName(`${file.name} (${file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`})`);
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const handleChange = (field: keyof AppConfig, value: any) => {
     setConfig((prev) => ({
@@ -655,6 +671,67 @@ $cert.Thumbprint`}
                   placeholder="••••••••••••••••••••••••"
                 />
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <label className="block font-semibold text-slate-700 dark:text-slate-300">
+                  RSA Certificate Private Key (PEM format)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    ref={configKeyInputRef}
+                    accept=".pem,.key,.crt,.txt"
+                    className="hidden"
+                    onChange={handleKeyFileUpload}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => configKeyInputRef.current?.click()}
+                    className="px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Upload className="w-3 h-3" />
+                    <span>Upload Private Key File (.pem, .key)</span>
+                  </button>
+                  {uploadedKeyName && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadedKeyName(null);
+                        if (configKeyInputRef.current) configKeyInputRef.current.value = '';
+                      }}
+                      className="p-1 rounded text-slate-400 hover:text-rose-500 text-xs transition cursor-pointer"
+                      title="Clear uploaded file"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {uploadedKeyName && (
+                <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-[11px] flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <FileCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>Loaded from file: <strong className="font-mono">{uploadedKeyName}</strong></span>
+                  </div>
+                  <span className="text-[10px] font-mono bg-emerald-100 dark:bg-emerald-900/60 px-1.5 py-0.5 rounded text-emerald-700 dark:text-emerald-300 font-semibold">
+                    PEM Parsed
+                  </span>
+                </div>
+              )}
+
+              <textarea
+                rows={3}
+                value={config.privateKeyPem || ''}
+                onChange={(e) => {
+                  handleChange('privateKeyPem', e.target.value);
+                  if (uploadedKeyName) setUploadedKeyName(null);
+                }}
+                placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-2.5 text-slate-900 dark:text-white font-mono text-[10px] focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              />
             </div>
 
             <div className="p-3 bg-indigo-50/70 dark:bg-indigo-950/40 rounded-xl border border-indigo-100 dark:border-indigo-800/60 text-[11px] text-indigo-900 dark:text-indigo-200 space-y-1">
