@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AppConfig } from '../types';
-import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight, Eye, EyeOff, Server, Globe } from 'lucide-react';
+import { Database, Shield, Sliders, RefreshCw, Key, CheckCircle2, Lock, Radio, ArrowRight, Eye, EyeOff, Server, Globe, Terminal, FileKey, Copy, ChevronDown, ChevronUp, Check } from 'lucide-react';
 import { defaultAppConfig } from '../data/phpFiles';
 
 interface ConfigGeneratorProps {
@@ -11,6 +11,9 @@ interface ConfigGeneratorProps {
 
 export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setConfig, onOpenConfigPage }) => {
   const [showConfigBindPass, setShowConfigBindPass] = useState(false);
+  const [showConfigCertDirections, setShowConfigCertDirections] = useState(false);
+  const [configCertTab, setConfigCertTab] = useState<'openssl' | 'powershell'>('openssl');
+  const [copiedConfigCertCmd, setCopiedConfigCertCmd] = useState(false);
 
   const handleChange = (field: keyof AppConfig, value: any) => {
     setConfig((prev) => ({
@@ -488,6 +491,122 @@ export const ConfigGenerator: React.FC<ConfigGeneratorProps> = ({ config, setCon
           </div>
 
           <div className="space-y-4 text-xs">
+            {/* Certificate Generation Directions */}
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/20 overflow-hidden">
+              <button
+                type="button"
+                className="w-full p-3.5 flex items-center justify-between text-left cursor-pointer hover:bg-amber-100/40 dark:hover:bg-amber-950/40 transition"
+                onClick={() => setShowConfigCertDirections(!showConfigCertDirections)}
+              >
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-1 rounded-md bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">
+                    <FileKey className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-amber-950 dark:text-amber-200 block text-xs">
+                      Need a certificate? Directions for Generating Certificate &amp; Thumbprint
+                    </span>
+                    <span className="text-[10px] text-amber-800/70 dark:text-amber-300/70">
+                      Copy-paste commands for Linux (OpenSSL) or Windows (PowerShell)
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-1 text-amber-700 dark:text-amber-300 text-[11px] font-semibold">
+                  <span>{showConfigCertDirections ? 'Hide' : 'Show Directions'}</span>
+                  {showConfigCertDirections ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </div>
+              </button>
+
+              {showConfigCertDirections && (
+                <div className="p-3.5 pt-0 border-t border-amber-200/70 dark:border-amber-800/60 space-y-3">
+                  <div className="flex items-center space-x-2 pt-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setConfigCertTab('openssl')}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer flex items-center gap-1 ${
+                        configCertTab === 'openssl'
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      <Terminal className="w-3 h-3" />
+                      <span>Linux OpenSSL</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfigCertTab('powershell')}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer flex items-center gap-1 ${
+                        configCertTab === 'powershell'
+                          ? 'bg-amber-600 text-white'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      <Terminal className="w-3 h-3" />
+                      <span>Windows PowerShell</span>
+                    </button>
+                  </div>
+
+                  {configCertTab === 'openssl' ? (
+                    <div className="relative">
+                      <pre className="p-3 bg-slate-900 text-slate-100 rounded-lg font-mono text-[10px] overflow-x-auto leading-relaxed">
+{`# 1. Generate RSA 2048-bit key with passphrase:
+openssl genrsa -aes256 -passout pass:"${config.keyPassword || 'YourPassphrase'}" -out eop-cert-private.key 2048
+
+# 2. Generate self-signed public certificate (valid 2 years):
+openssl req -new -x509 -key eop-cert-private.key -passin pass:"${config.keyPassword || 'YourPassphrase'}" \\
+  -days 730 -out eop-cert-public.crt \\
+  -subj "/CN=EOP Anti-Spam Policy Manager/O=${config.organization || 'YourOrg'}"
+
+# 3. Print SHA-1 Thumbprint:
+openssl x509 -in eop-cert-public.crt -noout -fingerprint -sha1 | tr -d ':' | sed 's/SHA1 Fingerprint=//'`}
+                      </pre>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cmd = `# 1. Generate RSA 2048-bit key with passphrase:\nopenssl genrsa -aes256 -passout pass:"${config.keyPassword || 'YourPassphrase'}" -out eop-cert-private.key 2048\n\n# 2. Generate self-signed public certificate (valid 2 years):\nopenssl req -new -x509 -key eop-cert-private.key -passin pass:"${config.keyPassword || 'YourPassphrase'}" \\\n  -days 730 -out eop-cert-public.crt \\\n  -subj "/CN=EOP Anti-Spam Policy Manager/O=${config.organization || 'YourOrg'}"\n\n# 3. Print SHA-1 Thumbprint:\nopenssl x509 -in eop-cert-public.crt -noout -fingerprint -sha1 | tr -d ':' | sed 's/SHA1 Fingerprint=//'`;
+                          navigator.clipboard.writeText(cmd);
+                          setCopiedConfigCertCmd(true);
+                          setTimeout(() => setCopiedConfigCertCmd(false), 2000);
+                        }}
+                        className="absolute top-2 right-2 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 border border-slate-700 cursor-pointer"
+                      >
+                        {copiedConfigCertCmd ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedConfigCertCmd ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <pre className="p-3 bg-slate-900 text-slate-100 rounded-lg font-mono text-[10px] overflow-x-auto leading-relaxed">
+{`# 1. Create certificate in Windows personal cert store:
+$cert = New-SelfSignedCertificate -CertStoreLocation "Cert:\\CurrentUser\\My" \`
+  -Subject "CN=EOP Anti-Spam Policy Manager" -KeySpec Signature -KeyLength 2048 \`
+  -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(2)
+
+# 2. Export public certificate (.cer) for Microsoft Entra upload:
+Export-Certificate -Cert $cert -FilePath ".\\eop-cert-public.cer"
+
+# 3. Output SHA-1 Thumbprint:
+$cert.Thumbprint`}
+                      </pre>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cmd = `# 1. Create certificate in Windows personal cert store:\n$cert = New-SelfSignedCertificate -CertStoreLocation "Cert:\\CurrentUser\\My" \\\n  -Subject "CN=EOP Anti-Spam Policy Manager" -KeySpec Signature -KeyLength 2048 \\\n  -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(2)\n\n# 2. Export public certificate (.cer) for Microsoft Entra upload:\nExport-Certificate -Cert $cert -FilePath ".\\eop-cert-public.cer"\n\n# 3. Output SHA-1 Thumbprint:\n$cert.Thumbprint`;
+                          navigator.clipboard.writeText(cmd);
+                          setCopiedConfigCertCmd(true);
+                          setTimeout(() => setCopiedConfigCertCmd(false), 2000);
+                        }}
+                        className="absolute top-2 right-2 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 border border-slate-700 cursor-pointer"
+                      >
+                        {copiedConfigCertCmd ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedConfigCertCmd ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Azure AD Tenant ID</label>

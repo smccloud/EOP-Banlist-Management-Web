@@ -35,6 +35,11 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
 - [Initial Run Setup Routine (`setup.php`)](#initial-run-setup-routine-setupphp)
 - [Database Schema (9 Dedicated MariaDB Tables)](#database-schema-9-dedicated-mariadb-tables)
 - [Active Directory LDAP Authentication & Authorization](#active-directory-ldap-authentication--authorization)
+- [Certificate Generation & Setup Guide](#certificate-generation--setup-guide)
+  - [1. Microsoft 365 Exchange Online App-Only Certificate (CBA)](#1-microsoft-365-exchange-online-app-only-certificate-cba)
+  - [2. Uploading Public Certificate to Microsoft Entra ID (Azure Portal)](#2-uploading-public-certificate-to-microsoft-entra-id-azure-portal)
+  - [3. Storing Private Key in EOP Anti-Spam Manager](#3-storing-private-key-in-eop-anti-spam-manager)
+  - [4. NGINX HTTPS SSL Web Server Certificates](#4-nginx-https-ssl-web-server-certificates)
 - [Exchange Online Protection Sync Engine](#exchange-online-protection-sync-engine)
   - [Scheduled Cron Daemon (Pull-Only)](#scheduled-cron-daemon-pull-only)
   - [Manual Admin Push All (Exchange Online)](#manual-admin-push-all-exchange-online)
@@ -553,6 +558,173 @@ Pushing local MariaDB changes to Microsoft 365 is an intentional administrative 
 
 - High-contrast **Dark Mode** and clean **Light Mode** toggled with a single click.
 - Real-time **Audit Log** tab tracking additions, deletions, bulk imports, and sync runs with user identity, timestamp, and client IP address.
+
+---
+
+## Certificate Generation & Setup Guide
+
+This application utilizes two distinct certificates:
+1. **Microsoft 365 Exchange Online App-Only Certificate (CBA)**: Used by `sync-exchange.ps1` and `Connect-ExchangeOnline` for Certificate-Based Authentication without client secrets or interactive login.
+2. **NGINX HTTPS SSL Certificate**: Used by Debian NGINX to secure web browser access over TLS (port 443).
+
+Below are the complete, step-by-step directions for generating, inspecting, and installing both certificates.
+
+---
+
+### 1. Microsoft 365 Exchange Online App-Only Certificate (CBA)
+
+The certificate must be an X.509 certificate with an RSA key length of at least 2048 bits (4096 bits recommended for enhanced security).
+
+#### Method A: Linux / Debian OpenSSL (Recommended)
+
+Run the following commands on your Debian server or administrator workstation:
+
+```bash
+# Step 1: Create a dedicated directory for certificates
+mkdir -p ~/eop-certs && cd ~/eop-certs
+
+# Step 2: Generate an RSA 2048-bit (or 4096-bit) private key with AES-256 passphrase encryption
+openssl genrsa -aes256 -passout pass:"YourSecurePassphraseHere" -out eop-cert-private.key 2048
+
+# Step 3: Generate the self-signed public certificate (valid for 2 years / 730 days)
+openssl req -new -x509 -key eop-cert-private.key -passin pass:"YourSecurePassphraseHere" \
+  -days 730 -out eop-cert-public.crt \
+  -subj "/CN=EOP Anti-Spam Policy Manager/O=YourOrganization"
+
+# Step 4: Extract the SHA-1 Certificate Thumbprint (required for App Registration & config)
+openssl x509 -in eop-cert-public.crt -noout -fingerprint -sha1 | tr -d ':' | sed 's/SHA1 Fingerprint=//'
+# Example output: 9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80
+
+# Step 5 (Optional): Also create a PKCS#12 (.pfx) bundle for Windows/PowerShell portability
+openssl pkcs12 -export -out eop-cert.pfx -inkey eop-cert-private.key \
+  -in eop-cert-public.crt -passin pass:"YourSecurePassphraseHere" \
+  -passout pass:"YourSecurePassphraseHere"
+```
+
+**Files produced:**
+- `eop-cert-public.crt` (or `.cer`): The **public certificate** to upload to Microsoft Entra ID.
+- `eop-cert-private.key`: The **private key PEM** to paste into the setup wizard (`setup.php`) or database (`eop_auth_config`).
+- Your passphrase: Used to decrypt the key (stored as AES-256-GCM encrypted in MariaDB).
+
+#### Method B: Windows PowerShell (`New-SelfSignedCertificate`)
+
+If generating on a Windows management workstation:
+
+```powershell
+# Step 1: Generate self-signed certificate in CurrentUser personal store
+$cert = New-SelfSignedCertificate `
+  -CertStoreLocation "Cert:\CurrentUser\My" `
+  -Subject "CN=EOP Anti-Spam Policy Manager" `
+  -KeySpec Signature `
+  -KeyLength 2048 `
+  -KeyExportPolicy Exportable `
+  -HashAlgorithm SHA256 `
+  -NotAfter (Get-Date).AddYears(2)
+
+# Step 2: Export public certificate (.cer) for Microsoft Entra ID upload
+Export-Certificate -Cert $cert -FilePath ".\eop-cert-public.cer"
+
+# Step 3: Export password-protected private key (.pfx)
+$password = ConvertTo-SecureString -String "YourSecurePassphraseHere" -Force -AsPlainText
+Export-PfxCertificate -Cert $cert -FilePath ".\eop-cert.pfx" -Password $password
+
+# Step 4: Extract the RSA Private Key PEM text (using OpenSSL on Windows or Linux):
+# openssl pkcs12 -in eop-cert.pfx -nocerts -nodes -out eop-cert-private.key
+
+# Step 5: Output SHA-1 Thumbprint:
+$cert.Thumbprint
+# Example: 9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80
+```
+
+---
+
+### 2. Uploading Public Certificate to Microsoft Entra ID (Azure Portal)
+
+Once you have generated `eop-cert-public.crt` (or `.cer`):
+
+1. Sign in to the **[Microsoft Entra Admin Center](https://entra.microsoft.com/)** or **[Azure Portal](https://portal.azure.com/)**.
+2. Navigate to **Identity** > **Applications** > **App registrations**.
+3. Select your application (or create a new registration named `EOP Anti-Spam Manager`).
+4. In the left navigation, click **Certificates & secrets** > **Certificates** tab.
+5. Click **Upload certificate**.
+6. Select your `eop-cert-public.crt` (or `eop-cert-public.cer`) file and enter a description (e.g., `EOP Debian Web Server Key 2026`).
+7. Click **Add**.
+8. Verify the displayed **Thumbprint** matches your extracted SHA-1 thumbprint!
+9. In **API permissions**, grant the application:
+   - **Office 365 Exchange Online**: `Exchange.ManageAsApp` (Application permission).
+10. Click **Grant admin consent for [Your Organization]**.
+11. In Entra ID **Roles and administrators**, assign your App Registration the **Exchange Administrator** role.
+
+---
+
+### 3. Storing Private Key in EOP Anti-Spam Manager
+
+You have two simple ways to provide the private key to the application:
+
+1. **During Initial Setup Wizard (`setup.php`)**:
+   - In **Step 4**, paste the content of `eop-cert-private.key` into the **Private Key PEM** field.
+   - Enter your passphrase into the **Private Key Passphrase** field.
+   - Enter the **Certificate Thumbprint**, **Client ID**, and **Tenant ID**.
+   - Click **Test EOP Key Authentication** to verify encryption roundtrip.
+2. **Via Centralized Configuration Center (`/index.php?tab=config_center`)**:
+   - Authorized administrators can upload new keys and rotate certificates directly from the web interface without restarting NGINX or touching server files.
+   - Passphrases are stored strictly encrypted via **AES-256-GCM** in the `eop_auth_config` table.
+
+---
+
+### 4. NGINX HTTPS SSL Web Server Certificates
+
+To encrypt browser sessions connecting to the web portal:
+
+#### Option A: Let's Encrypt / Certbot (Automated Production HTTPS)
+
+If your Debian server has an external domain or public DNS record:
+
+```bash
+# 1. Install Certbot NGINX plugin
+sudo apt update && sudo apt install -y certbot python3-certbot-nginx
+
+# 2. Automatically obtain and configure SSL certificate
+sudo certbot --nginx -d eop.corp.example.com
+
+# 3. Certbot automatically configures renewal via systemd timer:
+sudo systemctl status certbot.timer
+```
+
+#### Option B: OpenSSL Self-Signed Certificate (Internal LAN / Testing)
+
+For internal networks without public DNS:
+
+```bash
+# 1. Create SSL certificate and private key in standard Debian locations:
+sudo openssl req -x509 -nodes -days 730 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/ssl-cert-snakeoil.key \
+  -out /etc/ssl/certs/ssl-cert-snakeoil.pem \
+  -subj "/CN=eop.corp.example.com/O=Enterprise Anti-Spam Management"
+
+# 2. Lock down private key permissions:
+sudo chmod 600 /etc/ssl/private/ssl-cert-snakeoil.key
+sudo chown root:root /etc/ssl/private/ssl-cert-snakeoil.key
+
+# 3. Reload NGINX to apply:
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+#### Option C: Enterprise Internal PKI (Active Directory Certificate Services - AD CS)
+
+If your enterprise uses Windows Server AD CS:
+
+```bash
+# 1. Generate CSR (Certificate Signing Request) on Debian:
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout /etc/ssl/private/eop-server.key \
+  -out /tmp/eop-server.csr \
+  -subj "/CN=eop.corp.example.com/O=Corporate IT"
+
+# 2. Submit /tmp/eop-server.csr to your enterprise Microsoft CA (Web Enrollment: https://ca.corp.example.com/certsrv)
+# 3. Download the issued Base-64 certificate and save to /etc/ssl/certs/eop-server.pem
+# 4. Point ssl_certificate and ssl_certificate_key in /etc/nginx/sites-available/eop-antispam.conf to these files.
+```
 
 ---
 

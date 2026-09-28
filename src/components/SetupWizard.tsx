@@ -24,7 +24,11 @@ import {
   FileCheck,
   UserX,
   Eye,
-  EyeOff
+  EyeOff,
+  Copy,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink
 } from 'lucide-react';
 
 interface SetupWizardProps {
@@ -106,6 +110,11 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
     message: string;
     keyType?: string;
   } | null>(null);
+
+  // Step 4: Certificate Directions state
+  const [showCertDirections, setShowCertDirections] = useState(true);
+  const [certDirectionsTab, setCertDirectionsTab] = useState<'openssl' | 'powershell'>('openssl');
+  const [copiedCertCmd, setCopiedCertCmd] = useState(false);
 
   // Step 5: Finalizing lock state
   const [finalizing, setFinalizing] = useState(false);
@@ -1037,6 +1046,142 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                 <h2 className="text-lg font-bold text-slate-900 dark:text-white">Step 4: Exchange Online Protection Connection Information</h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">Azure AD App-Only Certificate Authentication &amp; Private Key storage</p>
               </div>
+            </div>
+
+            {/* Directions for Generating the Certificate */}
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/20 overflow-hidden">
+              <div className="p-4 flex items-center justify-between cursor-pointer" onClick={() => setShowCertDirections(!showCertDirections)}>
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-1.5 rounded-lg bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">
+                    <FileKey className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-amber-950 dark:text-amber-200">
+                      Need a certificate? Directions for Generating the Certificate &amp; Thumbprint
+                    </h3>
+                    <p className="text-[11px] text-amber-800/80 dark:text-amber-300/70">
+                      Step-by-step commands to generate RSA private key, public cert, and SHA-1 thumbprint for Microsoft Entra ID
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                    {showCertDirections ? 'Hide Directions' : 'View Directions'}
+                  </span>
+                  {showCertDirections ? <ChevronUp className="w-4 h-4 text-amber-700 dark:text-amber-300" /> : <ChevronDown className="w-4 h-4 text-amber-700 dark:text-amber-300" />}
+                </div>
+              </div>
+
+              {showCertDirections && (
+                <div className="p-4 pt-0 border-t border-amber-200/70 dark:border-amber-800/60 space-y-3 text-xs">
+                  {/* Tabs: Linux OpenSSL vs Windows PowerShell */}
+                  <div className="flex items-center space-x-2 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setCertDirectionsTab('openssl')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                        certDirectionsTab === 'openssl'
+                          ? 'bg-amber-600 text-white shadow-xs'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-amber-100/60'
+                      }`}
+                    >
+                      <Terminal className="w-3.5 h-3.5" />
+                      <span>Linux / Debian (OpenSSL)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCertDirectionsTab('powershell')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                        certDirectionsTab === 'powershell'
+                          ? 'bg-amber-600 text-white shadow-xs'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-amber-100/60'
+                      }`}
+                    >
+                      <Terminal className="w-3.5 h-3.5" />
+                      <span>Windows (PowerShell)</span>
+                    </button>
+                  </div>
+
+                  {certDirectionsTab === 'openssl' ? (
+                    <div className="space-y-2">
+                      <div className="relative">
+                        <pre className="p-3 bg-slate-900 text-slate-100 rounded-lg font-mono text-[11px] overflow-x-auto leading-relaxed">
+{`# 1. Generate RSA 2048-bit private key with passphrase:
+openssl genrsa -aes256 -passout pass:"${keyPassword || 'YourPassphrase'}" -out eop-cert-private.key 2048
+
+# 2. Generate self-signed public certificate (valid 2 years):
+openssl req -new -x509 -key eop-cert-private.key -passin pass:"${keyPassword || 'YourPassphrase'}" \\
+  -days 730 -out eop-cert-public.crt \\
+  -subj "/CN=EOP Anti-Spam Policy Manager/O=${orgDomain || 'YourOrg'}"
+
+# 3. Print SHA-1 Thumbprint (copy this into the Thumbprint box below):
+openssl x509 -in eop-cert-public.crt -noout -fingerprint -sha1 | tr -d ':' | sed 's/SHA1 Fingerprint=//'`}
+                        </pre>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const cmd = `# 1. Generate RSA 2048-bit private key with passphrase:\nopenssl genrsa -aes256 -passout pass:"${keyPassword || 'YourPassphrase'}" -out eop-cert-private.key 2048\n\n# 2. Generate self-signed public certificate (valid 2 years):\nopenssl req -new -x509 -key eop-cert-private.key -passin pass:"${keyPassword || 'YourPassphrase'}" \\\n  -days 730 -out eop-cert-public.crt \\\n  -subj "/CN=EOP Anti-Spam Policy Manager/O=${orgDomain || 'YourOrg'}"\n\n# 3. Print SHA-1 Thumbprint (copy this into the Thumbprint box below):\nopenssl x509 -in eop-cert-public.crt -noout -fingerprint -sha1 | tr -d ':' | sed 's/SHA1 Fingerprint=//'`;
+                            navigator.clipboard.writeText(cmd);
+                            setCopiedCertCmd(true);
+                            setTimeout(() => setCopiedCertCmd(false), 2000);
+                          }}
+                          className="absolute top-2.5 right-2.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 border border-slate-700 cursor-pointer"
+                        >
+                          {copiedCertCmd ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedCertCmd ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300 space-y-1">
+                        <div className="font-semibold text-slate-900 dark:text-white">Next Steps:</div>
+                        <ol className="list-decimal list-inside space-y-0.5">
+                          <li>Upload <code className="font-mono bg-slate-100 dark:bg-slate-800 px-1 rounded">eop-cert-public.crt</code> to <strong>Microsoft Entra Admin Center</strong> &gt; <strong>App registrations</strong> &gt; <strong>Certificates &amp; secrets</strong>.</li>
+                          <li>Copy the printed SHA-1 thumbprint and paste into the <strong>Certificate Thumbprint</strong> field below.</li>
+                          <li>Open <code className="font-mono bg-slate-100 dark:bg-slate-800 px-1 rounded">eop-cert-private.key</code>, copy the full PEM block, and paste it into the <strong>Private Key PEM</strong> field below.</li>
+                        </ol>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="relative">
+                        <pre className="p-3 bg-slate-900 text-slate-100 rounded-lg font-mono text-[11px] overflow-x-auto leading-relaxed">
+{`# 1. Create certificate in Windows personal cert store:
+$cert = New-SelfSignedCertificate -CertStoreLocation "Cert:\\CurrentUser\\My" \`
+  -Subject "CN=EOP Anti-Spam Policy Manager" -KeySpec Signature -KeyLength 2048 \`
+  -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(2)
+
+# 2. Export public certificate (.cer) for Microsoft Entra upload:
+Export-Certificate -Cert $cert -FilePath ".\\eop-cert-public.cer"
+
+# 3. Output SHA-1 Thumbprint (copy this into the Thumbprint box below):
+$cert.Thumbprint`}
+                        </pre>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const cmd = `# 1. Create certificate in Windows personal cert store:\n$cert = New-SelfSignedCertificate -CertStoreLocation "Cert:\\CurrentUser\\My" \\\n  -Subject "CN=EOP Anti-Spam Policy Manager" -KeySpec Signature -KeyLength 2048 \\\n  -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(2)\n\n# 2. Export public certificate (.cer) for Microsoft Entra upload:\nExport-Certificate -Cert $cert -FilePath ".\\eop-cert-public.cer"\n\n# 3. Output SHA-1 Thumbprint:\n$cert.Thumbprint`;
+                            navigator.clipboard.writeText(cmd);
+                            setCopiedCertCmd(true);
+                            setTimeout(() => setCopiedCertCmd(false), 2000);
+                          }}
+                          className="absolute top-2.5 right-2.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 border border-slate-700 cursor-pointer"
+                        >
+                          {copiedCertCmd ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedCertCmd ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300 space-y-1">
+                        <div className="font-semibold text-slate-900 dark:text-white">Next Steps:</div>
+                        <ol className="list-decimal list-inside space-y-0.5">
+                          <li>Upload <code className="font-mono bg-slate-100 dark:bg-slate-800 px-1 rounded">eop-cert-public.cer</code> to <strong>Microsoft Entra Admin Center</strong> &gt; <strong>App registrations</strong> &gt; <strong>Certificates &amp; secrets</strong>.</li>
+                          <li>Copy <code className="font-mono bg-slate-100 dark:bg-slate-800 px-1 rounded">$cert.Thumbprint</code> into the <strong>Certificate Thumbprint</strong> field below.</li>
+                        </ol>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">

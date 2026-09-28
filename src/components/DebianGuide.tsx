@@ -56,8 +56,40 @@ mariadb -h ${config.dbHost} -P ${config.dbPort} -u ${config.dbUser} -p'${config.
 # You will see: eop_allowed_senders, eop_blocked_senders, eop_allowed_domains, eop_blocked_domains, eop_audit_log, eop_policies, eop_ldap_config, eop_auth_config`,
     },
     {
-      title: 'Step 3: Private Key EOP Auth & AD LDAP in Database (Tables: eop_auth_config & eop_ldap_config)',
+      title: 'Step 3: Generate Certificates (Exchange Online CBA & NGINX SSL)',
       icon: <Key className="w-5 h-5 text-indigo-500" />,
+      description: 'Generate the RSA 2048-bit Certificate-Based Authentication (CBA) certificate for Microsoft 365, extract its SHA-1 thumbprint, and generate your NGINX SSL certificate.',
+      command: `# --- 1. Generate Exchange Online CBA Certificate & Private Key ---
+mkdir -p ~/eop-certs && cd ~/eop-certs
+
+# Generate RSA 2048-bit private key with AES-256 passphrase:
+openssl genrsa -aes256 -passout pass:"${config.keyPassword || 'YourSecurePassphrase'}" -out eop-cert-private.key 2048
+
+# Generate self-signed X.509 public certificate (valid 2 years):
+openssl req -new -x509 -key eop-cert-private.key -passin pass:"${config.keyPassword || 'YourSecurePassphrase'}" \\
+  -days 730 -out eop-cert-public.crt \\
+  -subj "/CN=EOP Anti-Spam Policy Manager/O=${config.organization || 'YourOrganization'}"
+
+# Print the SHA-1 Certificate Thumbprint:
+openssl x509 -in eop-cert-public.crt -noout -fingerprint -sha1 | tr -d ':' | sed 's/SHA1 Fingerprint=//'
+
+# Upload eop-cert-public.crt to Microsoft Entra ID (Azure Portal):
+# Portal -> App registrations -> Your App -> Certificates & secrets -> Upload certificate
+
+# --- 2. Generate NGINX HTTPS SSL Certificate on Debian ---
+# Option A: Let's Encrypt (Production Domain):
+# sudo apt install -y certbot python3-certbot-nginx && sudo certbot --nginx -d ${config.appUrl.replace('https://', '').replace('http://', '').split('/')[0]}
+
+# Option B: Self-Signed Snakeoil Certificate (Internal Testing):
+sudo openssl req -x509 -nodes -days 730 -newkey rsa:2048 \\
+  -keyout /etc/ssl/private/ssl-cert-snakeoil.key \\
+  -out /etc/ssl/certs/ssl-cert-snakeoil.pem \\
+  -subj "/CN=${config.appUrl.replace('https://', '').replace('http://', '').split('/')[0]}/O=Enterprise Anti-Spam Management"
+sudo chmod 600 /etc/ssl/private/ssl-cert-snakeoil.key`,
+    },
+    {
+      title: 'Step 4: Private Key EOP Auth & AD LDAP in Database (Tables: eop_auth_config & eop_ldap_config)',
+      icon: <Database className="w-5 h-5 text-purple-500" />,
       description: 'Exchange Online Protection private key credentials (with AES-256 encrypted password) and AD LDAP parameters are both stored and managed directly in database tables.',
       command: `# EOP Private Key & Certificate Auth:
 # Table 'eop_auth_config' stores the RSA private key PEM, certificate thumbprint, and AES-256-GCM encrypted passphrase.
@@ -69,7 +101,7 @@ mariadb -h ${config.dbHost} -P ${config.dbPort} -u ${config.dbUser} -p'${config.
 mariadb -h ${config.dbHost} -u ${config.dbUser} -p'${config.dbPass}' -D ${config.dbName} -e "SELECT id, certificate_thumbprint, key_filename, is_active FROM eop_auth_config; SELECT id, host, port, protocol, base_dn, is_active FROM eop_ldap_config;"`,
     },
     {
-      title: `Step 4: Deploy Web Application Files & Configure NGINX (${isOnlySite ? 'Dedicated Server' : 'Shared Multi-Site'})`,
+      title: `Step 5: Deploy Web Application Files & Configure NGINX (${isOnlySite ? 'Dedicated Server' : 'Shared Multi-Site'})`,
       icon: <FileCode className="w-5 h-5 text-amber-500" />,
       description: isOnlySite
         ? 'Deploy application files and enable NGINX as the only/default site on this server (replaces default site with default_server catch-all).'
@@ -98,7 +130,7 @@ sudo systemctl restart php*-fpm || sudo systemctl restart php-fpm
 sudo systemctl restart nginx`,
     },
     {
-      title: 'Step 5: Install PowerShell 7 & Exchange Module (For Sync Engine)',
+      title: 'Step 6: Install PowerShell 7 & Exchange Module (For Sync Engine)',
       icon: <Terminal className="w-5 h-5 text-rose-500" />,
       description: 'Install PowerShell Core (pwsh) and the ExchangeOnlineManagement module on Debian to execute Set-HostedContentFilterPolicy.',
       command: `# Install Microsoft repository for Debian:
@@ -112,7 +144,7 @@ sudo apt-get install -y powershell
 sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUsers -Force"`,
     },
     {
-      title: 'Step 6: Setup Crontab for Automated Background Sync (Pull-Only from EOP)',
+      title: 'Step 7: Setup Crontab for Automated Background Sync (Pull-Only from EOP)',
       icon: <Clock className="w-5 h-5 text-indigo-500" />,
       description: 'Automate pulling changes from Microsoft 365 Exchange Online Protection into MariaDB every 15 minutes. Note: The cron job only pulls changes from EOP; it never pushes local MariaDB changes.',
       command: `# Add scheduled task to /etc/crontab or www-data crontab:

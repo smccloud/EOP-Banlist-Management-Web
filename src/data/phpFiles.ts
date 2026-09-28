@@ -4780,6 +4780,64 @@ eop-antispam-php-mariadb/
 
 ---
 
+## Certificate Generation & Management Guide
+
+This solution uses two distinct certificates:
+1. **Exchange Online CBA Certificate**: Used by \`Connect-ExchangeOnline\` for secretless app-only authentication.
+2. **NGINX HTTPS SSL Certificate**: Used to secure browser sessions on Debian (port 443).
+
+### Generating Exchange Online CBA Certificate
+
+#### On Linux / Debian (OpenSSL):
+\`\`\`bash
+# 1. Create cert directory:
+mkdir -p ~/eop-certs && cd ~/eop-certs
+
+# 2. Generate RSA 2048-bit key with AES passphrase:
+openssl genrsa -aes256 -passout pass:"${cfg.keyPassword || 'YourSecurePassphrase'}" -out eop-cert-private.key 2048
+
+# 3. Generate self-signed public certificate (valid 2 years):
+openssl req -new -x509 -key eop-cert-private.key -passin pass:"${cfg.keyPassword || 'YourSecurePassphrase'}" \\
+  -days 730 -out eop-cert-public.crt \\
+  -subj "/CN=EOP Anti-Spam Policy Manager/O=${cfg.organization || 'YourOrganization'}"
+
+# 4. Extract SHA-1 thumbprint for App Registration:
+openssl x509 -in eop-cert-public.crt -noout -fingerprint -sha1 | tr -d ':' | sed 's/SHA1 Fingerprint=//'
+
+# 5. Upload eop-cert-public.crt to Microsoft Entra ID:
+# Entra Admin Center -> App registrations -> Your App -> Certificates & secrets -> Upload certificate
+\`\`\`
+
+#### On Windows (PowerShell):
+\`\`\`powershell
+$cert = New-SelfSignedCertificate -CertStoreLocation "Cert:\\CurrentUser\\My" \`
+  -Subject "CN=EOP Anti-Spam Policy Manager" -KeySpec Signature -KeyLength 2048 \`
+  -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(2)
+
+Export-Certificate -Cert $cert -FilePath ".\\eop-cert-public.cer"
+$cert.Thumbprint
+\`\`\`
+
+### Generating NGINX HTTPS SSL Certificate
+
+#### Let's Encrypt (Automated Production HTTPS):
+\`\`\`bash
+sudo apt update && sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d ${cfg.appUrl.replace('https://', '').replace('http://', '').split('/')[0]}
+\`\`\`
+
+#### OpenSSL Self-Signed (Internal LAN / Testing):
+\`\`\`bash
+sudo openssl req -x509 -nodes -days 730 -newkey rsa:2048 \\
+  -keyout /etc/ssl/private/ssl-cert-snakeoil.key \\
+  -out /etc/ssl/certs/ssl-cert-snakeoil.pem \\
+  -subj "/CN=${cfg.appUrl.replace('https://', '').replace('http://', '').split('/')[0]}/O=Enterprise IT"
+sudo chmod 600 /etc/ssl/private/ssl-cert-snakeoil.key
+sudo systemctl reload nginx
+\`\`\`
+
+---
+
 ## Quick Start on Debian Linux
 
 ### Step 1: Initialize Database on Remote MariaDB Server
