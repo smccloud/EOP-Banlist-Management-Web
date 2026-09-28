@@ -29,7 +29,7 @@ export const DebianGuide: React.FC<DebianGuideProps> = ({ config, setConfig }) =
 
   const steps = [
     {
-      title: 'Step 1: Install Required Packages on Debian 11/12',
+      title: 'Step 1: Install Required Packages on Debian 12/13',
       icon: <Terminal className="w-5 h-5 text-blue-500" />,
       description: 'Update Debian APT repositories and install NGINX, PHP 8.x (PHP-FPM), php-ldap, php-mysql, ldap-utils, and the MariaDB client.',
       command: `sudo apt update && sudo apt install -y \\
@@ -135,7 +135,7 @@ sudo systemctl restart nginx`,
       description: 'Install PowerShell Core (pwsh) and the ExchangeOnlineManagement module on Debian to execute Set-HostedContentFilterPolicy.',
       command: `# Install Microsoft repository for Debian:
 sudo apt-get install -y wget apt-transport-https software-properties-common
-wget -q "https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb"
+wget -q "https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb"
 sudo dpkg -i packages-microsoft-prod.deb
 sudo apt-get update
 sudo apt-get install -y powershell
@@ -159,7 +159,7 @@ sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUser
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">Debian Linux Server Deployment Guide</h2>
         <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-          Complete step-by-step instructions for hosting the PHP application on Debian 11/12, integrating with your remote MariaDB server and Microsoft Active Directory.
+          Complete step-by-step instructions for hosting the PHP application on Debian 12/13, integrating with your remote MariaDB server and Microsoft Active Directory.
         </p>
       </div>
 

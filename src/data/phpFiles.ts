@@ -4534,7 +4534,7 @@ if (file_exists($psScript)) {
 
       return `# ==============================================================================
 # Production NGINX Server Block for EOP Anti-Spam Policy Manager
-# Debian 11 (Bullseye) / Debian 12 (Bookworm) with PHP-FPM
+# Debian 12 (Bookworm) / Debian 13 (Trixie) with PHP-FPM
 # Hosting Mode: ${isOnlySite ? 'DEDICATED SERVER (Only site on this server - default_server catch-all)' : 'SHARED MULTI-SITE (Co-hosted with other virtual hosts)'}
 # ==============================================================================
 
@@ -4770,7 +4770,7 @@ eop-antispam-php-mariadb/
 
 ## System Requirements
 
-- **Operating System**: Debian 11 (Bullseye) or Debian 12 (Bookworm) (or Ubuntu 22.04/24.04 LTS)
+- **Operating System**: Debian 12 (Bookworm) or Debian 13 (Trixie) (or Ubuntu 22.04/24.04 LTS)
 - **Web Server**: NGINX 1.18+ with FastCGI / PHP-FPM
 - **PHP**: PHP 8.1, 8.2, or 8.3 with \`php-fpm\`, \`php-cli\`, \`php-mysql\` (PDO), \`php-ldap\`, \`php-curl\`, \`php-mbstring\`, \`php-xml\`, \`php-zip\`, \`php-openssl\`
 - **Database Server**: Remote MariaDB 10.5+ / 10.6+ / 10.11+ LTS or MySQL 8.0+ reachable on TCP port 3306

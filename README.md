@@ -50,7 +50,7 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
 - [Debian Linux Server Deployment](#debian-linux-server-deployment)
   - [Deployment Overview](#deployment-overview)
   - [Step 1: Remote MariaDB Database Setup & Privileges](#step-1-remote-mariadb-database-setup--privileges)
-  - [Step 2: Install Packages on Debian 11 / 12](#step-2-install-packages-on-debian-11--12)
+  - [Step 2: Install Packages on Debian 12 / 13](#step-2-install-packages-on-debian-12--13)
   - [Step 3: Web Application Directory & File Permissions](#step-3-web-application-directory--file-permissions)
   - [Step 4: NGINX Server Block Configuration](#step-4-nginx-server-block-configuration)
   - [Step 5: Exchange Online Management & PowerShell Setup](#step-5-exchange-online-management--powershell-setup)
@@ -97,11 +97,11 @@ The application is engineered for enterprise reliability, predictable performanc
 ### Operating System & Web Server
 
 - **Operating System**:
-  - **Debian 12 (Bookworm)** - *Recommended*
-  - **Debian 11 (Bullseye)** - *Supported*
+  - **Debian 13 (Trixie)** - *Recommended*
+  - **Debian 12 (Bookworm)** - *Supported*
   - **Ubuntu 24.04 LTS / Ubuntu 22.04 LTS** - *Supported*
 - **Web Server**:
-  - **NGINX 1.18+** (NGINX 1.22+ on Debian 12) with FastCGI process manager (`fastcgi_pass unix:/run/php/php-fpm.sock`)
+  - **NGINX 1.18+** (NGINX 1.22+ on Debian 12, NGINX 1.26+ on Debian 13) with FastCGI process manager (`fastcgi_pass unix:/run/php/php-fpm.sock`)
   - HTTP/2 and TLS 1.2 / TLS 1.3 enabled (via reverse proxy or direct Let's Encrypt / enterprise SSL certificates)
 
 ### PHP Runtime & Extensions
@@ -732,7 +732,7 @@ openssl req -new -newkey rsa:2048 -nodes \
 
 ### Deployment Overview
 
-Follow these sequential steps to install the system on a clean **Debian 11 (Bullseye)** or **Debian 12 (Bookworm)** server.
+Follow these sequential steps to install the system on a clean **Debian 12 (Bookworm)** or **Debian 13 (Trixie)** server.
 
 ### Step 1: Remote MariaDB Database Setup & Privileges
 
@@ -752,7 +752,7 @@ FLUSH PRIVILEGES;
 
 > **Note**: Verify `/etc/mysql/mariadb.conf.d/50-server.cnf` on the remote server has `bind-address = 0.0.0.0` (or your internal LAN IP) and firewall port 3306 is open to the Debian server.
 
-### Step 2: Install Packages on Debian 11 / 12
+### Step 2: Install Packages on Debian 12 / 13
 
 Update Debian APT repositories and install NGINX, PHP-FPM, PHP modules, Active Directory LDAP utilities, and the MariaDB client:
 
@@ -926,7 +926,7 @@ Install PowerShell Core (`pwsh`) and the Microsoft `ExchangeOnlineManagement` mo
 ```bash
 # Register Microsoft package repository for Debian:
 sudo apt-get install -y wget apt-transport-https software-properties-common
-wget -q "https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb"
+wget -q "https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb"
 sudo dpkg -i packages-microsoft-prod.deb
 sudo apt-get update -y
 sudo apt-get install -y powershell

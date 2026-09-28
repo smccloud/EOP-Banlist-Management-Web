@@ -63,7 +63,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ config }) => {
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">Debian PHP Application Source Files</h2>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-            Complete, self-contained files ready to deploy to <code>/var/www/eop-antispam</code> on Debian 11/12.
+            Complete, self-contained files ready to deploy to <code>/var/www/eop-antispam</code> on Debian 12/13.
           </p>
         </div>
         <div className="flex items-center space-x-3 text-xs flex-wrap gap-2">
@@ -138,7 +138,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ config }) => {
           <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
             <div className="flex justify-between">
               <span>Target OS:</span>
-              <span className="font-semibold text-slate-700 dark:text-slate-300">Debian 11 / 12 Linux</span>
+              <span className="font-semibold text-slate-700 dark:text-slate-300">Debian 12 / 13 Linux</span>
             </div>
             <div className="flex justify-between">
               <span>DB Server:</span>
