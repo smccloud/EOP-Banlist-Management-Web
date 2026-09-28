@@ -4750,15 +4750,15 @@ The application includes a standard page-by-page setup wizard that runs during f
      \`${cfg.ldapGroupDn}\`
    - Supports **nested/recursive Active Directory groups** using LDAP matching rule OID \`1.2.840.113556.1.4.1941\` (\`LDAP_MATCHING_RULE_IN_CHAIN\`).
 
-4. **Exchange Online Protection Certificate Sync Engine (Cron Pull-Only vs Manual Push)**:
+4. **Exchange Online Protection Certificate Sync Engine (Cron Pull-Only vs Manual Push All)**:
    - **Scheduled Cron Daemon (Pull Only)**: The Linux crontab runner (\`cron-sync.php --action=pull\`) is strictly limited to pulling changes from Exchange Online into MariaDB via \`Get-HostedContentFilterPolicy\`. It **never pushes** or overwrites Microsoft 365 automatically:
      \`\`\`powershell
      # Scheduled Cron: Pull remote changes from Microsoft 365 into MariaDB
      Get-HostedContentFilterPolicy -Identity "${cfg.defaultPolicyName}"
      \`\`\`
-   - **Manual Admin Push**: Pushing local MariaDB entries to Microsoft 365 is triggered on-demand via the **"Push Changes to EOP"** action button on list tabs or the quick **"Push to EOP"** header button:
+   - **Manual Admin Push All**: Pushing local MariaDB entries to Microsoft 365 is triggered on-demand via the **"Push All Changes to EOP"** action button. This pushes all pending additions and removals across all 4 tables (\`eop_allowed_senders\`, \`eop_blocked_senders\`, \`eop_allowed_domains\`, \`eop_blocked_domains\`) and policies simultaneously with a detailed list-by-list result summary:
      \`\`\`powershell
-     # Manual Admin Push: Applies MariaDB tables to Exchange Online
+     # Manual Admin Push All: Applies all 4 MariaDB tables to Exchange Online
      Connect-ExchangeOnline -AppId "${cfg.clientId}" -CertificateThumbprint "${cfg.certificateThumbprint}" -Organization "${cfg.organization || 'corp.example.com'}"
      Set-HostedContentFilterPolicy -Identity "${cfg.defaultPolicyName}" \\
        -AllowedSenders @(...) \\
@@ -4766,6 +4766,11 @@ The application includes a standard page-by-page setup wizard that runs during f
        -AllowedSenderDomains @(...) \\
        -BlockedSenderDomains @(...)
      \`\`\`
+
+5. **Split Smart Sorter (Allowed & Blocked)**:
+   - **Smart Sort Allowed**: Paste mixed text of email addresses and domain names to automatically route valid emails to Allowed Senders and domain names to Allowed Domains.
+   - **Smart Sort Blocked**: Paste mixed text of email addresses and domain names to automatically route valid emails to Blocked Senders and domain names to Blocked Domains.
+   - Live syntax validation, real-time duplicate detection against active policy tables, and preview badge counters before committing.
 
 ---
 
