@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" width="1440" height="900">
+    <defs>
+      <linearGradient id="bgGrad5" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#0b0f19" />
+        <stop offset="100%" stop-color="#020617" />
+      </linearGradient>
+      <linearGradient id="cardGrad5" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#1e293b" />
+        <stop offset="100%" stop-color="#0f172a" />
+      </linearGradient>
+    </defs>
+
+    <rect width="1440" height="900" fill="url(#bgGrad5)" />
+    
+    <!-- Window Bar -->
+    <rect width="1440" height="42" fill="#090d16" rx="10" ry="10" />
+    <rect y="32" width="1440" height="10" fill="#090d16" />
+    <!-- Window Controls -->
+    <circle cx="24" cy="21" r="6" fill="#ef4444" />
+    <circle cx="44" cy="21" r="6" fill="#f59e0b" />
+    <circle cx="64" cy="21" r="6" fill="#10b981" />
+    <!-- URL Bar -->
+    <rect x="180" y="8" width="1080" height="26" rx="6" fill="#1e293b" />
+    <text x="195" y="25" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="500">🔒 https://eop.corp.example.com/index.php?tab=config_center</text>
+    <text x="1320" y="25" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12">EOP Portal v1.0</text>
+  
+
+    <!-- Header Navigation -->
+    <rect y="42" width="1440" height="64" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+    <text x="35" y="78" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="17" font-weight="700">⚙️ Centralized Configuration Center</text>
+    <text x="360" y="78" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Stored in MariaDB: eop_ldap_config &amp; eop_auth_config (Zero filesystem edits)</text>
+
+    <!-- Two-Column Configuration Grid -->
+    <g transform="translate(35, 125)">
+      <!-- Left Column: Active Directory LDAP Settings -->
+      <rect width="665" height="740" rx="14" fill="url(#cardGrad5)" stroke="#1e293b" stroke-width="1" />
+      <rect width="665" height="54" rx="14" fill="#1e293b" />
+      <text x="25" y="34" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15" font-weight="700">Active Directory LDAP Parameters (eop_ldap_config)</text>
+
+      <g transform="translate(25, 75)">
+        <text x="0" y="0" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">DOMAIN CONTROLLER FQDN</text>
+        <rect y="8" width="615" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+        <text x="15" y="32" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">dc01.corp.example.com</text>
+
+        <text x="0" y="65" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">PORT &amp; PROTOCOL</text>
+        <rect y="73" width="615" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+        <text x="15" y="97" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">389 (Standard Plain LDAP - No Certificates Required)</text>
+
+        <text x="0" y="130" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">SEARCH BASE DISTINGUISHED NAME (BASE DN)</text>
+        <rect y="138" width="615" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+        <text x="15" y="162" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">DC=corp,DC=example,DC=com</text>
+
+        <text x="0" y="195" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">MANDATORY AUTHORIZED GROUP DN (RECURSIVE RESOLUTION)</text>
+        <rect y="203" width="615" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+        <text x="15" y="227" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">CN=Exchange-Admins,OU=Security Groups,DC=corp,DC=example,DC=com</text>
+
+        <text x="0" y="260" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">SERVICE ACCOUNT BIND DN</text>
+        <rect y="268" width="615" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+        <text x="15" y="292" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com</text>
+
+        <text x="0" y="325" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">SERVICE ACCOUNT BIND PASSWORD</text>
+        <rect y="333" width="615" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+        <text x="15" y="357" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="16">••••••••••••••••••••••••</text>
+        <text x="560" y="357" fill="#3b82f6" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="600">Show</text>
+
+        <rect y="400" width="220" height="40" rx="8" fill="#2563eb" />
+        <text x="35" y="425" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">Test LDAP Connection</text>
+      </g>
+
+      <!-- Right Column: Exchange Online CBA Settings -->
+      <g transform="translate(695, 0)">
+        <rect width="675" height="740" rx="14" fill="url(#cardGrad5)" stroke="#1e293b" stroke-width="1" />
+        <rect width="675" height="54" rx="14" fill="#1e293b" />
+        <text x="25" y="34" fill="#a855f7" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15" font-weight="700">Exchange Online CBA Credentials (eop_auth_config)</text>
+
+        <g transform="translate(25, 75)">
+          <text x="0" y="0" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">MICROSOFT 365 TENANT ID (AZURE AD)</text>
+          <rect y="8" width="625" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+          <text x="15" y="32" fill="#f8fafc" font-family="Courier, monospace" font-size="13">7a8b9c0d-1234-5678-abcd-ef0123456789</text>
+
+          <text x="0" y="65" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">APP REGISTRATION CLIENT ID</text>
+          <rect y="73" width="625" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+          <text x="15" y="97" fill="#f8fafc" font-family="Courier, monospace" font-size="13">3b4c5d6e-9876-5432-fedc-ba9876543210</text>
+
+          <text x="0" y="130" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">APP-ONLY CERTIFICATE THUMBPRINT (SHA-1)</text>
+          <rect y="138" width="625" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+          <text x="15" y="162" fill="#f8fafc" font-family="Courier, monospace" font-size="13">9F2E7B8A1C4D5E6F0123456789ABCDEF01234567</text>
+
+          <text x="0" y="195" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ORGANIZATION DOMAIN</text>
+          <rect y="203" width="625" height="38" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1" />
+          <text x="15" y="227" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">corp.onmicrosoft.com</text>
+
+          <!-- RSA Key Card with Encryption Status -->
+          <text x="0" y="260" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">RSA PRIVATE KEY STATUS</text>
+          <rect y="268" width="625" height="90" rx="8" fill="#020617" stroke="#10b981" stroke-width="1.5" />
+          <circle cx="25" cy="295" r="10" fill="#065f46" />
+          <text x="21" y="300" fill="#34d399" font-size="13" font-weight="800">✓</text>
+          <text x="45" y="300" fill="#34d399" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">Active RSA Private Key Loaded (2048-bit)</text>
+          <text x="45" y="322" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Key File: eop-cert-private.key  |  Passphrase: <tspan fill="#38bdf8">AES-256-GCM Encrypted in DB</tspan></text>
+          <text x="45" y="342" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">Last updated: 2026-09-28 08:00:12 by smccloud</text>
+
+          <rect y="380" width="260" height="40" rx="8" fill="#7e22ce" />
+          <text x="35" y="405" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">Upload New Private Key (.pem)</text>
+
+          <rect x="280" y="380" width="200" height="40" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+          <text x="315" y="405" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Test M365 Auth</text>
+        </g>
+      </g>
+    </g>
+  </svg>

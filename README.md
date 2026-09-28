@@ -181,151 +181,52 @@ The application delivers an enterprise-grade dark-slate user interface, engineer
 
 The primary interface provides instant visibility into active anti-spam lists, tenant health, search/filter controls, and staged delta modifications.
 
-```text
-+-------------------------------------------------------------------------------------------------------------------------+
-| [🛡️ EOP Anti-Spam Manager]  Policy: [Default (Inbound Anti-Spam) ▼]  Tenant: corp.onmicrosoft.com   [🌙 Dark] [👤 Admin] |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  [Allowed Senders (1,420)]   [Blocked Senders (845)]   [Allowed Domains (312)]   [Blocked Domains (628)]   [Audit Log]  |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  [⚡ Smart Sort Allowed]  [⚡ Smart Sort Blocked]  [+ Add Entry]  [📥 Import CSV]  [📤 Export]  [🚀 Push All to EOP (4)]   |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  ℹ️ Staged Changes: +3 new senders staged, -1 domain staged for removal. Push All to apply to Exchange Online.        |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  🔍 Filter by sender or domain...                                     Sort: [Alphabetical A-Z ▼]   Cluster: [By Domain] |
-|-------------------------------------------------------------------------------------------------------------------------|
-|  Status  | Sender / Domain              | Category       | Added By     | Date Added          | Note            | Action|
-|----------|------------------------------|----------------|--------------|---------------------|-----------------|-------|
-|  ● ACTIVE| user@trustedpartner.com      | Allowed Senders| jdoe_admin   | 2026-09-28 08:30:15 | Vendor invoicing| [🗑️]  |
-|  ● ACTIVE| alerts@monitoring-core.net   | Allowed Senders| jdoe_admin   | 2026-09-27 14:12:00 | NOC alerting    | [🗑️]  |
-|  ▲ STAGED| support@partner-service.io   | Allowed Senders| jdoe_admin   | Just now            | Ticket dispatch | [Undo]|
-|  ● ACTIVE| notifications@cloud-corp.com | Allowed Senders| asmith_adm   | 2026-09-25 11:05:40 | Shared services | [🗑️]  |
-+-------------------------------------------------------------------------------------------------------------------------+
-| Showing 1 to 25 of 1,421 records                                                         [First] [< Prev] [1] [2] [Next>]|
-+-------------------------------------------------------------------------------------------------------------------------+
-```
+![EOP Anti-Spam Manager Dashboard - Dark Mode](docs/screenshots/dashboard-dark.png)
+
+- **Dedicated List Tabs**: Instant navigation across `eop_allowed_senders`, `eop_blocked_senders`, `eop_allowed_domains`, and `eop_blocked_domains`.
+- **Global Staged Changes Badge**: Real-time counter badge on the top action bar (`🚀 Push All Changes to EOP [4]`) tracking uncommitted modifications across all 4 tables.
+- **Status Indicators**: Visual differentiation between active synchronized entries (`● ACTIVE`) and pending modifications (`▲ STAGED ADD` with immediate one-click `Undo`).
+- **Domain Organization**: Group entries by parent domain clusters, subdomain trees, or Top-Level Domains (`.com`, `.org`, `.net`).
 
 ### 2. Split Smart Sorter (Allowed & Blocked Real-Time Classification)
 
 Clicking **"Smart Sort Allowed"** or **"Smart Sort Blocked"** opens an intelligent intake engine that automatically separates mixed bulk text into individual table targets.
 
-```text
-+-------------------------------------------------------------------------------------------------------------------------+
-|  ⚡ Split Smart Sorter - Target: [ ALLOWLIST TABLES (Senders & Domains) ]                                            [✕] |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  Paste raw text, CSV extracts, or email lists. Sorter automatically parses RFC emails vs FQDN domains:                  |
-|                                                                                                                         |
-|  +-------------------------------------------------------------------------------------------------------------------+  |
-|  | billing@partner.com                                                                                               |  |
-|  | alerts.partner.com                                                                                                |  |
-|  | ceo@vendor-group.org                                                                                              |  |
-|  | trusted-gateway.net                                                                                               |  |
-|  | duplicate@partner.com                                                                                             |  |
-|  +-------------------------------------------------------------------------------------------------------------------+  |
-|                                                                                                                         |
-|  LIVE PARSING & DEDUPLICATION SUMMARY:                                                                                  |
-|  ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐                  |
-|  │  📧 Allowed Senders │   │  🌐 Allowed Domains │   │  ⚠️ Duplicates Found │   │  ❌ Invalid Syntax  │                  |
-|  │         2           │   │         2           │   │         1 (Ignored) │   │         0           │                  |
-|  └─────────────────────┘   └─────────────────────┘   └─────────────────────┘   └─────────────────────┘                  |
-|                                                                                                                         |
-|  Routing Preview:                                                                                                       |
-|  → `billing@partner.com`    → Route to table: `eop_allowed_senders`                                                     |
-|  → `alerts.partner.com`     → Route to table: `eop_allowed_domains`                                                     |
-|  → `ceo@vendor-group.org`   → Route to table: `eop_allowed_senders`                                                     |
-|  → `trusted-gateway.net`    → Route to table: `eop_allowed_domains`                                                     |
-|                                                                                                                         |
-|  Justification / Change Note: [ Q4 2026 Vendor Integration Approvals                                ]                  |
-|                                                                                                                         |
-|                                                                    [Cancel]   [ Stage 4 Entries into Allowlist Tables ] |
-+-------------------------------------------------------------------------------------------------------------------------+
-```
+![Split Smart Sorter Modal](docs/screenshots/smart-sorter-modal.png)
+
+- **Automated Syntax Classification**: Distinguishes RFC-compliant email addresses (`@`) from Fully Qualified Domain Names (FQDNs and wildcards like `*.partner.com`).
+- **Real-Time Deduplication**: Validates inputs against both current remote MariaDB database records and within the submitted batch.
+- **Routing Summary**: Displays live metrics (Allowed Senders, Allowed Domains, Duplicates Filtered, Syntax Errors) before staging records.
 
 ### 3. 5-Step Initial Deployment Setup Wizard (`setup.php`)
 
 Runs on initial server deployment to configure remote database tables, test Active Directory LDAP binding, register CBA certificates, and create the permanent lockout flag.
 
-```text
-+-------------------------------------------------------------------------------------------------------------------------+
-|  🛡️ EOP Anti-Spam Manager - Initial Environment Setup Wizard                                                            |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  (1) Environment Check  ───▶  (2) MariaDB Setup  ───▶  (3) AD LDAP Auth  ───▶  (4) EOP CBA Keys  ───▶  (5) Lock & Finish |
-+-------------------------------------------------------------------------------------------------------------------------+
-|                                                                                                                         |
-|  STEP 3 OF 5: Active Directory LDAP & Service Account Authorization                                                     |
-|                                                                                                                         |
-|  Domain Controller FQDN:       [ dc01.corp.example.com                           ]                                      |
-|  LDAP Protocol:                (●) Plain LDAP (Port 389 - No Certs Needed)   ( ) LDAPS (Port 636)                       |
-|  Base DN:                      [ DC=corp,DC=example,DC=com                       ]                                      |
-|  Authorized Group DN:          [ CN=Exchange-Admins,OU=Security Groups,DC=corp... ]                                      |
-|  Service Account Bind DN:      [ CN=svc-eop-web,OU=Service Accounts,DC=corp...   ]                                      |
-|  Service Account Bind Password:[ •••••••••••••••••••••                           ] [👁️ Show] [🔒 Locked]                |
-|                                                                                                                         |
-|  [⚡ Run Live AD Connection & Bind Test]                                                                                |
-|  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐  |
-|  │  [✓] TCP Connection to dc01.corp.example.com:389: SUCCESS (4ms)                                                  │  |
-|  │  [✓] Service Account Bind (CN=svc-eop-web...): SUCCESS                                                           │  |
-|  │  [✓] Base DN Resolution (DC=corp,DC=example,DC=com): SUCCESS                                                     │  |
-|  │  [✓] Group DN Verification (CN=Exchange-Admins...): SUCCESS (Found 14 nested members)                            │  |
-|  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘  |
-|                                                                                                                         |
-|                                                                               [< Back]   [ Save & Proceed to Step 4 >]  |
-+-------------------------------------------------------------------------------------------------------------------------+
-```
+![EOP Setup Wizard](docs/screenshots/setup-wizard.png)
+
+- **Environment Prerequisite Validation**: Automated checks for PHP 8.1+, `pdo_mysql`, `ldap`, `openssl`, and `curl`.
+- **Active Directory Verification**: Real-time connection testing verifying Domain Controller reachability, service account Bind DN/Password authorization, and recursive Group DN resolution.
+- **Permanent Lockout**: Writes an immutable filesystem lock (`installed.lock`) and updates MariaDB table `eop_setup_lock` to block subsequent wizard execution.
 
 ### 4. Global Push All Changes to EOP (Confirmation & Itemized Audit Summary)
 
 Clicking **"Push All Changes to EOP"** reviews all staged modifications across all 4 tables and outputs an itemized list-by-list audit report.
 
-```text
-+-------------------------------------------------------------------------------------------------------------------------+
-|  🚀 Push Changes to Microsoft 365 Exchange Online Protection                                                        [✕] |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  Target Tenant: corp.onmicrosoft.com              Target Policy: Default (Inbound Anti-Spam)                            |
-|                                                                                                                         |
-|  ITEMIZED BREAKDOWN OF STAGED CHANGES:                                                                                  |
-|  ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐  |
-|  │  1. Allowed Senders (`eop_allowed_senders`):                                                                      │  |
-|  │     + ADD: support@partner-service.io                                                                             │  |
-|  │     + ADD: devops-alerts@monitoring-hub.org                                                                       │  |
-|  │  2. Blocked Senders (`eop_blocked_senders`):                                                                      │  |
-|  │     + ADD: phish-campaign@malicious-sender.top                                                                    │  |
-|  │  3. Allowed Domains (`eop_allowed_domains`):                                                                      │  |
-|  │     (No changes staged - 312 existing domains preserved)                                                          │  |
-|  │  4. Blocked Domains (`eop_blocked_domains`):                                                                      │  |
-|  │     - REMOVE: retired-vendor-domain.biz                                                                           │  |
-|  └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘  |
-|                                                                                                                         |
-|  PowerShell Execution Payload:                                                                                          |
-|  Set-HostedContentFilterPolicy -Identity "Default" `                                                                    |
-|    -AllowedSenders @('user@trustedpartner.com','support@partner-service.io',...) `                                      |
-|    -BlockedSenders @('spam@botnet.ru','phish-campaign@malicious-sender.top',...) `                                      |
-|    -AllowedSenderDomains @('partner.com','corp-vendors.net',...) `                                                      |
-|    -BlockedSenderDomains @('badactor.xyz','phish-gateway.cc',...)                                                       |
-|                                                                                                                         |
-|                                                           [Cancel]   [ Confirm & Execute Push to Exchange Online (4) ]  |
-+-------------------------------------------------------------------------------------------------------------------------+
-```
+![Push All Changes to EOP Summary Modal](docs/screenshots/push-summary-modal.png)
+
+- **Pre-Push Confirmation Modal**: Displays an itemized breakdown of staged additions and removals for each of the 4 policy tables.
+- **PowerShell Execution Payload**: Shows the exact command (`Set-HostedContentFilterPolicy`) executed via Certificate-Based Authentication on Linux.
+- **Audit Log Verification**: Records user identity, timestamp, IP address, and changed items into `eop_audit_log`.
 
 ### 5. Centralized Configuration Center (`config_center` - LDAP & CBA Key Storage)
 
 Administrators can update Active Directory LDAP parameters and rotate Exchange Online RSA private keys directly in the database without modifying server filesystem configuration files.
 
-```text
-+-------------------------------------------------------------------------------------------------------------------------+
-|  ⚙️ Centralized Configuration Center (Stored in MariaDB `eop_ldap_config` & `eop_auth_config`)                         |
-+-------------------------------------------------------------------------------------------------------------------------+
-|  [ Active Directory LDAP Settings ]                 [ Exchange Online Certificate-Based Auth (CBA) ]                   |
-|--------------------------------------------------+----------------------------------------------------------------------|
-|  Domain Controller:  dc01.corp.example.com       |  Tenant ID:          7a8b9c0d-1234-5678-abcd-ef0123456789            |
-|  Port & Protocol:    389 (Plain LDAP)            |  Client App ID:      3b4c5d6e-9876-5432-fedc-ba9876543210            |
-|  Search Base DN:     DC=corp,DC=example,DC=com   |  Cert Thumbprint:    9F2E7B8A1C4D5E6F0123456789ABCDEF01234567         |
-|  Authorized Group DN:CN=Exchange-Admins,...      |  Organization:       corp.onmicrosoft.com                            |
-|  Service Bind DN:    CN=svc-eop-web,...          |  Private Key Status: [✓ Key Installed (AES-256-GCM Encrypted)]       |
-|  Bind Password:      [••••••••••••] [Show]       |  Target Policy:      Default                                         |
-|                                                  |                                                                      |
-|  [ Test Active Directory Connection ]            |  [ Upload New RSA Private Key (.pem / .key) ]   [ Test M365 Auth ]   |
-+--------------------------------------------------+----------------------------------------------------------------------+
-```
+![Centralized Configuration Center](docs/screenshots/config-center.png)
+
+- **Database-Stored Configuration**: LDAP directory connection settings (`eop_ldap_config`) and Exchange Online authentication credentials (`eop_auth_config`) modified directly from the UI.
+- **AES-256-GCM Encryption**: Protects sensitive RSA private key passphrases and service account credentials stored in MariaDB.
+- **Live Connection Diagnostics**: Dedicated action buttons to test Active Directory LDAP binding and Microsoft 365 CBA authentication on demand.
 
 ---
 

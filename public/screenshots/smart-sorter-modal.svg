@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" width="1440" height="900">
+    <defs>
+      <linearGradient id="bgGrad2" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#0b0f19" />
+        <stop offset="100%" stop-color="#020617" />
+      </linearGradient>
+      <linearGradient id="emeraldGrad2" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#059669" />
+        <stop offset="100%" stop-color="#10b981" />
+      </linearGradient>
+    </defs>
+
+    <rect width="1440" height="900" fill="url(#bgGrad2)" />
+    
+    <!-- Window Bar -->
+    <rect width="1440" height="42" fill="#090d16" rx="10" ry="10" />
+    <rect y="32" width="1440" height="10" fill="#090d16" />
+    <!-- Window Controls -->
+    <circle cx="24" cy="21" r="6" fill="#ef4444" />
+    <circle cx="44" cy="21" r="6" fill="#f59e0b" />
+    <circle cx="64" cy="21" r="6" fill="#10b981" />
+    <!-- URL Bar -->
+    <rect x="180" y="8" width="1080" height="26" rx="6" fill="#1e293b" />
+    <text x="195" y="25" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="500">🔒 https://eop.corp.example.com/index.php</text>
+    <text x="1320" y="25" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12">EOP Portal v1.0</text>
+  
+
+    <!-- Dimmed Background Overlay -->
+    <rect y="42" width="1440" height="858" fill="#000000" opacity="0.65" />
+
+    <!-- Modal Box Container -->
+    <g transform="translate(240, 90)">
+      <rect width="960" height="740" rx="16" fill="#0f172a" stroke="#334155" stroke-width="1.5" />
+
+      <!-- Modal Header -->
+      <rect width="960" height="70" rx="16" fill="#1e293b" />
+      <rect y="50" width="960" height="20" fill="#1e293b" />
+      <circle cx="45" cy="35" r="18" fill="#065f46" />
+      <text x="37" y="42" fill="#34d399" font-size="20">⚡</text>
+
+      <text x="75" y="36" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="18" font-weight="700">Split Smart Sorter: Allowlist Engine</text>
+      <text x="75" y="55" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Automatically routes mixed text into eop_allowed_senders (@) and eop_allowed_domains (FQDN)</text>
+      <text x="915" y="42" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="22" font-weight="300">✕</text>
+
+      <!-- Textarea Input Area -->
+      <g transform="translate(35, 90)">
+        <text x="0" y="0" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">PASTE BATCH DATA (EMAILS, DOMAINS, WILDCARDS, CSV SNIPPETS)</text>
+        <rect y="12" width="890" height="210" rx="10" fill="#020617" stroke="#3b82f6" stroke-width="1.5" />
+
+        <!-- Mock Input Text Lines -->
+        <text x="20" y="40" fill="#38bdf8" font-family="Courier, monospace" font-size="13"># Paste mixed vendor entries</text>
+        <text x="20" y="65" fill="#f8fafc" font-family="Courier, monospace" font-size="13">support-gateway@partner-invoicing.com</text>
+        <text x="20" y="90" fill="#f8fafc" font-family="Courier, monospace" font-size="13">cloud-services.trusted-network.io</text>
+        <text x="20" y="115" fill="#f8fafc" font-family="Courier, monospace" font-size="13">api-notifications@partner-invoicing.com</text>
+        <text x="20" y="140" fill="#f8fafc" font-family="Courier, monospace" font-size="13">*.global-logistics-partner.net</text>
+        <text x="20" y="165" fill="#f8fafc" font-family="Courier, monospace" font-size="13">ceo-notifications@internal-exec.com    <tspan fill="#f59e0b">[Existing in DB]</tspan></text>
+        <text x="20" y="190" fill="#f8fafc" font-family="Courier, monospace" font-size="13">vendor-procurement.corp.de</text>
+      </g>
+
+      <!-- Live Classification Summary Badges -->
+      <g transform="translate(35, 335)">
+        <text x="0" y="0" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700" letter-spacing="1">LIVE CLASSIFICATION &amp; DEDUPLICATION METRICS</text>
+
+        <!-- Allowed Senders Box -->
+        <rect y="12" width="205" height="74" rx="10" fill="#1e293b" stroke="#059669" stroke-width="1.5" />
+        <text x="18" y="36" fill="#34d399" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ALLOWED SENDERS (@)</text>
+        <text x="18" y="68" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="26" font-weight="800">2</text>
+        <text x="50" y="66" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">eop_allowed_senders</text>
+
+        <!-- Allowed Domains Box -->
+        <rect x="225" y="12" width="205" height="74" rx="10" fill="#1e293b" stroke="#0284c7" stroke-width="1.5" />
+        <text x="243" y="36" fill="#38bdf8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ALLOWED DOMAINS (FQDN)</text>
+        <text x="243" y="68" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="26" font-weight="800">3</text>
+        <text x="275" y="66" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">eop_allowed_domains</text>
+
+        <!-- Duplicates Box -->
+        <rect x="450" y="12" width="205" height="74" rx="10" fill="#1e293b" stroke="#d97706" stroke-width="1.5" />
+        <text x="468" y="36" fill="#fbbf24" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">DUPLICATES FILTERED</text>
+        <text x="468" y="68" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="26" font-weight="800">1</text>
+        <text x="500" y="66" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">Already in MariaDB</text>
+
+        <!-- Syntax Invalid Box -->
+        <rect x="675" y="12" width="215" height="74" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1" />
+        <text x="693" y="36" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">SYNTAX ERRORS</text>
+        <text x="693" y="68" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="26" font-weight="800">0</text>
+        <text x="725" y="66" fill="#10b981" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">All Valid RFC/DNS</text>
+      </g>
+
+      <!-- Routing Breakdown Preview -->
+      <g transform="translate(35, 440)">
+        <text x="0" y="0" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">STAGING ROUTING PREVIEW (WILL BE ADDED TO MARIADB ON CONFIRM):</text>
+        <rect y="12" width="890" height="135" rx="8" fill="#020617" stroke="#1e293b" stroke-width="1" />
+
+        <text x="20" y="40" fill="#10b981" font-family="Courier, monospace" font-size="12">→ support-gateway@partner-invoicing.com</text>
+        <text x="440" y="40" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Route to: <tspan fill="#34d399" font-weight="700">eop_allowed_senders</tspan></text>
+
+        <text x="20" y="68" fill="#0284c7" font-family="Courier, monospace" font-size="12">→ cloud-services.trusted-network.io</text>
+        <text x="440" y="68" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Route to: <tspan fill="#38bdf8" font-weight="700">eop_allowed_domains</tspan></text>
+
+        <text x="20" y="96" fill="#0284c7" font-family="Courier, monospace" font-size="12">→ *.global-logistics-partner.net</text>
+        <text x="440" y="96" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Route to: <tspan fill="#38bdf8" font-weight="700">eop_allowed_domains</tspan> (Wildcard Domain)</text>
+
+        <text x="20" y="124" fill="#0284c7" font-family="Courier, monospace" font-size="12">→ vendor-procurement.corp.de</text>
+        <text x="440" y="124" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Route to: <tspan fill="#38bdf8" font-weight="700">eop_allowed_domains</tspan></text>
+      </g>
+
+      <!-- Justification & Action Buttons -->
+      <g transform="translate(35, 605)">
+        <text x="0" y="0" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="600">CHANGE JUSTIFICATION / AUDIT NOTE:</text>
+        <rect y="10" width="890" height="38" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+        <text x="15" y="34" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">Approved Q4 vendor onboarding and logistics tracking automation</text>
+
+        <rect x="520" y="65" width="100" height="42" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1" />
+        <text x="548" y="91" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Cancel</text>
+
+        <rect x="635" y="65" width="255" height="42" rx="8" fill="url(#emeraldGrad2)" />
+        <text x="655" y="91" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">Stage 5 Entries into Allowlist</text>
+      </g>
+    </g>
+  </svg>

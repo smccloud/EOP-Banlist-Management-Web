@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" width="1440" height="900">
+    <defs>
+      <linearGradient id="bgGrad4" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#0b0f19" />
+        <stop offset="100%" stop-color="#020617" />
+      </linearGradient>
+      <linearGradient id="blueGrad4" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#2563eb" />
+        <stop offset="100%" stop-color="#3b82f6" />
+      </linearGradient>
+    </defs>
+
+    <rect width="1440" height="900" fill="url(#bgGrad4)" />
+    
+    <!-- Window Bar -->
+    <rect width="1440" height="42" fill="#090d16" rx="10" ry="10" />
+    <rect y="32" width="1440" height="10" fill="#090d16" />
+    <!-- Window Controls -->
+    <circle cx="24" cy="21" r="6" fill="#ef4444" />
+    <circle cx="44" cy="21" r="6" fill="#f59e0b" />
+    <circle cx="64" cy="21" r="6" fill="#10b981" />
+    <!-- URL Bar -->
+    <rect x="180" y="8" width="1080" height="26" rx="6" fill="#1e293b" />
+    <text x="195" y="25" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="500">🔒 https://eop.corp.example.com/index.php</text>
+    <text x="1320" y="25" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12">EOP Portal v1.0</text>
+  
+
+    <rect y="42" width="1440" height="858" fill="#000000" opacity="0.7" />
+
+    <!-- Push Modal Container -->
+    <g transform="translate(220, 95)">
+      <rect width="1000" height="730" rx="16" fill="#0f172a" stroke="#3b82f6" stroke-width="1.5" />
+
+      <!-- Modal Header -->
+      <rect width="1000" height="74" rx="16" fill="#1e293b" />
+      <rect y="54" width="1000" height="20" fill="#1e293b" />
+      <circle cx="45" cy="37" r="18" fill="#1e40af" />
+      <text x="35" y="44" fill="#93c5fd" font-size="20">🚀</text>
+
+      <text x="75" y="38" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="18" font-weight="700">Push All Staged Changes to Microsoft 365 Exchange Online</text>
+      <text x="75" y="58" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Target Policy: Default (Inbound Anti-Spam)   |   Tenant: corp.onmicrosoft.com</text>
+      <text x="955" y="44" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="22">✕</text>
+
+      <!-- Itemized Delta List Boxes -->
+      <g transform="translate(35, 95)">
+        <text x="0" y="0" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">ITEMIZED AUDIT BREAKDOWN OF STAGED MODIFICATIONS (4 CHANGES):</text>
+
+        <!-- Box 1: Allowed Senders -->
+        <rect y="12" width="930" height="70" rx="8" fill="#1e293b" stroke="#059669" stroke-width="1" />
+        <rect x="15" y="24" width="150" height="24" rx="6" fill="#064e3b" />
+        <text x="24" y="40" fill="#34d399" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ALLOWED SENDERS (2)</text>
+        <text x="180" y="40" fill="#10b981" font-family="Courier, monospace" font-size="12" font-weight="700">+ ADD: billing-system@trustedpartner.com</text>
+        <text x="560" y="40" fill="#10b981" font-family="Courier, monospace" font-size="12" font-weight="700">+ ADD: security-alerts@cloud-monitor.org</text>
+        <text x="180" y="62" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">Applies to: Set-HostedContentFilterPolicy -AllowedSenders</text>
+
+        <!-- Box 2: Blocked Senders -->
+        <rect y="92" width="930" height="70" rx="8" fill="#1e293b" stroke="#dc2626" stroke-width="1" />
+        <rect x="15" y="104" width="150" height="24" rx="6" fill="#7f1d1d" />
+        <text x="24" y="120" fill="#fca5a5" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">BLOCKED SENDERS (1)</text>
+        <text x="180" y="120" fill="#ef4444" font-family="Courier, monospace" font-size="12" font-weight="700">+ ADD: phish-campaign@malicious-sender.top</text>
+        <text x="180" y="142" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">Applies to: Set-HostedContentFilterPolicy -BlockedSenders</text>
+
+        <!-- Box 3: Allowed Domains -->
+        <rect y="172" width="930" height="60" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+        <rect x="15" y="184" width="150" height="24" rx="6" fill="#334155" />
+        <text x="24" y="200" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ALLOWED DOMAINS (0)</text>
+        <text x="180" y="200" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">No staged modifications — all 312 existing Allowed Domains preserved in Microsoft 365.</text>
+
+        <!-- Box 4: Blocked Domains -->
+        <rect y="242" width="930" height="70" rx="8" fill="#1e293b" stroke="#d97706" stroke-width="1" />
+        <rect x="15" y="254" width="150" height="24" rx="6" fill="#78350f" />
+        <text x="24" y="270" fill="#fde68a" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">BLOCKED DOMAINS (1)</text>
+        <text x="180" y="270" fill="#f59e0b" font-family="Courier, monospace" font-size="12" font-weight="700">- REMOVE: retired-vendor-domain.biz</text>
+        <text x="180" y="292" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11">Applies to: Set-HostedContentFilterPolicy -BlockedSenderDomains</text>
+      </g>
+
+      <!-- PowerShell Payload Preview Box -->
+      <g transform="translate(35, 435)">
+        <text x="0" y="0" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="700">AUTOMATION SCRIPT PAYLOAD (pwsh + ExchangeOnlineManagement):</text>
+        <rect y="12" width="930" height="150" rx="8" fill="#020617" stroke="#1e293b" stroke-width="1" />
+
+        <text x="20" y="38" fill="#38bdf8" font-family="Courier, monospace" font-size="12">Connect-ExchangeOnline -AppId $ClientId -CertificateThumbprint $CertThumbprint -Organization $Organization</text>
+        <text x="20" y="65" fill="#f8fafc" font-family="Courier, monospace" font-size="12">Set-HostedContentFilterPolicy -Identity "Default" `</text>
+        <text x="40" y="90" fill="#34d399" font-family="Courier, monospace" font-size="12">-AllowedSenders @('user@trustedpartner.com', 'billing-system@trustedpartner.com', 'security-alerts@cloud-monitor.org', ...) `</text>
+        <text x="40" y="115" fill="#f87171" font-family="Courier, monospace" font-size="12">-BlockedSenders @('spam@botnet.ru', 'phish-campaign@malicious-sender.top', ...) `</text>
+        <text x="40" y="140" fill="#cbd5e1" font-family="Courier, monospace" font-size="12">-AllowedSenderDomains @('partner.com', 'trusted-network.io', ...) -BlockedSenderDomains @('badactor.xyz', ...)</text>
+      </g>
+
+      <!-- Action Buttons -->
+      <g transform="translate(35, 620)">
+        <rect x="520" y="20" width="120" height="42" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+        <text x="560" y="46" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Cancel</text>
+
+        <rect x="660" y="20" width="270" height="42" rx="8" fill="url(#blueGrad4)" />
+        <text x="685" y="46" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">Confirm &amp; Execute Push to EOP</text>
+      </g>
+    </g>
+  </svg>

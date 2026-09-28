@@ -1,0 +1,250 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" width="1440" height="900">
+    <defs>
+      <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#0b0f19" />
+        <stop offset="100%" stop-color="#020617" />
+      </linearGradient>
+      <linearGradient id="cardGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#1e293b" />
+        <stop offset="100%" stop-color="#0f172a" />
+      </linearGradient>
+      <linearGradient id="blueGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#2563eb" />
+        <stop offset="100%" stop-color="#3b82f6" />
+      </linearGradient>
+      <linearGradient id="emeraldGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#059669" />
+        <stop offset="100%" stop-color="#10b981" />
+      </linearGradient>
+      <linearGradient id="roseGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#dc2626" />
+        <stop offset="100%" stop-color="#ef4444" />
+      </linearGradient>
+      <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+        <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.4"/>
+      </filter>
+    </defs>
+
+    <rect width="1440" height="900" fill="url(#bgGrad)" />
+    
+    <!-- Window Bar -->
+    <rect width="1440" height="42" fill="#090d16" rx="10" ry="10" />
+    <rect y="32" width="1440" height="10" fill="#090d16" />
+    <!-- Window Controls -->
+    <circle cx="24" cy="21" r="6" fill="#ef4444" />
+    <circle cx="44" cy="21" r="6" fill="#f59e0b" />
+    <circle cx="64" cy="21" r="6" fill="#10b981" />
+    <!-- URL Bar -->
+    <rect x="180" y="8" width="1080" height="26" rx="6" fill="#1e293b" />
+    <text x="195" y="25" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="500">🔒 https://eop.corp.example.com/index.php</text>
+    <text x="1320" y="25" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12">EOP Portal v1.0</text>
+  
+
+    <!-- Top App Navigation -->
+    <rect y="42" width="1440" height="64" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+    <!-- App Logo & Title -->
+    <rect x="28" y="54" width="40" height="40" rx="10" fill="url(#blueGrad)" />
+    <path d="M48 62 L58 66 L58 76 C58 82 48 86 48 86 C48 86 38 82 38 76 L38 66 Z" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M44 74 L47 77 L53 71" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+
+    <text x="80" y="72" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" font-weight="700">EOP Anti-Spam Policy Manager</text>
+    <text x="80" y="88" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12">Microsoft 365 Exchange Online Protection</text>
+
+    <!-- Tenant & Policy Selector in Header -->
+    <rect x="420" y="56" width="310" height="36" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+    <text x="435" y="78" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="600">POLICY:</text>
+    <text x="488" y="78" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Default (Inbound Anti-Spam)</text>
+    <path d="M710 74 L715 79 L720 74" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
+
+    <!-- Tenant Pill -->
+    <rect x="745" y="56" width="220" height="36" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+    <circle cx="760" cy="74" r="4" fill="#10b981" />
+    <text x="772" y="78" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="500">corp.onmicrosoft.com</text>
+
+    <!-- User Profile & Mode -->
+    <rect x="1200" y="56" width="90" height="36" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+    <text x="1215" y="78" fill="#f1f5f9" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="600">🌙 Dark</text>
+
+    <rect x="1302" y="56" width="114" height="36" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+    <circle cx="1320" cy="74" r="10" fill="#3b82f6" />
+    <text x="1316" y="78" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ST</text>
+    <text x="1340" y="78" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" font-weight="600">smccloud</text>
+
+    <!-- Main Workspace Area -->
+    <!-- Metric Stat Cards -->
+    <g transform="translate(28, 122)">
+      <!-- Card 1: Allowed Senders -->
+      <rect width="325" height="88" rx="12" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1" />
+      <text x="20" y="30" fill="#10b981" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700" letter-spacing="1">ALLOWED SENDERS</text>
+      <text x="20" y="65" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="30" font-weight="800">1,420</text>
+      <text x="110" y="62" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_allowed_senders</text>
+      <rect x="260" y="24" width="45" height="45" rx="10" fill="#064e3b" opacity="0.6" />
+      <text x="274" y="52" fill="#34d399" font-size="20">✓</text>
+
+      <!-- Card 2: Blocked Senders -->
+      <rect x="350" width="325" height="88" rx="12" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1" />
+      <text x="370" y="30" fill="#ef4444" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700" letter-spacing="1">BLOCKED SENDERS</text>
+      <text x="370" y="65" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="30" font-weight="800">845</text>
+      <text x="445" y="62" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_blocked_senders</text>
+      <rect x="610" y="24" width="45" height="45" rx="10" fill="#7f1d1d" opacity="0.6" />
+      <text x="624" y="52" fill="#f87171" font-size="20">✕</text>
+
+      <!-- Card 3: Allowed Domains -->
+      <rect x="700" width="325" height="88" rx="12" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1" />
+      <text x="720" y="30" fill="#06b6d4" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700" letter-spacing="1">ALLOWED DOMAINS</text>
+      <text x="720" y="65" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="30" font-weight="800">312</text>
+      <text x="790" y="62" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_allowed_domains</text>
+      <rect x="960" y="24" width="45" height="45" rx="10" fill="#164e63" opacity="0.6" />
+      <text x="973" y="52" fill="#22d3ee" font-size="18">🌐</text>
+
+      <!-- Card 4: Staged Pending Changes -->
+      <rect x="1050" width="334" height="88" rx="12" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5" />
+      <text x="1070" y="30" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700" letter-spacing="1">PENDING STAGED CHANGES</text>
+      <text x="1070" y="65" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="30" font-weight="800">4</text>
+      <text x="1105" y="62" fill="#93c5fd" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Ready to push to M365</text>
+      <rect x="1310" y="24" width="55" height="45" rx="10" fill="#1d4ed8" />
+      <text x="1327" y="52" fill="#ffffff" font-size="18">🚀</text>
+    </g>
+
+    <!-- Table Tab Bar -->
+    <g transform="translate(28, 226)">
+      <!-- Tab 1: Allowed Senders (Active) -->
+      <rect width="190" height="42" rx="8" fill="#2563eb" />
+      <text x="22" y="26" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">Allowed Senders (1,420)</text>
+
+      <!-- Tab 2: Blocked Senders -->
+      <rect x="200" width="190" height="42" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+      <text x="222" y="26" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Blocked Senders (845)</text>
+
+      <!-- Tab 3: Allowed Domains -->
+      <rect x="400" width="190" height="42" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+      <text x="422" y="26" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Allowed Domains (312)</text>
+
+      <!-- Tab 4: Blocked Domains -->
+      <rect x="600" width="190" height="42" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+      <text x="622" y="26" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Blocked Domains (628)</text>
+
+      <!-- Tab 5: Audit Log -->
+      <rect x="800" width="140" height="42" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+      <text x="825" y="26" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">Audit Log</text>
+    </g>
+
+    <!-- Action Toolbar -->
+    <g transform="translate(28, 280)">
+      <!-- Split Smart Sorter Allowed Button -->
+      <rect width="180" height="40" rx="8" fill="url(#emeraldGrad)" />
+      <text x="20" y="25" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">⚡ Smart Sort Allowed</text>
+
+      <!-- Split Smart Sorter Blocked Button -->
+      <rect x="190" width="180" height="40" rx="8" fill="url(#roseGrad)" />
+      <text x="210" y="25" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">🚫 Smart Sort Blocked</text>
+
+      <!-- Add Single Entry Button -->
+      <rect x="380" width="130" height="40" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+      <text x="405" y="25" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">+ Add Entry</text>
+
+      <!-- Import CSV -->
+      <rect x="520" width="120" height="40" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+      <text x="545" y="25" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">📥 Import</text>
+
+      <!-- Export CSV -->
+      <rect x="650" width="120" height="40" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" />
+      <text x="675" y="25" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">📤 Export</text>
+
+      <!-- Push All Changes to EOP (Primary Call to Action) -->
+      <rect x="1124" width="260" height="40" rx="8" fill="url(#blueGrad)" />
+      <text x="1140" y="25" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700">🚀 Push All Changes to EOP</text>
+      <!-- Staged Badge -->
+      <circle cx="1364" cy="20" r="11" fill="#ef4444" />
+      <text x="1360" y="24" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="800">4</text>
+    </g>
+
+    <!-- Filter & Search Bar -->
+    <g transform="translate(28, 332)">
+      <rect width="1384" height="42" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+      <text x="20" y="26" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13">🔍 Search senders, domains, notes, or administrators...</text>
+      <text x="1060" y="26" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Domain View: [ All Entries ▼ ]</text>
+      <text x="1260" y="26" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Sort: [ Newest First ▼ ]</text>
+    </g>
+
+    <!-- Main Data Table Container -->
+    <g transform="translate(28, 386)">
+      <rect width="1384" height="480" rx="12" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+
+      <!-- Table Header -->
+      <rect width="1384" height="44" rx="12" fill="#1e293b" />
+      <rect y="32" width="1384" height="12" fill="#1e293b" />
+      <text x="24" y="27" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">STATUS</text>
+      <text x="140" y="27" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">SENDER EMAIL ADDRESS</text>
+      <text x="460" y="27" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">TARGET TABLE</text>
+      <text x="660" y="27" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ADDED BY</text>
+      <text x="800" y="27" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">DATE ADDED</text>
+      <text x="960" y="27" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">JUSTIFICATION / NOTE</text>
+      <text x="1300" y="27" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="700">ACTIONS</text>
+
+      <!-- Row 1: Staged Added Entry -->
+      <rect y="44" width="1384" height="54" fill="#1e3a5f" opacity="0.3" />
+      <rect x="24" y="60" width="85" height="22" rx="6" fill="#1e40af" />
+      <text x="32" y="75" fill="#bfdbfe" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" font-weight="700">▲ STAGED ADD</text>
+      <text x="140" y="76" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">billing-system@trustedpartner.com</text>
+      <text x="460" y="76" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_allowed_senders</text>
+      <text x="660" y="76" fill="#e2e8f0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">smccloud</text>
+      <text x="800" y="76" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Just now</text>
+      <text x="960" y="76" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Q4 Invoicing gateway integration</text>
+      <rect x="1300" y="57" width="60" height="28" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1" />
+      <text x="1312" y="75" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="600">Undo</text>
+
+      <!-- Row 2: Staged Added Entry -->
+      <rect y="98" width="1384" height="54" fill="#1e3a5f" opacity="0.3" />
+      <rect x="24" y="114" width="85" height="22" rx="6" fill="#1e40af" />
+      <text x="32" y="129" fill="#bfdbfe" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" font-weight="700">▲ STAGED ADD</text>
+      <text x="140" y="130" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="600">security-alerts@cloud-monitor.org</text>
+      <text x="460" y="130" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_allowed_senders</text>
+      <text x="660" y="130" fill="#e2e8f0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">smccloud</text>
+      <text x="800" y="130" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">2 mins ago</text>
+      <text x="960" y="130" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">SOC automated incident reporting</text>
+      <rect x="1300" y="111" width="60" height="28" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1" />
+      <text x="1312" y="129" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" font-weight="600">Undo</text>
+
+      <!-- Row 3: Active Synchronized Entry -->
+      <line x1="0" y1="152" x2="1384" y2="152" stroke="#1e293b" />
+      <rect x="24" y="168" width="65" height="22" rx="6" fill="#064e3b" />
+      <text x="34" y="183" fill="#34d399" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" font-weight="700">● ACTIVE</text>
+      <text x="140" y="184" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="500">ceo-notifications@internal-exec.com</text>
+      <text x="460" y="184" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_allowed_senders</text>
+      <text x="660" y="184" fill="#e2e8f0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">jdoe_admin</text>
+      <text x="800" y="184" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">2026-09-27 16:42</text>
+      <text x="960" y="184" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Executive office briefing distribution</text>
+      <rect x="1300" y="165" width="32" height="28" rx="6" fill="#7f1d1d" opacity="0.6" />
+      <text x="1310" y="183" fill="#fca5a5" font-size="13">🗑️</text>
+
+      <!-- Row 4: Active Synchronized Entry -->
+      <line x1="0" y1="206" x2="1384" y2="206" stroke="#1e293b" />
+      <rect x="24" y="222" width="65" height="22" rx="6" fill="#064e3b" />
+      <text x="34" y="237" fill="#34d399" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" font-weight="700">● ACTIVE</text>
+      <text x="140" y="238" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="500">dispatch@freight-logistics.net</text>
+      <text x="460" y="238" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_allowed_senders</text>
+      <text x="660" y="238" fill="#e2e8f0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">asmith_adm</text>
+      <text x="800" y="238" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">2026-09-25 09:15</text>
+      <text x="960" y="238" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Supply chain automated tracking emails</text>
+      <rect x="1300" y="219" width="32" height="28" rx="6" fill="#7f1d1d" opacity="0.6" />
+      <text x="1310" y="237" fill="#fca5a5" font-size="13">🗑️</text>
+
+      <!-- Row 5: Active Synchronized Entry -->
+      <line x1="0" y1="260" x2="1384" y2="260" stroke="#1e293b" />
+      <rect x="24" y="276" width="65" height="22" rx="6" fill="#064e3b" />
+      <text x="34" y="291" fill="#34d399" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" font-weight="700">● ACTIVE</text>
+      <text x="140" y="292" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="500">newsletter@cybersecurity-feed.org</text>
+      <text x="460" y="292" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">eop_allowed_senders</text>
+      <text x="660" y="292" fill="#e2e8f0" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">jdoe_admin</text>
+      <text x="800" y="292" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">2026-09-22 11:30</text>
+      <text x="960" y="292" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Infosec industry threat intelligence alerts</text>
+      <rect x="1300" y="273" width="32" height="28" rx="6" fill="#7f1d1d" opacity="0.6" />
+      <text x="1310" y="291" fill="#fca5a5" font-size="13">🗑️</text>
+
+      <!-- Pagination Footer -->
+      <rect y="430" width="1384" height="50" rx="12" fill="#1e293b" />
+      <text x="24" y="460" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Showing 1 to 25 of 1,420 Allowed Senders (Remote MariaDB: eop_allowed_senders)</text>
+      <text x="1120" y="460" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12">Page 1 of 57   [Previous]  [1] [2] [3] ... [57]  [Next]</text>
+    </g>
+  </svg>

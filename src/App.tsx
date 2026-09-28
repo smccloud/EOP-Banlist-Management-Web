@@ -8,6 +8,7 @@ import { FileExplorer } from './components/FileExplorer';
 import { ConfigGenerator } from './components/ConfigGenerator';
 import { DebianGuide } from './components/DebianGuide';
 import { SetupWizard } from './components/SetupWizard';
+import { ScreenshotsView } from './components/ScreenshotsView';
 import { ThemeProvider } from './context/ThemeContext';
 
 function AppContent() {
@@ -37,6 +38,27 @@ function AppContent() {
           const content = file.generateContent(config);
           folder.file(file.path, content);
         });
+
+        // Include actual PNG screenshots in zip archive
+        const docsFolder = folder.folder('docs/screenshots');
+        const screenshotFiles = [
+          'dashboard-dark.png',
+          'smart-sorter-modal.png',
+          'setup-wizard.png',
+          'push-summary-modal.png',
+          'config-center.png',
+        ];
+        for (const sFile of screenshotFiles) {
+          try {
+            const res = await fetch(`/screenshots/${sFile}`);
+            if (res.ok) {
+              const blobData = await res.arrayBuffer();
+              docsFolder?.file(sFile, blobData);
+            }
+          } catch {
+            // Fallback gracefully
+          }
+        }
 
         const zipBlob = await zip.generateAsync({ type: 'blob' });
         const downloadUrl = URL.createObjectURL(zipBlob);
@@ -119,6 +141,7 @@ function AppContent() {
           />
         )}
         {activeTab === 'guide' && <DebianGuide config={config} />}
+        {activeTab === 'screenshots' && <ScreenshotsView />}
       </main>
 
       {/* Global Application Footer */}
