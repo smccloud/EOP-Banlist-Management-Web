@@ -4,9 +4,23 @@
  */
 
 declare(strict_types=1);
+
+// If configuration file is missing, redirect immediately to setup wizard
+if (!file_exists(__DIR__ . '/config.php')) {
+    header('Location: setup.php');
+    exit;
+}
+
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/ldap.php';
 require_once __DIR__ . '/functions.php';
+
+// If core database tables are not initialized yet, redirect to setup wizard Step 2
+if (!Database::isInitialized()) {
+    header('Location: setup.php?step=2');
+    exit;
+}
 
 // Redirect if already logged in
 if (!empty($_SESSION['user'])) {

@@ -9,10 +9,32 @@
  */
 
 declare(strict_types=1);
-require_once __DIR__ . '/config.php';
+
+if (!file_exists(__DIR__ . '/config.php')) {
+    if (php_sapi_name() !== 'cli' && !headers_sent()) {
+        header('Location: setup.php');
+        exit;
+    }
+} else {
+    require_once __DIR__ . '/config.php';
+}
 
 class Database {
     private static ?PDO $instance = null;
+
+    /**
+     * Check if core database tables are initialized and reachable
+     */
+    public static function isInitialized(): bool {
+        try {
+            $pdo = self::getConnection();
+            $targetTable = defined('TABLE_ALLOWED_SENDERS') ? TABLE_ALLOWED_SENDERS : 'eop_allowed_senders';
+            $check = $pdo->query("SHOW TABLES LIKE '{$targetTable}'");
+            return ($check && $check->rowCount() > 0);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
 
     /**
      * Get singleton PDO connection to Remote MariaDB server
@@ -77,70 +99,85 @@ class Database {
      * Fetch list entries for a specific policy from its dedicated table
      */
     public static function getListItems(string $listType, string $policyName, string $search = '', int $limit = 50, int $offset = 0): array {
-        $pdo = self::getConnection();
-        $table = self::getTableName($listType);
-        $col = self::getValueColumn($listType);
+        try {
+            $pdo = self::getConnection();
+            $table = self::getTableName($listType);
+            $col = self::getValueColumn($listType);
 
-        if ($search !== '') {
-            $sql = "SELECT id, policy_name, {$col} AS item_value, note, added_by, created_at, updated_at
-                    FROM {$table}
-                    WHERE policy_name = :policy AND ({$col} LIKE :search OR note LIKE :search2)
-                    ORDER BY id DESC LIMIT :limit OFFSET :offset";
-            $stmt = $pdo->prepare($sql);
-            $searchParam = '%' . $search . '%';
-            $stmt->bindValue(':policy', $policyName, PDO::PARAM_STR);
-            $stmt->bindValue(':search', $searchParam, PDO::PARAM_STR);
-            $stmt->bindValue(':search2', $searchParam, PDO::PARAM_STR);
-            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-        } else {
-            $sql = "SELECT id, policy_name, {$col} AS item_value, note, added_by, created_at, updated_at
-                    FROM {$table}
-                    WHERE policy_name = :policy
-                    ORDER BY id DESC LIMIT :limit OFFSET :offset";
-            $stmt = $pdo->prepare($sql);
-            $stmt->bindValue(':policy', $policyName, PDO::PARAM_STR);
-            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-            $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            if ($search !== '') {
+                $sql = "SELECT id, policy_name, {$col} AS item_value, note, added_by, created_at, updated_at
+                        FROM {$table}
+                        WHERE policy_name = :policy AND ({$col} LIKE :search OR note LIKE :search2)
+                        ORDER BY id DESC LIMIT :limit OFFSET :offset";
+                $stmt = $pdo->prepare($sql);
+                $searchParam = '%' . $search . '%';
+                $stmt->bindValue(':policy', $policyName, PDO::PARAM_STR);
+                $stmt->bindValue(':search', $searchParam, PDO::PARAM_STR);
+                $stmt->bindValue(':search2', $searchParam, PDO::PARAM_STR);
+                $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+                $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            } else {
+                $sql = "SELECT id, policy_name, {$col} AS item_value, note, added_by, created_at, updated_at
+                        FROM {$table}
+                        WHERE policy_name = :policy
+                        ORDER BY id DESC LIMIT :limit OFFSET :offset";
+                $stmt = $pdo->prepare($sql);
+                $stmt->bindValue(':policy', $policyName, PDO::PARAM_STR);
+                $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+                $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+            }
+
+            $stmt->execute();
+            return $stmt->fetchAll();
+        } catch (Throwable $e) {
+            error_log('[Database::getListItems Error] ' . $e->getMessage());
+            return [];
         }
-
-        $stmt->execute();
-        return $stmt->fetchAll();
     }
 
     /**
      * Count items in a specific individual table for a policy
      */
     public static function countListItems(string $listType, string $policyName, string $search = ''): int {
-        $pdo = self::getConnection();
-        $table = self::getTableName($listType);
-        $col = self::getValueColumn($listType);
+        try {
+            $pdo = self::getConnection();
+            $table = self::getTableName($listType);
+            $col = self::getValueColumn($listType);
 
-        if ($search !== '') {
-            $sql = "SELECT COUNT(*) FROM {$table} WHERE policy_name = :policy AND ({$col} LIKE :search OR note LIKE :search2)";
-            $stmt = $pdo->prepare($sql);
-            $searchParam = '%' . $search . '%';
-            $stmt->execute([':policy' => $policyName, ':search' => $searchParam, ':search2' => $searchParam]);
-        } else {
-            $sql = "SELECT COUNT(*) FROM {$table} WHERE policy_name = :policy";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([':policy' => $policyName]);
+            if ($search !== '') {
+                $sql = "SELECT COUNT(*) FROM {$table} WHERE policy_name = :policy AND ({$col} LIKE :search OR note LIKE :search2)";
+                $stmt = $pdo->prepare($sql);
+                $searchParam = '%' . $search . '%';
+                $stmt->execute([':policy' => $policyName, ':search' => $searchParam, ':search2' => $searchParam]);
+            } else {
+                $sql = "SELECT COUNT(*) FROM {$table} WHERE policy_name = :policy";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([':policy' => $policyName]);
+            }
+            return (int)$stmt->fetchColumn();
+        } catch (Throwable $e) {
+            error_log('[Database::countListItems Error] ' . $e->getMessage());
+            return 0;
         }
-        return (int)$stmt->fetchColumn();
     }
 
     /**
      * Check if an item already exists in a dedicated table for a policy (duplicate check)
      */
     public static function itemExists(string $listType, string $policyName, string $value): bool {
-        $pdo = self::getConnection();
-        $table = self::getTableName($listType);
-        $col = self::getValueColumn($listType);
-        $value = strtolower(trim($value));
+        try {
+            $pdo = self::getConnection();
+            $table = self::getTableName($listType);
+            $col = self::getValueColumn($listType);
+            $value = strtolower(trim($value));
 
-        $stmt = $pdo->prepare("SELECT 1 FROM {$table} WHERE policy_name = :policy AND {$col} = :val LIMIT 1");
-        $stmt->execute([':policy' => $policyName, ':val' => $value]);
-        return (bool)$stmt->fetchColumn();
+            $stmt = $pdo->prepare("SELECT 1 FROM {$table} WHERE policy_name = :policy AND {$col} = :val LIMIT 1");
+            $stmt->execute([':policy' => $policyName, ':val' => $value]);
+            return (bool)$stmt->fetchColumn();
+        } catch (Throwable $e) {
+            error_log('[Database::itemExists Error] ' . $e->getMessage());
+            return false;
+        }
     }
 
     /**

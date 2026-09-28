@@ -61,12 +61,13 @@ if ($Action -eq "Pull") {
     function Import-ToMariaDb {
         param ([string]$TableName, [string]$ColName, [array]$Values, [string]$Policy)
         if (!$Values -or $Values.Count -eq 0) { return }
+        $dbCli = if (Get-Command mariadb -ErrorAction SilentlyContinue) { "mariadb" } else { "mysql" }
         foreach ($v in $Values) {
-            $valClean = $v.Trim().ToLower()
+            $valClean = $v.Trim().ToLower() -replace "'", "''"
+            $policyClean = $Policy -replace "'", "''"
             if ($valClean -ne "") {
-                $sql = "INSERT IGNORE INTO $TableName (policy_name, $ColName, note, added_by) VALUES ('$Policy', '$valClean', 'Pulled from Exchange Online via Cron', 'EOP_CRON_PULL');"
-                $cmd = "mariadb -h $DbHost -P $DbPort -u $DbUser -p'$DbPass' -D $DbName -e \"$sql\""
-                Invoke-Expression $cmd | Out-Null
+                $sql = "INSERT IGNORE INTO $TableName (policy_name, $ColName, note, added_by) VALUES ('$policyClean', '$valClean', 'Pulled from Exchange Online via Cron', 'EOP_CRON_PULL');"
+                & $dbCli -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -e $sql 2>&1 | Out-Null
             }
         }
     }
@@ -80,9 +81,10 @@ if ($Action -eq "Pull") {
     # --------------------------------------------------------------------------
     function Query-MariaDbList {
         param ([string]$TableName, [string]$ColumnName, [string]$Policy)
-        $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$Policy';"
-        $cmd = "mariadb -h $DbHost -P $DbPort -u $DbUser -p'$DbPass' -D $DbName -s -N -e \"$query\""
-        $result = Invoke-Expression $cmd
+        $policyClean = $Policy -replace "'", "''"
+        $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$policyClean';"
+        $dbCli = if (Get-Command mariadb -ErrorAction SilentlyContinue) { "mariadb" } else { "mysql" }
+        $result = & $dbCli -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -s -N -e $query 2>&1
         if ($result) {
             return @($result -split "\r?\n" | Where-Object { $_ -ne "" })
         }

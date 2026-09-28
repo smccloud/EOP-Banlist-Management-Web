@@ -16,6 +16,11 @@ if (php_sapi_name() !== 'cli') {
     die("This script must be run from the command line.\n");
 }
 
+if (!file_exists(__DIR__ . '/config.php')) {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: /var/www/eop-antispam/config.php not found. Please complete initial setup at http://<server-ip>/setup.php\n");
+    exit(1);
+}
+
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
 
