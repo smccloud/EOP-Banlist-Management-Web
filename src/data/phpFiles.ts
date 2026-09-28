@@ -4662,16 +4662,16 @@ if ($Action -eq "Pull") {
     description: 'CLI synchronization runner intended for Linux crontab scheduling. Strictly pulls changes from Exchange Online Protection into MariaDB; does NOT push local changes.',
     category: 'sync',
     generateContent: () => `<?php
-/**
- * CLI Crontab Sync Runner for Debian
- * 
- * CRON POLICY ENFORCEMENT:
- * The cron job strictly PULLS changes from Exchange Online Protection (EOP)
- * into MariaDB. It does NOT push local MariaDB changes to EOP.
- * 
- * Usage in crontab (e.g. every 15 minutes):
- * */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default Inbound Anti-Spam Policy"
- */
+// ==============================================================================
+// CLI Crontab Sync Runner for Debian
+// 
+// CRON POLICY ENFORCEMENT:
+// The cron job strictly PULLS changes from Exchange Online Protection (EOP)
+// into MariaDB. It does NOT push local MariaDB changes to EOP.
+// 
+// Usage in crontab (e.g. every 15 minutes):
+// */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default Inbound Anti-Spam Policy"
+// ==============================================================================
 
 declare(strict_types=1);
 
