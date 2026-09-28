@@ -549,6 +549,7 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
 }
 
 $error = null;
+$notice = null;
 $success = null;
 
 // Allow direct step navigation if previous steps were done
@@ -673,17 +674,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 'eop_auth_config' => "CREATE TABLE IF NOT EXISTS `eop_auth_config` (
                     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    `tenant_id` VARCHAR(64) NOT NULL,
-                    `client_id` VARCHAR(64) NOT NULL,
-                    `certificate_thumbprint` VARCHAR(64) NOT NULL,
-                    `key_filename` VARCHAR(100) NOT NULL DEFAULT 'eop-cert-private.key',
-                    `private_key_pem` TEXT NOT NULL,
-                    `encrypted_password` TEXT NOT NULL,
-                    `encryption_iv` VARCHAR(64) NOT NULL,
-                    `encryption_tag` VARCHAR(64) NOT NULL,
-                    `organization` VARCHAR(255) NOT NULL DEFAULT 'corp.example.com',
+                    `tenant_id` VARCHAR(100) NOT NULL,
+                    `client_id` VARCHAR(100) NOT NULL,
+                    `certificate_thumbprint` VARCHAR(100) NOT NULL,
+                    `key_filename` VARCHAR(255) NOT NULL DEFAULT 'eop-cert-private.key',
+                    `private_key` MEDIUMTEXT NOT NULL,
+                    `pkcs12_bundle` MEDIUMTEXT NULL,
+                    `encrypted_password` TEXT NULL,
+                    `encryption_iv` VARCHAR(64) NULL,
+                    `encryption_tag` VARCHAR(64) NULL,
+                    `organization` VARCHAR(255) NULL DEFAULT 'corp.example.com',
                     `key_type` ENUM('RSA_PEM', 'PKCS8_PEM', 'PKCS12_PFX') NOT NULL DEFAULT 'RSA_PEM',
-                    `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+                    `is_active` TINY(1) NOT NULL DEFAULT 1,
                     `uploaded_by` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
                     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -827,10 +829,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         $passphrase = $_POST['passphrase'] ?? '';
+        $pkcs12Bundle = '';
+        $pkcs12Filename = '';
 
-        if (empty($tenantId) || empty($clientId) || empty($thumbprint)) {
+        // The PKCS#12 bundle is the artefact Exchange Online certificate
+        // authentication actually needs on Linux, so it is validated up front
+        // rather than discovered at the first sync run.
+        if (!empty($_FILES['pkcs12_file']['tmp_name']) && is_uploaded_file($_FILES['pkcs12_file']['tmp_name'])) {
+            $upload = $_FILES['pkcs12_file'];
+            if ($upload['error'] !== UPLOAD_ERR_OK) {
+                $error = "PKCS#12 upload failed (error code {$upload['error']}).";
+            } else {
+                $rawBundle = file_get_contents($upload['tmp_name']);
+                $certs = [];
+                if ($rawBundle === false || !openssl_pkcs12_read($rawBundle, $certs, (string)$passphrase)) {
+                    $error = "The uploaded PKCS#12 file could not be opened with the passphrase you entered.";
+                } elseif (empty($certs['cert']) || empty($certs['pkey'])) {
+                    $error = "The uploaded PKCS#12 file does not contain a certificate and private key pair.";
+                } else {
+                    $pkcs12Bundle = base64_encode($rawBundle);
+                    $pkcs12Filename = basename($upload['name']);
+
+                    // Derive the real thumbprint from the uploaded certificate so the
+                    // stored value cannot drift from the material being used.
+                    $fingerprint = strtoupper(str_replace(':', '', (string)openssl_x509_fingerprint($certs['cert'], 'sha1', true)));
+                    if ($fingerprint !== '') {
+                        if ($thumbprint === '' || strcasecmp(preg_replace('/[^a-fA-F0-9]/', '', $thumbprint), $fingerprint) !== 0) {
+                            $thumbprint = $fingerprint;
+                            $notice = "Certificate thumbprint was set from the uploaded PKCS#12 file: {$fingerprint}.";
+                        }
+                    }
+
+                    // Keep the private key column populated when only a bundle was
+                    // supplied, so key verification in the UI still works.
+                    if ($privateKey === '') {
+                        $privateKey = $certs['pkey'];
+                    }
+                }
+            }
+        }
+
+        if (!isset($error) && (empty($tenantId) || empty($clientId) || empty($thumbprint))) {
             $error = "Please provide your Microsoft 365 Tenant ID, Client App ID, and Certificate Thumbprint.";
-        } else {
+        }
+
+        if (!isset($error)) {
             $_SESSION['wizard']['eop'] = [
                 'tenant_id' => $tenantId,
                 'client_id' => $clientId,
@@ -838,6 +881,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'org_domain' => $orgDomain,
                 'policy' => $policy,
                 'private_key' => $privateKey,
+                'pkcs12_bundle' => $pkcs12Bundle,
+                'pkcs12_filename' => $pkcs12Filename,
                 'passphrase' => $passphrase,
                 'validated' => true
             ];
@@ -901,17 +946,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $ciphertext = openssl_encrypt($eop['passphrase'], 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
 
             $authStmt = $pdo->prepare("INSERT INTO `eop_auth_config` 
-                (`tenant_id`, `client_id`, `certificate_thumbprint`, `key_filename`, `private_key_pem`, `encrypted_password`, `encryption_iv`, `encryption_tag`, `organization`, `key_type`, `is_active`, `uploaded_by`)
-                VALUES (:tid, :cid, :thumb, 'eop-cert-private.key', :pem, :cipher, :iv_b64, :tag_b64, :org, 'RSA_PEM', 1, 'INITIAL_SETUP')");
+                (`tenant_id`, `client_id`, `certificate_thumbprint`, `key_filename`, `private_key`, `pkcs12_bundle`, `encrypted_password`, `encryption_iv`, `encryption_tag`, `organization`, `key_type`, `is_active`, `uploaded_by`)
+                VALUES (:tid, :cid, :thumb, :filename, :pem, :p12, :cipher, :iv_b64, :tag_b64, :org, :ktype, 1, 'INITIAL_SETUP')");
             $authStmt->execute([
                 ':tid' => $eop['tenant_id'],
                 ':cid' => $eop['client_id'],
                 ':thumb' => $eop['thumbprint'],
+                ':filename' => $eop['pkcs12_filename'] ?: 'eop-cert-private.key',
                 ':pem' => $eop['private_key'],
+                ':p12' => $eop['pkcs12_bundle'] ?: null,
                 ':cipher' => base64_encode($ciphertext ?: ''),
                 ':iv_b64' => base64_encode($iv),
                 ':tag_b64' => base64_encode($tag),
-                ':org' => $eop['org_domain']
+                ':org' => $eop['org_domain'],
+                ':ktype' => !empty($eop['pkcs12_bundle']) ? 'PKCS12_PFX' : 'RSA_PEM'
             ]);
 
             // 5. Write full finalized environment settings to .env and config.php files
@@ -1022,6 +1070,13 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
             <div class="mb-6 p-4 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-200 text-xs flex items-center gap-3">
                 <svg class="w-5 h-5 text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                 <span><?php echo htmlspecialchars($error); ?></span>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($notice): ?>
+            <div class="mb-6 p-4 rounded-xl bg-emerald-950/60 border border-emerald-800 text-emerald-200 text-xs flex items-center gap-3">
+                <svg class="w-5 h-5 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <span><?php echo htmlspecialchars($notice); ?></span>
             </div>
         <?php endif; ?>
 
@@ -1304,6 +1359,13 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     </div>
 
                     <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">PKCS#12 Certificate Bundle (.pfx / .p12)</label>
+                        <input type="file" name="pkcs12_file" accept=".pfx,.p12"
+                               class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-1 file:text-xs file:text-white focus:outline-hidden focus:border-blue-500">
+                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">Required for the cron sync. The certificate and private key are stored in <code>eop_auth_config.pkcs12_bundle</code> and imported into the certificate store on every pull. The thumbprint above is derived from this file.</p>
+                    </div>
+
+                    <div>
                         <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
                             <label class="block text-xs font-medium text-slate-300">RSA Certificate Private Key (PEM format)</label>
                             <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold cursor-pointer shadow-xs transition">
@@ -1391,6 +1453,12 @@ MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
                         <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
                             <div>Tenant: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['tenant_id'] ?? ''), 0, 8); ?>...</div>
                             <div>Thumb: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['thumbprint'] ?? ''), 0, 8); ?>...</div>
+                            <div>PKCS#12: <?php
+                                $reviewBundle = $_SESSION['wizard']['eop']['pkcs12_bundle'] ?? '';
+                                echo $reviewBundle !== ''
+                                    ? htmlspecialchars($_SESSION['wizard']['eop']['pkcs12_filename'] ?? 'certificate.pfx') . ' (' . number_format(strlen((string)base64_decode($reviewBundle)) / 1024, 1) . ' KB)'
+                                    : '<span class="text-amber-400">not uploaded</span>';
+                            ?></div>
                             <div class="text-emerald-400 font-sans font-semibold mt-1">AES-256 Key Stored</div>
                         </div>
                     </div>

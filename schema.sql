@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_auth_config` (
     `certificate_thumbprint` VARCHAR(100) NOT NULL,
     `key_filename` VARCHAR(255) NOT NULL DEFAULT 'eop-cert-private.key',
     `private_key` MEDIUMTEXT NOT NULL,
+    `pkcs12_bundle` MEDIUMTEXT NULL,
     `encrypted_password` TEXT NULL,
     `encryption_iv` VARCHAR(64) NULL,
     `encryption_tag` VARCHAR(64) NULL,

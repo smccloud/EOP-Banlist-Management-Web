@@ -59,11 +59,100 @@ if ($pwsh === '') {
     exit(1);
 }
 
+// PowerShell's Platform.SelectProductNameForDirectory('CACHE') returns an empty
+// string on Debian when XDG_CACHE_HOME is unset, which makes PowerShellGet fail
+// to initialise. Only applied when the crontab has not supplied one already.
+if (getenv('XDG_CACHE_HOME') === false) {
+    $xdgCache = '/var/cache/eop-antispam';
+    if (!is_dir($xdgCache)) {
+        @mkdir($xdgCache, 0755, true);
+    }
+    if (is_dir($xdgCache)) {
+        putenv('XDG_CACHE_HOME=' . $xdgCache);
+    }
+}
+
+// Exchange Online App-Only authentication values are read from the active
+// eop_auth_config record rather than hardcoded in the PowerShell script, so that
+// rotating the certificate or App Registration in the Web UI takes effect here
+// without a code change.
+$authConfig = Database::getEopAuthConfig();
+
+$requiredAuthFields = ['tenant_id', 'client_id', 'certificate_thumbprint'];
+$missingAuthFields = [];
+foreach ($requiredAuthFields as $field) {
+    if (empty($authConfig[$field])) {
+        $missingAuthFields[] = $field;
+    }
+}
+
+if ($missingAuthFields) {
+    $detail = implode(', ', $missingAuthFields);
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: active eop_auth_config record is missing {$detail}.\n");
+    fwrite(STDERR, "Upload the certificate details in the Web UI (Authentication tab) before running the sync.\n");
+    Database::updatePolicySyncStatus($policy, 'failed', "eop_auth_config missing {$detail}");
+    exit(1);
+}
+
+putenv('EOP_TENANT_ID=' . $authConfig['tenant_id']);
+putenv('EOP_CLIENT_ID=' . $authConfig['client_id']);
+putenv('EOP_CERT_THUMBPRINT=' . $authConfig['certificate_thumbprint']);
+putenv('EOP_ORGANIZATION=' . ($authConfig['organization'] ?? ''));
+
+// Certificate material. eop_auth_config stores the private key only, and
+// certificate authentication on Linux needs a PKCS#12 bundle holding the
+// certificate together with its key. The bundle is taken from an uploaded .pfx
+// record when one exists, otherwise from a provisioned path on disk.
+$pfxPath = getenv('EOP_CERT_PFX_PATH') ?: '/etc/eop-antispam/eop-cert.pfx';
+$tempPfx = null;
+
+if (strtoupper((string)($authConfig['key_type'] ?? '')) === 'PKCS12_PFX' && !empty($authConfig['private_key'])) {
+    $blob = base64_decode((string)preg_replace('/\s+/', '', $authConfig['private_key']), true);
+    if ($blob !== false && str_starts_with($blob, "\x30")) {
+        $tempPfx = tempnam(sys_get_temp_dir(), 'eopcert_');
+        file_put_contents($tempPfx, $blob);
+        chmod($tempPfx, 0600);
+        $pfxPath = $tempPfx;
+    }
+}
+
+if (!is_readable($pfxPath)) {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: no readable PKCS#12 certificate bundle at {$pfxPath}.\n");
+    fwrite(STDERR, "Certificate authentication needs a .pfx containing the certificate and its private key. Set EOP_CERT_PFX_PATH or provision one at {$pfxPath}.\n");
+    Database::updatePolicySyncStatus($policy, 'failed', "PKCS#12 certificate not readable at {$pfxPath}");
+    exit(1);
+}
+
+$pfxPassword = '';
+if (!empty($authConfig['encrypted_password'])) {
+    $pfxPassword = Database::decryptKeyPassword(
+        $authConfig['encrypted_password'],
+        $authConfig['encryption_iv'] ?? '',
+        $authConfig['encryption_tag'] ?? ''
+    ) ?? '';
+}
+
 // Paths and the policy name are passed to PowerShell through the environment
 // rather than interpolated into the command string, so values containing spaces
 // or quotes cannot break out of the PowerShell argument.
 putenv('EOP_PS_SCRIPT=' . $psScript);
 putenv('EOP_POLICY=' . $policy);
+
+$pullOutput = tempnam(sys_get_temp_dir(), 'eoppull_');
+
+putenv('EOP_CERT_PFX_PATH=' . $pfxPath);
+putenv('EOP_CERT_PFX_PASSWORD=' . $pfxPassword);
+putenv('EOP_PULL_OUTPUT=' . $pullOutput);
+
+// The decrypted passphrase and any reconstructed bundle are removed on every
+// exit path, including fatal errors.
+register_shutdown_function(static function () use ($pullOutput, $tempPfx): void {
+    foreach ([$pullOutput, $tempPfx] as $tempPath) {
+        if ($tempPath && is_file($tempPath)) {
+            @unlink($tempPath);
+        }
+    }
+});
 
 // Every pwsh invocation is a separate process, so importing the module here
 // would not carry over to the run below. The import is therefore performed in
@@ -105,8 +194,56 @@ $runShell = sprintf(
 passthru($runShell, $returnVar);
 
 if ($returnVar === 0) {
-    Database::updatePolicySyncStatus($policy, 'synced', 'Crontab automatic PULL from EOP completed');
-    Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', 'Crontab pulled changes from Exchange Online (Pull-Only)', 'CRON_DAEMON');
+    $remote = null;
+    if (is_readable($pullOutput)) {
+        $decoded = json_decode((string)file_get_contents($pullOutput), true);
+        if (is_array($decoded)) {
+            $remote = $decoded;
+        }
+    }
+
+    if ($remote === null) {
+        fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: the pull finished but wrote no readable policy payload.\n");
+        Database::updatePolicySyncStatus($policy, 'failed', 'Cron pull produced no readable remote policy payload');
+        exit(1);
+    }
+
+    $listMap = [
+        'allowed_senders' => 'allowed_senders',
+        'blocked_senders' => 'blocked_senders',
+        'allowed_domains' => 'allowed_domains',
+        'blocked_domains' => 'blocked_domains',
+    ];
+
+    $totalInserted = 0;
+    $totalRemoved = 0;
+
+    foreach ($listMap as $listType => $payloadKey) {
+        $values = $remote[$payloadKey] ?? [];
+        if (!is_array($values)) {
+            $values = [];
+        }
+
+        $result = Database::reconcileListWithRemote($listType, $policy, $values, 'CRON_DAEMON');
+        $totalInserted += $result['inserted'];
+        $totalRemoved += $result['removed'];
+
+        printf(
+            "  %-18s remote=%-5d inserted=%-5d removed=%-5d\n",
+            $listType,
+            $result['remote'],
+            $result['inserted'],
+            $result['removed']
+        );
+
+        foreach ($result['errors'] as $insertError) {
+            fwrite(STDERR, '    ' . $insertError . "\n");
+        }
+    }
+
+    $summary = "Cron pull: {$totalInserted} added, {$totalRemoved} removed";
+    Database::updatePolicySyncStatus($policy, 'synced', $summary);
+    Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pulled changes from Exchange Online (Pull-Only): {$summary}", 'CRON_DAEMON');
     echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\n";
 } else {
     Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");

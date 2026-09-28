@@ -301,6 +301,58 @@ class Database {
     }
 
     /**
+     * Reconcile a local list against the authoritative remote list from Exchange Online.
+     * Inserts remote entries missing locally and removes local rows that no longer exist
+     * in Exchange Online. Every removal is audit logged.
+     */
+    public static function reconcileListWithRemote(string $listType, string $policyName, array $remoteValues, string $actor): array {
+        $pdo = self::getConnection();
+        $table = self::getTableName($listType);
+        $col = self::getValueColumn($listType);
+
+        $remote = [];
+        foreach ($remoteValues as $value) {
+            $normalized = strtolower(trim((string)$value));
+            if ($normalized !== '') {
+                $remote[$normalized] = true;
+            }
+        }
+
+        $select = $pdo->prepare("SELECT id, {$col} AS item_value FROM {$table} WHERE policy_name = :policy");
+        $select->execute([':policy' => $policyName]);
+        $localRows = $select->fetchAll(PDO::FETCH_ASSOC);
+
+        $candidates = [];
+        foreach (array_keys($remote) as $value) {
+            $candidates[] = ['value' => $value, 'note' => 'Pulled from Exchange Online'];
+        }
+        $insertResult = self::bulkInsert($listType, $policyName, $candidates, $actor);
+
+        $delete = $pdo->prepare("DELETE FROM {$table} WHERE id = :id AND policy_name = :policy");
+        $removed = [];
+        foreach ($localRows as $row) {
+            $normalized = strtolower(trim((string)$row['item_value']));
+            if (!isset($remote[$normalized])) {
+                $delete->execute([':id' => (int)$row['id'], ':policy' => $policyName]);
+                $removed[] = $row['item_value'];
+            }
+        }
+
+        if ($removed) {
+            self::logAudit('DELETE', $listType, $policyName, count($removed) . ' items', 'Removed by cron pull (absent from Exchange Online): ' . implode(', ', array_slice($removed, 0, 25)), $actor);
+        }
+
+        return [
+            'remote'    => count($remote),
+            'inserted'  => $insertResult['inserted'],
+            'removed'   => count($removed),
+            'unchanged' => count($localRows) - count($removed),
+            'errors'    => $insertResult['errors'],
+            'removed_values' => $removed,
+        ];
+    }
+
+    /**
      * Record an audit log entry in eop_audit_log
      */
     public static function logAudit(string $action, string $listType, string $policyName, string $targetValue, string $details, string $username): void {
@@ -499,12 +551,14 @@ class Database {
         try {
             $pdo = self::getConnection();
             $stmt = $pdo->prepare("INSERT INTO " . TABLE_EOP_AUTH_CONFIG . " 
-                (tenant_id, client_id, certificate_thumbprint, key_filename, private_key, encrypted_password, encryption_iv, encryption_tag, key_type, organization, is_active, uploaded_by, created_at, updated_at)
-                VALUES (:tenant, :client, :thumbprint, :filename, :privkey, :enc_pass, :iv, :tag, :ktype, :org, 1, :user, NOW(), NOW())");
+                (tenant_id, client_id, certificate_thumbprint, key_filename, private_key, pkcs12_bundle, encrypted_password, encryption_iv, encryption_tag, key_type, organization, is_active, uploaded_by, created_at, updated_at)
+                VALUES (:tenant, :client, :thumbprint, :filename, :privkey, :p12, :enc_pass, :iv, :tag, :ktype, :org, 1, :user, NOW(), NOW())");
 
             $enc = self::encryptKeyPassword($data['password'] ?? '');
 
             $thumbprint = strtoupper(preg_replace('/[^a-zA-Z0-9]/', '', $data['certificate_thumbprint'] ?? ''));
+            $pkcs12 = trim((string)($data['pkcs12_bundle'] ?? ''));
+            $keyType = $pkcs12 !== '' ? 'PKCS12_PFX' : ($data['key_type'] ?? 'RSA_PEM');
 
             $success = $stmt->execute([
                 ':tenant'     => trim($data['tenant_id'] ?? (defined('M365_TENANT_ID') ? M365_TENANT_ID : '')),
@@ -512,10 +566,11 @@ class Database {
                 ':thumbprint' => $thumbprint ?: (defined('M365_CERT_THUMBPRINT') ? M365_CERT_THUMBPRINT : ''),
                 ':filename'   => trim($data['key_filename'] ?? 'eop-cert-private.key'),
                 ':privkey'    => trim($data['private_key']),
+                ':p12'        => $pkcs12 !== '' ? $pkcs12 : null,
                 ':enc_pass'   => $enc['ciphertext'],
                 ':iv'         => $enc['iv'],
                 ':tag'        => $enc['tag'],
-                ':ktype'      => $data['key_type'] ?? 'RSA_PEM',
+                ':ktype'      => $keyType,
                 ':org'        => trim($data['organization'] ?? (defined('M365_ORGANIZATION') ? M365_ORGANIZATION : 'corp.example.com')),
                 ':user'       => $uploadedBy,
             ]);
