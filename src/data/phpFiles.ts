@@ -2740,12 +2740,12 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
 declare(strict_types=1);
 
 // Debian filesystem lockfile path
-\\$lockFile = __DIR__ . '/installed.lock';
+$lockFile = __DIR__ . '/installed.lock';
 
 // -----------------------------------------------------------------------------
 // Security Check: If locked on disk or database, strictly forbid execution!
 // -----------------------------------------------------------------------------
-if (file_exists(\\$lockFile)) {
+if (file_exists($lockFile)) {
     http_response_code(403);
     ?>
     <!DOCTYPE html>
@@ -2788,8 +2788,8 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 // Ensure session setup store exists
-if (!isset(\\$_SESSION['wizard'])) {
-    \\$_SESSION['wizard'] = [
+if (!isset($_SESSION['wizard'])) {
+    $_SESSION['wizard'] = [
         'step' => 1,
         'db' => [
             'host' => '${cfg.dbHost}',
@@ -2824,47 +2824,47 @@ if (!isset(\\$_SESSION['wizard'])) {
     ];
 }
 
-\\$error = null;
-\\$success = null;
+$error = null;
+$success = null;
 
 // Allow direct step navigation if previous steps were done
-\\$currentStep = (int)(\\$_GET['step'] ?? \\$_SESSION['wizard']['step'] ?? 1);
-if (\\$currentStep < 1) \\$currentStep = 1;
-if (\\$currentStep > 5) \\$currentStep = 5;
+$currentStep = (int)($_GET['step'] ?? $_SESSION['wizard']['step'] ?? 1);
+if ($currentStep < 1) $currentStep = 1;
+if ($currentStep > 5) $currentStep = 5;
 
 // POST Action Handlers
-if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
-    \\$action = \\$_POST['action'] ?? '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
 
     // Step 1 -> Advance to Step 2
-    if (\\$action === 'step1_start') {
-        \\$_SESSION['wizard']['step'] = 2;
+    if ($action === 'step1_start') {
+        $_SESSION['wizard']['step'] = 2;
         header('Location: setup.php?step=2');
         exit;
     }
 
     // Step 2: Test Database & Populate Schema
-    if (\\$action === 'step2_db') {
-        \\$host = trim(\\$_POST['db_host'] ?? '127.0.0.1');
-        \\$port = (int)(\\$_POST['db_port'] ?? 3306);
-        \\$name = trim(\\$_POST['db_name'] ?? 'eop_antispam_db');
-        \\$user = trim(\\$_POST['db_user'] ?? 'root');
-        \\$pass = \\$_POST['db_pass'] ?? '';
+    if ($action === 'step2_db') {
+        $host = trim($_POST['db_host'] ?? '127.0.0.1');
+        $port = (int)($_POST['db_port'] ?? 3306);
+        $name = trim($_POST['db_name'] ?? 'eop_antispam_db');
+        $user = trim($_POST['db_user'] ?? 'root');
+        $pass = $_POST['db_pass'] ?? '';
 
         try {
             // Test connection
-            \\$dsn = "mysql:host={\\$host};port={\\$port};charset=utf8mb4";
-            \\$pdo = new PDO(\\$dsn, \\$user, \\$pass, [
+            $dsn = "mysql:host={$host};port={$port};charset=utf8mb4";
+            $pdo = new PDO($dsn, $user, $pass, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
             ]);
 
             // Create database if not exists
-            \\$pdo->exec("CREATE DATABASE IF NOT EXISTS \`{\\$name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-            \\$pdo->exec("USE \`{\\$name}\`");
+            $pdo->exec("CREATE DATABASE IF NOT EXISTS \`{$name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+            $pdo->exec("USE \`{$name}\`");
 
             // Execute all 9 table schemas
-            \\$tables = [
+            $tables = [
                 'eop_allowed_senders' => "CREATE TABLE IF NOT EXISTS \`eop_allowed_senders\` (
                     \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     \`policy_name\` VARCHAR(255) NOT NULL DEFAULT 'Default Inbound Anti-Spam Policy',
@@ -2985,217 +2985,217 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
             ];
 
-            foreach (\\$tables as \\$tblSql) {
-                \\$pdo->exec(\\$tblSql);
+            foreach ($tables as $tblSql) {
+                $pdo->exec($tblSql);
             }
 
             // Seed default policy
-            \\$seedPolicy = \\$pdo->prepare("INSERT IGNORE INTO \`eop_policies\` (\`policy_name\`, \`description\`, \`is_default\`) VALUES (:name, 'Default Inbound Anti-Spam Policy for Organization', 1)");
-            \\$seedPolicy->execute([':name' => 'Default Inbound Anti-Spam Policy']);
+            $seedPolicy = $pdo->prepare("INSERT IGNORE INTO \`eop_policies\` (\`policy_name\`, \`description\`, \`is_default\`) VALUES (:name, 'Default Inbound Anti-Spam Policy for Organization', 1)");
+            $seedPolicy->execute([':name' => 'Default Inbound Anti-Spam Policy']);
 
             // Save to session
-            \\$_SESSION['wizard']['db'] = [
-                'host' => \\$host,
-                'port' => \\$port,
-                'name' => \\$name,
-                'user' => \\$user,
-                'pass' => \\$pass,
+            $_SESSION['wizard']['db'] = [
+                'host' => $host,
+                'port' => $port,
+                'name' => $name,
+                'user' => $user,
+                'pass' => $pass,
                 'populated' => true,
-                'tables' => array_keys(\\$tables)
+                'tables' => array_keys($tables)
             ];
-            \\$_SESSION['wizard']['step'] = 3;
+            $_SESSION['wizard']['step'] = 3;
             header('Location: setup.php?step=3');
             exit;
 
-        } catch (Exception \\$e) {
-            \\$error = "Database Connection Failed: " . \\$e->getMessage();
+        } catch (Exception $e) {
+            $error = "Database Connection Failed: " . $e->getMessage();
         }
     }
 
     // Step 3: Prompt & Save LDAP Information + Emergency Non-LDAP Fallback Admin
-    if (\\$action === 'step3_ldap') {
-        \\$ldapHost = trim(\\$_POST['ldap_host'] ?? '');
-        \\$ldapPort = (int)(\\$_POST['ldap_port'] ?? 389);
-        \\$ldapProtocol = \\$_POST['ldap_protocol'] ?? 'ldap';
-        \\$ldapBaseDn = trim(\\$_POST['ldap_base_dn'] ?? '');
-        \\$ldapGroupDn = trim(\\$_POST['ldap_group_dn'] ?? '');
-        \\$ldapBindDn = trim(\\$_POST['ldap_bind_dn'] ?? '');
-        \\$ldapBindPass = \\$_POST['ldap_bind_pass'] ?? '';
-        \\$ldapDomain = trim(\\$_POST['ldap_domain'] ?? 'CORP');
+    if ($action === 'step3_ldap') {
+        $ldapHost = trim($_POST['ldap_host'] ?? '');
+        $ldapPort = (int)($_POST['ldap_port'] ?? 389);
+        $ldapProtocol = $_POST['ldap_protocol'] ?? 'ldap';
+        $ldapBaseDn = trim($_POST['ldap_base_dn'] ?? '');
+        $ldapGroupDn = trim($_POST['ldap_group_dn'] ?? '');
+        $ldapBindDn = trim($_POST['ldap_bind_dn'] ?? '');
+        $ldapBindPass = $_POST['ldap_bind_pass'] ?? '';
+        $ldapDomain = trim($_POST['ldap_domain'] ?? 'CORP');
 
         // Fallback Non-LDAP Administrator settings
-        \\$fallbackEnabled = !empty(\\$_POST['fallback_admin_enabled']);
-        \\$fallbackUser = trim(\\$_POST['fallback_admin_username'] ?? 'eopadmin');
-        \\$fallbackPass = \\$_POST['fallback_admin_password'] ?? '';
+        $fallbackEnabled = !empty($_POST['fallback_admin_enabled']);
+        $fallbackUser = trim($_POST['fallback_admin_username'] ?? 'eopadmin');
+        $fallbackPass = $_POST['fallback_admin_password'] ?? '';
 
-        if (empty(\\$ldapHost) || empty(\\$ldapBaseDn) || empty(\\$ldapGroupDn)) {
-            \\$error = "Please fill in all required LDAP settings (Host, Base DN, Group DN).";
-        } elseif (\\$fallbackEnabled) {
-            if (empty(\\$fallbackUser)) {
-                \\$error = "Fallback administrator username is required when fallback account is enabled.";
-            } elseif (strlen(\\$fallbackPass) < 12) {
-                \\$error = "Fallback administrator password must be at least 12 characters long.";
+        if (empty($ldapHost) || empty($ldapBaseDn) || empty($ldapGroupDn)) {
+            $error = "Please fill in all required LDAP settings (Host, Base DN, Group DN).";
+        } elseif ($fallbackEnabled) {
+            if (empty($fallbackUser)) {
+                $error = "Fallback administrator username is required when fallback account is enabled.";
+            } elseif (strlen($fallbackPass) < 12) {
+                $error = "Fallback administrator password must be at least 12 characters long.";
             } else {
-                \\$hasUpper = preg_match('/[A-Z]/', \\$fallbackPass) ? 1 : 0;
-                \\$hasLower = preg_match('/[a-z]/', \\$fallbackPass) ? 1 : 0;
-                \\$hasNumber = preg_match('/[0-9]/', \\$fallbackPass) ? 1 : 0;
-                \\$hasSymbol = preg_match('/[^A-Za-z0-9]/', \\$fallbackPass) ? 1 : 0;
-                \\$passedCats = \\$hasUpper + \\$hasLower + \\$hasNumber + \\$hasSymbol;
-                if (\\$passedCats < 3) {
-                    \\$error = "Fallback administrator password must meet at least three of the following four criteria: uppercase letters, lowercase letters, numbers, and symbols.";
+                $hasUpper = preg_match('/[A-Z]/', $fallbackPass) ? 1 : 0;
+                $hasLower = preg_match('/[a-z]/', $fallbackPass) ? 1 : 0;
+                $hasNumber = preg_match('/[0-9]/', $fallbackPass) ? 1 : 0;
+                $hasSymbol = preg_match('/[^A-Za-z0-9]/', $fallbackPass) ? 1 : 0;
+                $passedCats = $hasUpper + $hasLower + $hasNumber + $hasSymbol;
+                if ($passedCats < 3) {
+                    $error = "Fallback administrator password must meet at least three of the following four criteria: uppercase letters, lowercase letters, numbers, and symbols.";
                 }
             }
         }
 
-        if (empty(\\$error)) {
-            \\$_SESSION['wizard']['ldap'] = [
-                'host'                   => \\$ldapHost,
-                'port'                   => \\$ldapPort,
-                'protocol'               => \\$ldapProtocol,
-                'base_dn'                => \\$ldapBaseDn,
-                'group_dn'               => \\$ldapGroupDn,
-                'bind_dn'                => \\$ldapBindDn,
-                'bind_pass'              => \\$ldapBindPass,
-                'domain'                 => \\$ldapDomain,
-                'fallback_admin_enabled' => \\$fallbackEnabled,
-                'fallback_admin_username'=> \\$fallbackUser,
-                'fallback_admin_password'=> \\$fallbackPass,
+        if (empty($error)) {
+            $_SESSION['wizard']['ldap'] = [
+                'host'                   => $ldapHost,
+                'port'                   => $ldapPort,
+                'protocol'               => $ldapProtocol,
+                'base_dn'                => $ldapBaseDn,
+                'group_dn'               => $ldapGroupDn,
+                'bind_dn'                => $ldapBindDn,
+                'bind_pass'              => $ldapBindPass,
+                'domain'                 => $ldapDomain,
+                'fallback_admin_enabled' => $fallbackEnabled,
+                'fallback_admin_username'=> $fallbackUser,
+                'fallback_admin_password'=> $fallbackPass,
                 'tested'                 => true
             ];
-            \\$_SESSION['wizard']['step'] = 4;
+            $_SESSION['wizard']['step'] = 4;
             header('Location: setup.php?step=4');
             exit;
         }
     }
 
     // Step 4: Prompt & Save EOP Connection Information
-    if (\\$action === 'step4_eop') {
-        \\$tenantId = trim(\\$_POST['tenant_id'] ?? '');
-        \\$clientId = trim(\\$_POST['client_id'] ?? '');
-        \\$thumbprint = trim(\\$_POST['thumbprint'] ?? '');
-        \\$orgDomain = trim(\\$_POST['org_domain'] ?? '');
-        \\$policy = trim(\\$_POST['policy'] ?? 'Default Inbound Anti-Spam Policy');
-        \\$privateKey = trim(\\$_POST['private_key'] ?? '');
-        \\$passphrase = \\$_POST['passphrase'] ?? '';
+    if ($action === 'step4_eop') {
+        $tenantId = trim($_POST['tenant_id'] ?? '');
+        $clientId = trim($_POST['client_id'] ?? '');
+        $thumbprint = trim($_POST['thumbprint'] ?? '');
+        $orgDomain = trim($_POST['org_domain'] ?? '');
+        $policy = trim($_POST['policy'] ?? 'Default Inbound Anti-Spam Policy');
+        $privateKey = trim($_POST['private_key'] ?? '');
+        $passphrase = $_POST['passphrase'] ?? '';
 
-        if (empty(\\$tenantId) || empty(\\$clientId) || empty(\\$thumbprint)) {
-            \\$error = "Please provide your Microsoft 365 Tenant ID, Client App ID, and Certificate Thumbprint.";
+        if (empty($tenantId) || empty($clientId) || empty($thumbprint)) {
+            $error = "Please provide your Microsoft 365 Tenant ID, Client App ID, and Certificate Thumbprint.";
         } else {
-            \\$_SESSION['wizard']['eop'] = [
-                'tenant_id' => \\$tenantId,
-                'client_id' => \\$clientId,
-                'thumbprint' => \\$thumbprint,
-                'org_domain' => \\$orgDomain,
-                'policy' => \\$policy,
-                'private_key' => \\$privateKey,
-                'passphrase' => \\$passphrase,
+            $_SESSION['wizard']['eop'] = [
+                'tenant_id' => $tenantId,
+                'client_id' => $clientId,
+                'thumbprint' => $thumbprint,
+                'org_domain' => $orgDomain,
+                'policy' => $policy,
+                'private_key' => $privateKey,
+                'passphrase' => $passphrase,
                 'validated' => true
             ];
-            \\$_SESSION['wizard']['step'] = 5;
+            $_SESSION['wizard']['step'] = 5;
             header('Location: setup.php?step=5');
             exit;
         }
     }
 
     // Step 5: Final Review & Permanent Lock Routine
-    if (\\$action === 'step5_finalize_lock') {
-        \\$db = \\$_SESSION['wizard']['db'];
-        \\$ldap = \\$_SESSION['wizard']['ldap'];
-        \\$eop = \\$_SESSION['wizard']['eop'];
-        \\$ip = \\$_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+    if ($action === 'step5_finalize_lock') {
+        $db = $_SESSION['wizard']['db'];
+        $ldap = $_SESSION['wizard']['ldap'];
+        $eop = $_SESSION['wizard']['eop'];
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 
         try {
             // 1. Connect to MariaDB
-            \\$dsn = "mysql:host={\\$db['host']};port={\\$db['port']};dbname={\\$db['name']};charset=utf8mb4";
-            \\$pdo = new PDO(\\$dsn, \\$db['user'], \\$db['pass'], [
+            $dsn = "mysql:host={$db['host']};port={$db['port']};dbname={$db['name']};charset=utf8mb4";
+            $pdo = new PDO($dsn, $db['user'], $db['pass'], [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
             ]);
 
             // 2. Insert into eop_setup_lock
-            \\$lockStmt = \\$pdo->prepare("INSERT INTO \`eop_setup_lock\` (\`is_locked\`, \`completed_at\`, \`completed_by\`, \`installer_ip\`, \`app_version\`, \`schema_version\`)
+            $lockStmt = $pdo->prepare("INSERT INTO \`eop_setup_lock\` (\`is_locked\`, \`completed_at\`, \`completed_by\`, \`installer_ip\`, \`app_version\`, \`schema_version\`)
                                          VALUES (1, NOW(), 'INITIAL_SETUP_WIZARD', :ip, '1.0.0', '2026.1')");
-            \\$lockStmt->execute([':ip' => \\$ip]);
+            $lockStmt->execute([':ip' => $ip]);
 
             // 3. Save LDAP configuration to eop_ldap_config
-            \\$ldapStmt = \\$pdo->prepare("INSERT INTO \`eop_ldap_config\` 
+            $ldapStmt = $pdo->prepare("INSERT INTO \`eop_ldap_config\` 
                 (\`ldap_host\`, \`ldap_port\`, \`ldap_protocol\`, \`ldap_base_dn\`, \`ldap_group_dn\`, \`ldap_bind_dn\`, \`ldap_bind_password\`, \`ldap_domain\`, \`is_active\`)
                 VALUES (:host, :port, :proto, :base, :grp, :bind_dn, :bind_pass, :dom, 1)");
-            \\$ldapStmt->execute([
-                ':host' => \\$ldap['host'],
-                ':port' => \\$ldap['port'],
-                ':proto' => \\$ldap['protocol'],
-                ':base' => \\$ldap['base_dn'],
-                ':grp' => \\$ldap['group_dn'],
-                ':bind_dn' => \\$ldap['bind_dn'],
-                ':bind_pass' => \\$ldap['bind_pass'],
-                ':dom' => \\$ldap['domain']
+            $ldapStmt->execute([
+                ':host' => $ldap['host'],
+                ':port' => $ldap['port'],
+                ':proto' => $ldap['protocol'],
+                ':base' => $ldap['base_dn'],
+                ':grp' => $ldap['group_dn'],
+                ':bind_dn' => $ldap['bind_dn'],
+                ':bind_pass' => $ldap['bind_pass'],
+                ':dom' => $ldap['domain']
             ]);
 
             // 3b. Save emergency fallback administrator account if configured
-            if (!empty(\\$ldap['fallback_admin_enabled']) && !empty(\\$ldap['fallback_admin_username']) && !empty(\\$ldap['fallback_admin_password'])) {
-                \\$pwdHash = password_hash(\\$ldap['fallback_admin_password'], PASSWORD_BCRYPT);
-                \\$fallbackStmt = \\$pdo->prepare("INSERT INTO \`eop_local_admins\` (\`username\`, \`password_hash\`, \`is_active\`, \`created_by\`, \`created_at\`, \`updated_at\`)
+            if (!empty($ldap['fallback_admin_enabled']) && !empty($ldap['fallback_admin_username']) && !empty($ldap['fallback_admin_password'])) {
+                $pwdHash = password_hash($ldap['fallback_admin_password'], PASSWORD_BCRYPT);
+                $fallbackStmt = $pdo->prepare("INSERT INTO \`eop_local_admins\` (\`username\`, \`password_hash\`, \`is_active\`, \`created_by\`, \`created_at\`, \`updated_at\`)
                     VALUES (:u, :p, 1, 'INITIAL_SETUP_WIZARD', NOW(), NOW())
                     ON DUPLICATE KEY UPDATE \`password_hash\` = :p2, \`is_active\` = 1, \`updated_at\` = NOW()");
-                \\$fallbackStmt->execute([
-                    ':u'  => \\$ldap['fallback_admin_username'],
-                    ':p'  => \\$pwdHash,
-                    ':p2' => \\$pwdHash
+                $fallbackStmt->execute([
+                    ':u'  => $ldap['fallback_admin_username'],
+                    ':p'  => $pwdHash,
+                    ':p2' => $pwdHash
                 ]);
             }
 
             // 4. Save EOP Auth config (AES encrypted password)
-            \\$aesKey = hash('sha256', \\$eop['tenant_id'] . 'EOP_SALT_2026', true);
-            \\$iv = openssl_random_pseudo_bytes(12);
-            \\$tag = '';
-            \\$ciphertext = openssl_encrypt(\\$eop['passphrase'], 'aes-256-gcm', \\$aesKey, OPENSSL_RAW_DATA, \\$iv, \\$tag);
+            $aesKey = hash('sha256', $eop['tenant_id'] . 'EOP_SALT_2026', true);
+            $iv = openssl_random_pseudo_bytes(12);
+            $tag = '';
+            $ciphertext = openssl_encrypt($eop['passphrase'], 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
 
-            \\$authStmt = \\$pdo->prepare("INSERT INTO \`eop_auth_config\` 
+            $authStmt = $pdo->prepare("INSERT INTO \`eop_auth_config\` 
                 (\`tenant_id\`, \`client_id\`, \`certificate_thumbprint\`, \`key_filename\`, \`private_key_pem\`, \`encrypted_password\`, \`encryption_iv\`, \`encryption_tag\`, \`organization\`, \`key_type\`, \`is_active\`, \`uploaded_by\`)
                 VALUES (:tid, :cid, :thumb, 'eop-cert-private.key', :pem, :cipher, :iv_b64, :tag_b64, :org, 'RSA_PEM', 1, 'INITIAL_SETUP')");
-            \\$authStmt->execute([
-                ':tid' => \\$eop['tenant_id'],
-                ':cid' => \\$eop['client_id'],
-                ':thumb' => \\$eop['thumbprint'],
-                ':pem' => \\$eop['private_key'],
-                ':cipher' => base64_encode(\\$ciphertext ?: ''),
-                ':iv_b64' => base64_encode(\\$iv),
-                ':tag_b64' => base64_encode(\\$tag),
-                ':org' => \\$eop['org_domain']
+            $authStmt->execute([
+                ':tid' => $eop['tenant_id'],
+                ':cid' => $eop['client_id'],
+                ':thumb' => $eop['thumbprint'],
+                ':pem' => $eop['private_key'],
+                ':cipher' => base64_encode($ciphertext ?: ''),
+                ':iv_b64' => base64_encode($iv),
+                ':tag_b64' => base64_encode($tag),
+                ':org' => $eop['org_domain']
             ]);
 
             // 5. Create Debian lockfile installed.lock
-            \\$lockData = json_encode([
+            $lockData = json_encode([
                 'status' => 'LOCKED',
                 'completed_at' => date('Y-m-d H:i:s'),
-                'installer_ip' => \\$ip,
-                'db_host' => \\$db['host'],
-                'db_name' => \\$db['name'],
+                'installer_ip' => $ip,
+                'db_host' => $db['host'],
+                'db_name' => $db['name'],
                 'version' => '1.0.0'
             ], JSON_PRETTY_PRINT);
-            @file_put_contents(\\$lockFile, \\$lockData);
+            @file_put_contents($lockFile, $lockData);
 
             // Clear session wizard data
-            unset(\\$_SESSION['wizard']);
+            unset($_SESSION['wizard']);
 
             // Redirect to login with success flag
             header('Location: login.php?installed=1');
             exit;
 
-        } catch (Exception \\$e) {
-            \\$error = "Finalizing Installation Failed: " . \\$e->getMessage();
+        } catch (Exception $e) {
+            $error = "Finalizing Installation Failed: " . $e->getMessage();
         }
     }
 }
 
 // System requirement check helpers
-\\$phpVersionOk = version_compare(PHP_VERSION, '8.1.0', '>=');
-\\$pdoOk = extension_loaded('pdo_mysql');
-\\$opensslOk = extension_loaded('openssl');
-\\$ldapExtOk = extension_loaded('ldap');
-\\$curlOk = extension_loaded('curl');
-\\$writableOk = is_writable(__DIR__);
-\\$allReqsOk = \\$phpVersionOk && \\$pdoOk && \\$opensslOk && \\$ldapExtOk;
+$phpVersionOk = version_compare(PHP_VERSION, '8.1.0', '>=');
+$pdoOk = extension_loaded('pdo_mysql');
+$opensslOk = extension_loaded('openssl');
+$ldapExtOk = extension_loaded('ldap');
+$curlOk = extension_loaded('curl');
+$writableOk = is_writable(__DIR__);
+$allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -3239,23 +3239,23 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         <!-- Wizard Progress Bar (5 Steps) -->
         <div class="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3 mb-6 shadow-md backdrop-blur-xs">
             <div class="grid grid-cols-5 gap-2 text-center text-xs">
-                <a href="<?php echo \\$currentStep > 1 ? '?step=1' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo \\$currentStep === 1 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : (\\$currentStep > 1 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
+                <a href="<?php echo $currentStep > 1 ? '?step=1' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo $currentStep === 1 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : ($currentStep > 1 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
                     <div class="text-[10px] font-mono">STEP 1</div>
                     <div class="truncate">Requirements</div>
                 </a>
-                <a href="<?php echo \\$currentStep > 2 ? '?step=2' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo \\$currentStep === 2 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : (\\$currentStep > 2 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
+                <a href="<?php echo $currentStep > 2 ? '?step=2' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo $currentStep === 2 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : ($currentStep > 2 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
                     <div class="text-[10px] font-mono">STEP 2</div>
                     <div class="truncate">Database</div>
                 </a>
-                <a href="<?php echo \\$currentStep > 3 ? '?step=3' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo \\$currentStep === 3 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : (\\$currentStep > 3 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
+                <a href="<?php echo $currentStep > 3 ? '?step=3' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo $currentStep === 3 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : ($currentStep > 3 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
                     <div class="text-[10px] font-mono">STEP 3</div>
                     <div class="truncate">AD LDAP</div>
                 </a>
-                <a href="<?php echo \\$currentStep > 4 ? '?step=4' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo \\$currentStep === 4 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : (\\$currentStep > 4 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
+                <a href="<?php echo $currentStep > 4 ? '?step=4' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo $currentStep === 4 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : ($currentStep > 4 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
                     <div class="text-[10px] font-mono">STEP 4</div>
                     <div class="truncate">Exchange EOP</div>
                 </a>
-                <div class="py-2 px-1 rounded-xl transition <?php echo \\$currentStep === 5 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : 'text-slate-500'; ?>">
+                <div class="py-2 px-1 rounded-xl transition <?php echo $currentStep === 5 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : 'text-slate-500'; ?>">
                     <div class="text-[10px] font-mono">STEP 5</div>
                     <div class="truncate">Review &amp; Lock</div>
                 </div>
@@ -3263,15 +3263,15 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <!-- Alert Notification -->
-        <?php if (\\$error): ?>
+        <?php if ($error): ?>
             <div class="mb-6 p-4 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-200 text-xs flex items-center gap-3">
                 <svg class="w-5 h-5 text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                <span><?php echo htmlspecialchars(\\$error); ?></span>
+                <span><?php echo htmlspecialchars($error); ?></span>
             </div>
         <?php endif; ?>
 
         <!-- STEP 1: System Requirements & Prerequisites -->
-        <?php if (\\$currentStep === 1): ?>
+        <?php if ($currentStep === 1): ?>
             <div class="bg-slate-800/90 rounded-2xl border border-slate-700/80 p-6 sm:p-8 shadow-xl">
                 <div class="flex items-center gap-3 pb-5 border-b border-slate-700 mb-6">
                     <div class="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center font-bold">1</div>
@@ -3284,36 +3284,36 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                 <div class="space-y-3 mb-8">
                     <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 flex items-center justify-between text-xs font-mono">
                         <div><span class="text-white font-sans font-semibold">PHP Version:</span> <?php echo PHP_VERSION; ?> (Required &ge; 8.1)</div>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo \\$phpVersionOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'; ?>">
-                            <?php echo \\$phpVersionOk ? 'PASSED' : 'UPGRADE REQUIRED'; ?>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo $phpVersionOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'; ?>">
+                            <?php echo $phpVersionOk ? 'PASSED' : 'UPGRADE REQUIRED'; ?>
                         </span>
                     </div>
 
                     <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 flex items-center justify-between text-xs font-mono">
                         <div><span class="text-white font-sans font-semibold">PDO MySQL / MariaDB (pdo_mysql):</span> Required for SQL storage</div>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo \\$pdoOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'; ?>">
-                            <?php echo \\$pdoOk ? 'INSTALLED' : 'MISSING (apt install php-mysql)'; ?>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo $pdoOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'; ?>">
+                            <?php echo $pdoOk ? 'INSTALLED' : 'MISSING (apt install php-mysql)'; ?>
                         </span>
                     </div>
 
                     <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 flex items-center justify-between text-xs font-mono">
                         <div><span class="text-white font-sans font-semibold">OpenSSL Extension (openssl):</span> AES-256 certificate encryption</div>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo \\$opensslOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'; ?>">
-                            <?php echo \\$opensslOk ? 'INSTALLED' : 'MISSING (apt install php-openssl)'; ?>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo $opensslOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'; ?>">
+                            <?php echo $opensslOk ? 'INSTALLED' : 'MISSING (apt install php-openssl)'; ?>
                         </span>
                     </div>
 
                     <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 flex items-center justify-between text-xs font-mono">
                         <div><span class="text-white font-sans font-semibold">LDAP Extension (php-ldap):</span> Active Directory bind authentication</div>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo \\$ldapExtOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'; ?>">
-                            <?php echo \\$ldapExtOk ? 'INSTALLED' : 'RECOMMENDED (apt install php-ldap)'; ?>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo $ldapExtOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'; ?>">
+                            <?php echo $ldapExtOk ? 'INSTALLED' : 'RECOMMENDED (apt install php-ldap)'; ?>
                         </span>
                     </div>
 
                     <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-700/60 flex items-center justify-between text-xs font-mono">
                         <div><span class="text-white font-sans font-semibold">Directory Write Permission:</span> Create installed.lock &amp; config</div>
-                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo \\$writableOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'; ?>">
-                            <?php echo \\$writableOk ? 'WRITABLE' : 'READ-ONLY (chown -R www-data)'; ?>
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold <?php echo $writableOk ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'; ?>">
+                            <?php echo $writableOk ? 'WRITABLE' : 'READ-ONLY (chown -R www-data)'; ?>
                         </span>
                     </div>
                 </div>
@@ -3330,7 +3330,7 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <!-- STEP 2: Database Connection & Schema Population -->
-        <?php if (\\$currentStep === 2): ?>
+        <?php if ($currentStep === 2): ?>
             <div class="bg-slate-800/90 rounded-2xl border border-slate-700/80 p-6 sm:p-8 shadow-xl">
                 <div class="flex items-center gap-3 pb-5 border-b border-slate-700 mb-6">
                     <div class="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold">2</div>
@@ -3346,28 +3346,28 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <div class="sm:col-span-2">
                             <label class="block text-xs font-medium text-slate-300 mb-1">MariaDB Server Host</label>
-                            <input type="text" name="db_host" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['db']['host'] ?? '127.0.0.1'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="db_host" value="<?php echo htmlspecialchars($_SESSION['wizard']['db']['host'] ?? '127.0.0.1'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Port</label>
-                            <input type="number" name="db_port" value="<?php echo htmlspecialchars((string)(\\$_SESSION['wizard']['db']['port'] ?? 3306)); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="number" name="db_port" value="<?php echo htmlspecialchars((string)($_SESSION['wizard']['db']['port'] ?? 3306)); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                     </div>
 
                     <div>
                         <label class="block text-xs font-medium text-slate-300 mb-1">Database Name</label>
-                        <input type="text" name="db_name" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['db']['name'] ?? 'eop_antispam_db'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                        <input type="text" name="db_name" value="<?php echo htmlspecialchars($_SESSION['wizard']['db']['name'] ?? 'eop_antispam_db'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         <p class="text-[11px] text-slate-400 mt-1">If this database does not exist, the installer will attempt to create it automatically.</p>
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Database Username</label>
-                            <input type="text" name="db_user" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['db']['user'] ?? 'eop_user'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="db_user" value="<?php echo htmlspecialchars($_SESSION['wizard']['db']['user'] ?? 'eop_user'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Database Password</label>
-                            <input type="password" name="db_pass" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['db']['pass'] ?? ''); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="password" name="db_pass" value="<?php echo htmlspecialchars($_SESSION['wizard']['db']['pass'] ?? ''); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                     </div>
 
@@ -3397,7 +3397,7 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <!-- STEP 3: Active Directory / OpenLDAP Configuration -->
-        <?php if (\\$currentStep === 3): ?>
+        <?php if ($currentStep === 3): ?>
             <div class="bg-slate-800/90 rounded-2xl border border-slate-700/80 p-6 sm:p-8 shadow-xl">
                 <div class="flex items-center gap-3 pb-5 border-b border-slate-700 mb-6">
                     <div class="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center font-bold">3</div>
@@ -3413,11 +3413,11 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <div class="sm:col-span-2">
                             <label class="block text-xs font-medium text-slate-300 mb-1">Domain Controller Host / IP</label>
-                            <input type="text" name="ldap_host" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['host'] ?? '192.168.10.10'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="ldap_host" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['host'] ?? '192.168.10.10'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Port</label>
-                            <input type="number" name="ldap_port" value="<?php echo htmlspecialchars((string)(\\$_SESSION['wizard']['ldap']['port'] ?? 389)); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="number" name="ldap_port" value="<?php echo htmlspecialchars((string)($_SESSION['wizard']['ldap']['port'] ?? 389)); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                     </div>
 
@@ -3425,35 +3425,35 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Protocol</label>
                             <select name="ldap_protocol" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
-                                <option value="ldap" <?php echo (\\$_SESSION['wizard']['ldap']['protocol'] ?? '') === 'ldap' ? 'selected' : ''; ?>>LDAP (Plain Port 389)</option>
-                                <option value="ldaps" <?php echo (\\$_SESSION['wizard']['ldap']['protocol'] ?? '') === 'ldaps' ? 'selected' : ''; ?>>LDAPS (SSL Port 636)</option>
-                                <option value="starttls" <?php echo (\\$_SESSION['wizard']['ldap']['protocol'] ?? '') === 'starttls' ? 'selected' : ''; ?>>StartTLS (Port 389)</option>
+                                <option value="ldap" <?php echo ($_SESSION['wizard']['ldap']['protocol'] ?? '') === 'ldap' ? 'selected' : ''; ?>>LDAP (Plain Port 389)</option>
+                                <option value="ldaps" <?php echo ($_SESSION['wizard']['ldap']['protocol'] ?? '') === 'ldaps' ? 'selected' : ''; ?>>LDAPS (SSL Port 636)</option>
+                                <option value="starttls" <?php echo ($_SESSION['wizard']['ldap']['protocol'] ?? '') === 'starttls' ? 'selected' : ''; ?>>StartTLS (Port 389)</option>
                             </select>
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">NetBIOS Domain</label>
-                            <input type="text" name="ldap_domain" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['domain'] ?? 'CORP'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="ldap_domain" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['domain'] ?? 'CORP'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                     </div>
 
                     <div>
                         <label class="block text-xs font-medium text-slate-300 mb-1">Base Distinguished Name (Base DN)</label>
-                        <input type="text" name="ldap_base_dn" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['base_dn'] ?? 'DC=corp,DC=example,DC=com'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                        <input type="text" name="ldap_base_dn" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['base_dn'] ?? 'DC=corp,DC=example,DC=com'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                     </div>
 
                     <div>
                         <label class="block text-xs font-medium text-slate-300 mb-1">Authorized Group DN (Members Allowed to Manage EOP)</label>
-                        <input type="text" name="ldap_group_dn" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['group_dn'] ?? 'CN=EOP-SpamAdmins,OU=Security Groups,DC=corp,DC=example,DC=com'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                        <input type="text" name="ldap_group_dn" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['group_dn'] ?? 'CN=EOP-SpamAdmins,OU=Security Groups,DC=corp,DC=example,DC=com'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Service Account Bind DN (Optional)</label>
-                            <input type="text" name="ldap_bind_dn" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['bind_dn'] ?? 'CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com'); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="ldap_bind_dn" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['bind_dn'] ?? 'CN=svc-eop-web,OU=Service Accounts,DC=corp,DC=example,DC=com'); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Service Account Password</label>
-                            <input type="password" name="ldap_bind_pass" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['bind_pass'] ?? ''); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="password" name="ldap_bind_pass" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['bind_pass'] ?? ''); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                     </div>
 
@@ -3467,7 +3467,7 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <p class="text-[11px] text-slate-400">Allows administrator login directly through MariaDB if the Active Directory Domain Controller connection fails or is offline.</p>
                             </div>
                             <label class="flex items-center space-x-2 text-xs text-slate-300 font-semibold cursor-pointer">
-                                <input type="checkbox" name="fallback_admin_enabled" value="1" <?php echo (!isset(\\$_SESSION['wizard']['ldap']['fallback_admin_enabled']) || !empty(\\$_SESSION['wizard']['ldap']['fallback_admin_enabled'])) ? 'checked' : ''; ?> class="w-4 h-4 text-amber-500 rounded border-slate-700">
+                                <input type="checkbox" name="fallback_admin_enabled" value="1" <?php echo (!isset($_SESSION['wizard']['ldap']['fallback_admin_enabled']) || !empty($_SESSION['wizard']['ldap']['fallback_admin_enabled'])) ? 'checked' : ''; ?> class="w-4 h-4 text-amber-500 rounded border-slate-700">
                                 <span>Enable Fallback Account</span>
                             </label>
                         </div>
@@ -3475,11 +3475,11 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800">
                             <div>
                                 <label class="block text-xs font-medium text-slate-300 mb-1">Fallback Username</label>
-                                <input type="text" name="fallback_admin_username" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['fallback_admin_username'] ?? 'eopadmin'); ?>" placeholder="eopadmin" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
+                                <input type="text" name="fallback_admin_username" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_username'] ?? 'eopadmin'); ?>" placeholder="eopadmin" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
                             </div>
                             <div>
                                 <label class="block text-xs font-medium text-slate-300 mb-1">Fallback Password</label>
-                                <input type="password" name="fallback_admin_password" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['fallback_admin_password'] ?? 'Emergency#Admin2026!'); ?>" placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
+                                <input type="password" name="fallback_admin_password" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_password'] ?? 'Emergency#Admin2026!'); ?>" placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
                             </div>
                         </div>
 
@@ -3508,7 +3508,7 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <!-- STEP 4: Exchange Online Protection (EOP) Setup -->
-        <?php if (\\$currentStep === 4): ?>
+        <?php if ($currentStep === 4): ?>
             <div class="bg-slate-800/90 rounded-2xl border border-slate-700/80 p-6 sm:p-8 shadow-xl">
                 <div class="flex items-center gap-3 pb-5 border-b border-slate-700 mb-6">
                     <div class="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold">4</div>
@@ -3523,39 +3523,39 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     <div>
                         <label class="block text-xs font-medium text-slate-300 mb-1">Microsoft 365 Tenant ID (GUID)</label>
-                        <input type="text" name="tenant_id" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['eop']['tenant_id'] ?? '72f988bf-86f1-41af-91ab-2d7cd011db47'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                        <input type="text" name="tenant_id" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['tenant_id'] ?? '72f988bf-86f1-41af-91ab-2d7cd011db47'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">App Registration Client ID</label>
-                            <input type="text" name="client_id" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['eop']['client_id'] ?? '3a2b4c5d-6e7f-8a9b-0c1d-2e3f4a5b6c7d'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="client_id" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['client_id'] ?? '3a2b4c5d-6e7f-8a9b-0c1d-2e3f4a5b6c7d'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Certificate SHA-1 Thumbprint</label>
-                            <input type="text" name="thumbprint" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['eop']['thumbprint'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="thumbprint" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['thumbprint'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Organization Domain</label>
-                            <input type="text" name="org_domain" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['eop']['org_domain'] ?? 'corp.example.com'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="org_domain" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['org_domain'] ?? 'corp.example.com'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-slate-300 mb-1">Default Anti-Spam Policy Name</label>
-                            <input type="text" name="policy" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['eop']['policy'] ?? 'Default Inbound Anti-Spam Policy'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <input type="text" name="policy" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['policy'] ?? 'Default Inbound Anti-Spam Policy'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
                     </div>
 
                     <div>
                         <label class="block text-xs font-medium text-slate-300 mb-1">RSA Certificate Private Key (PEM format)</label>
-                        <textarea name="private_key" rows="4" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500"><?php echo htmlspecialchars(\\$_SESSION['wizard']['eop']['private_key'] ?? "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g\n-----END RSA PRIVATE KEY-----"); ?></textarea>
+                        <textarea name="private_key" rows="4" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500"><?php echo htmlspecialchars($_SESSION['wizard']['eop']['private_key'] ?? "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g\n-----END RSA PRIVATE KEY-----"); ?></textarea>
                     </div>
 
                     <div>
                         <label class="block text-xs font-medium text-slate-300 mb-1">Private Key AES-256 Passphrase</label>
-                        <input type="password" name="passphrase" value="<?php echo htmlspecialchars(\\$_SESSION['wizard']['eop']['passphrase'] ?? 'P@ssphrase_Secure_Cert_2026'); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                        <input type="password" name="passphrase" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['passphrase'] ?? 'P@ssphrase_Secure_Cert_2026'); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         <p class="text-[11px] text-slate-400 mt-1">This key is encrypted in MariaDB via AES-256-GCM authenticated cipher.</p>
                     </div>
 
@@ -3570,7 +3570,7 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <!-- STEP 5: Review & Final Lock Routine -->
-        <?php if (\\$currentStep === 5): ?>
+        <?php if ($currentStep === 5): ?>
             <div class="bg-slate-800/90 rounded-2xl border border-slate-700/80 p-6 sm:p-8 shadow-xl">
                 <div class="flex items-center gap-3 pb-5 border-b border-slate-700 mb-6">
                     <div class="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold">5</div>
@@ -3587,8 +3587,8 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                             <span>MariaDB Database</span>
                         </div>
                         <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
-                            <div>Host: <?php echo htmlspecialchars(\\$_SESSION['wizard']['db']['host'] ?? '127.0.0.1'); ?></div>
-                            <div>Database: <?php echo htmlspecialchars(\\$_SESSION['wizard']['db']['name'] ?? 'eop_antispam_db'); ?></div>
+                            <div>Host: <?php echo htmlspecialchars($_SESSION['wizard']['db']['host'] ?? '127.0.0.1'); ?></div>
+                            <div>Database: <?php echo htmlspecialchars($_SESSION['wizard']['db']['name'] ?? 'eop_antispam_db'); ?></div>
                             <div class="text-emerald-400 font-sans font-semibold mt-1">9 Tables Populated</div>
                         </div>
                     </div>
@@ -3598,8 +3598,8 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                             <span>Active Directory LDAP</span>
                         </div>
                         <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
-                            <div>Host: <?php echo htmlspecialchars(\\$_SESSION['wizard']['ldap']['host'] ?? '192.168.10.10'); ?></div>
-                            <div>Proto: <?php echo strtoupper(htmlspecialchars(\\$_SESSION['wizard']['ldap']['protocol'] ?? 'ldap')); ?></div>
+                            <div>Host: <?php echo htmlspecialchars($_SESSION['wizard']['ldap']['host'] ?? '192.168.10.10'); ?></div>
+                            <div>Proto: <?php echo strtoupper(htmlspecialchars($_SESSION['wizard']['ldap']['protocol'] ?? 'ldap')); ?></div>
                             <div class="text-emerald-400 font-sans font-semibold mt-1">Group Check Active</div>
                         </div>
                     </div>
@@ -3609,8 +3609,8 @@ if (\\$_SERVER['REQUEST_METHOD'] === 'POST') {
                             <span>Exchange Online EOP</span>
                         </div>
                         <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
-                            <div>Tenant: <?php echo substr(htmlspecialchars(\\$_SESSION['wizard']['eop']['tenant_id'] ?? ''), 0, 8); ?>...</div>
-                            <div>Thumb: <?php echo substr(htmlspecialchars(\\$_SESSION['wizard']['eop']['thumbprint'] ?? ''), 0, 8); ?>...</div>
+                            <div>Tenant: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['tenant_id'] ?? ''), 0, 8); ?>...</div>
+                            <div>Thumb: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['thumbprint'] ?? ''), 0, 8); ?>...</div>
                             <div class="text-emerald-400 font-sans font-semibold mt-1">AES-256 Key Stored</div>
                         </div>
                     </div>
