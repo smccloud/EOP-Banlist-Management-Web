@@ -370,17 +370,37 @@ if ($action === 'trigger_sync') {
         // Log the whole thing before it is truncated for storage. The flash is
         // capped at 300 chars and the audit row at 200, and on a push the banner
         // then fills with the header and certificate thumbprint, so the part that
-        // names the actual failure lands past the cut. PHP's error_log goes to
-        // stderr, which php-fpm forwards to the NGINX error log, so this is where
-        // the full output is recoverable.
-        error_log(sprintf(
-            "[EOP Sync Failure] action=%s policy=%s exit=%d user=%s ip=%s\n--- BEGIN FULL OUTPUT ---\n%s\n--- END FULL OUTPUT ---",
+        // names the actual failure lands past the cut.
+        $syncLogPath = __DIR__ . '/logs/sync-failures.log';
+        $syncLogDir = dirname($syncLogPath);
+        if (!is_dir($syncLogDir)) {
+            @mkdir($syncLogDir, 0750, true);
+        }
+        $syncLogEntry = sprintf(
+            "[%s] [EOP Sync Failure] action=%s policy=%s exit=%d user=%s ip=%s\n--- BEGIN FULL OUTPUT ---\n%s\n--- END FULL OUTPUT ---\n",
+            date('Y-m-d H:i:s'),
             $actionParam,
             $policyName,
             $returnVar,
             $user['username'] ?? 'unknown',
             $_SERVER['REMOTE_ADDR'] ?? 'unknown',
             $logMsg
+        );
+        // error_log() with no type goes to the SAPI logger, which PHP-FPM forwards
+        // to NGINX as "FastCGI sent in stderr". That relay is cut at about 1024
+        // bytes, so the banner always survived and the guard message that follows
+        // it was always lost, which is why the real cause of a failed push could
+        // not be read from the NGINX log. Writing to our own file has no such
+        // limit. Keep the SAPI call too, for operators who watch the error log.
+        @file_put_contents($syncLogPath, $syncLogEntry, FILE_APPEND | LOCK_EX);
+        error_log(sprintf(
+            "[EOP Sync Failure] action=%s policy=%s exit=%d user=%s ip=%s. Full output: %s",
+            $actionParam,
+            $policyName,
+            $returnVar,
+            $user['username'] ?? 'unknown',
+            $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            $syncLogPath
         ));
         Database::updatePolicySyncStatus($policyName, 'failed', $logMsg);
         // details is TEXT, so there is room to keep the part of the output that
@@ -389,7 +409,7 @@ if ($action === 'trigger_sync') {
         // Show the tail, not the head. The script prints its banner, the policy
         // name and the certificate thumbprint before doing any work, so a prefix
         // is always the least useful part of the output; the guard that refused
-        // the push is at the end. The full output is in the NGINX error log.
+        // the push is at the end. The full output is in logs/sync-failures.log.
         $flashTail = strlen($logMsg) > 600 ? substr($logMsg, -600) : $logMsg;
         setFlash('warning', "Sync script exited with code {$returnVar}. End of output: " . htmlspecialchars($flashTail));
     }
