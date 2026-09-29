@@ -80,6 +80,184 @@ function eopNormalizeThumbprint(mixed $input): string {
     return strtoupper(bin2hex($str));
 }
 
+/**
+ * Canonicalises an Exchange Online object GUID to the lowercase 8-4-4-4-12 form.
+ * Accepts the wrappers administrators habitually paste around a GUID ({...},
+ * urn:uuid:..., stray spaces or separators) and returns '' when the value is not
+ * a GUID at all, so callers can use the result as the "is this a GUID?" test.
+ */
+function eopNormalizeGuid(mixed $input): string {
+    $raw = strtolower(trim((string)$input));
+    if ($raw === '') {
+        return '';
+    }
+    $raw = preg_replace('/^urn:uuid:/', '', $raw);
+    $raw = trim($raw, '{}');
+    $hex = preg_replace('/[^0-9a-f]/', '', $raw);
+    if (!is_string($hex) || strlen($hex) !== 32 || !ctype_xdigit($hex)) {
+        return '';
+    }
+    return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4)
+        . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20, 12);
+}
+
+/**
+ * Cleans whatever was typed into the policy field down to an identifier Exchange
+ * accepts. Get-HostedContentFilterPolicy -Identity takes a display name or a
+ * GUID, so a GUID is canonicalised (so the same policy pasted three different
+ * ways compares equal) while a name keeps its exact spelling, which is what the
+ * rest of the application uses as the policy key.
+ */
+function eopNormalizePolicyIdentifier(string $raw): string {
+    $value = trim($raw);
+    $value = trim(trim($value), "\"'");
+    $value = trim($value);
+    $guid = eopNormalizeGuid($value);
+    return $guid !== '' ? $guid : $value;
+}
+
+/**
+ * Resolves a policy name or GUID against Exchange Online and reports both the
+ * canonical name and the policy GUID.
+ *
+ * Returns one of three statuses:
+ *   verified    - Exchange returned the policy; name/guid are populated.
+ *   not_found   - Exchange was reached and definitively has no such policy.
+ *                 This is the only lookup outcome that should block the wizard.
+ *   unavailable - the lookup could not be carried out (no pwsh, no module, no
+ *                 route to the tenant, bad credentials). A deployment box that
+ *                 cannot reach Exchange must still be configurable, so this is
+ *                 surfaced as a warning rather than an error.
+ */
+function eopLookupPolicyOnExchange(string $identifier, array $ctx): array {
+    $result = [
+        'status'  => 'unavailable',
+        'name'    => '',
+        'guid'    => eopNormalizeGuid($identifier),
+        'message' => '',
+    ];
+
+    if ($identifier === '') {
+        $result['message'] = 'No policy identifier was supplied.';
+        return $result;
+    }
+
+    $pwsh = trim((string)@shell_exec('command -v pwsh 2>/dev/null'));
+    if ($pwsh === '') {
+        $result['message'] = 'PowerShell 7 (pwsh) is not installed, so the ExchangeOnlineManagement lookup cannot run.';
+        return $result;
+    }
+
+    $pfxPath = (string)($ctx['pfx_path'] ?? '');
+    if ($pfxPath === '' || !is_readable($pfxPath)) {
+        $result['message'] = 'The uploaded PKCS#12 bundle is not readable, so certificate authentication to Exchange Online is not possible.';
+        return $result;
+    }
+
+    // Everything the PowerShell side needs travels through the environment and
+    // never through the command string, so a policy name containing quotes (or a
+    // GUID) cannot break out of the argument.
+    $outFile = tempnam(sys_get_temp_dir(), 'eoplookup_');
+    if ($outFile === false) {
+        $result['message'] = 'Could not create a temporary file for the Exchange Online lookup response.';
+        return $result;
+    }
+
+    putenv('EOP_LOOKUP_CLIENT_ID=' . (string)($ctx['client_id'] ?? ''));
+    putenv('EOP_LOOKUP_ORGANIZATION=' . (string)($ctx['org_domain'] ?? ''));
+    putenv('EOP_LOOKUP_THUMBPRINT=' . (string)($ctx['thumbprint'] ?? ''));
+    putenv('EOP_LOOKUP_PFX_PATH=' . $pfxPath);
+    putenv('EOP_LOOKUP_PFX_PASSWORD=' . (string)($ctx['pfx_password'] ?? ''));
+    putenv('EOP_LOOKUP_POLICY=' . $identifier);
+    putenv('EOP_LOOKUP_OUTPUT=' . $outFile);
+
+    $ps = <<<'POWERSHELL'
+$ErrorActionPreference = 'Stop'
+$payload = $null
+try {
+    Import-Module ExchangeOnlineManagement -ErrorAction Stop
+
+    $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+    if ([string]::IsNullOrEmpty($env:EOP_LOOKUP_PFX_PASSWORD)) {
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($env:EOP_LOOKUP_PFX_PATH, '', $flags)
+    } else {
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($env:EOP_LOOKUP_PFX_PATH, $env:EOP_LOOKUP_PFX_PASSWORD, $flags)
+    }
+
+    Connect-ExchangeOnline -Certificate $cert -AppId $env:EOP_LOOKUP_CLIENT_ID -Organization $env:EOP_LOOKUP_ORGANIZATION -ErrorAction Stop
+
+    try {
+        $policy = Get-HostedContentFilterPolicy -Identity $env:EOP_LOOKUP_POLICY -ErrorAction Stop
+    } catch {
+        $reason = $_.Exception.Message
+        if ($reason -match "couldn't be found|cannot be found|could not be found|does not exist|not found") {
+            $payload = [ordered]@{ status = 'not_found'; message = $reason }
+        } else {
+            $payload = [ordered]@{ status = 'unavailable'; message = $reason }
+        }
+    }
+
+    if ($null -eq $payload) {
+        $guid = ''
+        if ($policy.Guid) { $guid = $policy.Guid.ToString() }
+        elseif ($policy.Identity) { $guid = $policy.Identity.ToString() }
+        $payload = [ordered]@{
+            status = 'verified'
+            name   = [string]$policy.Name
+            guid   = $guid
+        }
+    }
+} catch {
+    $payload = [ordered]@{ status = 'unavailable'; message = $_.Exception.Message }
+}
+
+try { $payload | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:EOP_LOOKUP_OUTPUT -Encoding UTF8 } catch { }
+Disconnect-ExchangeOnline -ErrorAction SilentlyContinue | Out-Null
+POWERSHELL;
+
+    // The decrypted passphrase and the lookup transcript are removed on every exit
+    // path, including a fatal error part-way through the lookup.
+    register_shutdown_function(static function () use ($outFile): void {
+        if (is_file($outFile)) {
+            @unlink($outFile);
+        }
+    });
+
+    $shell = sprintf(
+        '%s -NoProfile -NonInteractive -Command %s 2>&1',
+        escapeshellarg($pwsh),
+        escapeshellarg($ps)
+    );
+
+    $output = [];
+    $exitCode = 0;
+    @exec($shell, $output, $exitCode);
+
+    // Set-Content -Encoding UTF8 emits a BOM under Windows PowerShell 5.1, which
+    // json_decode rejects, so the byte-order mark is stripped defensively.
+    $bom = chr(0xEF) . chr(0xBB) . chr(0xBF);
+    $rawResponse = (string)@file_get_contents($outFile);
+    if (strncmp($rawResponse, $bom, 3) === 0) {
+        $rawResponse = substr($rawResponse, 3);
+    }
+    $decoded = json_decode($rawResponse, true);
+    if (!is_array($decoded) || !isset($decoded['status'])) {
+        $detail = trim(implode(' ', array_slice($output, 0, 3)));
+        $result['message'] = $detail !== ''
+            ? 'The Exchange Online lookup did not return a readable result: ' . $detail
+            : 'The Exchange Online lookup did not return a readable result (exit code ' . $exitCode . ').';
+        return $result;
+    }
+
+    $status = (string)$decoded['status'];
+    $result['status'] = in_array($status, ['verified', 'not_found'], true) ? $status : 'unavailable';
+    $result['name'] = trim((string)($decoded['name'] ?? ''));
+    $result['guid'] = eopNormalizeGuid($decoded['guid'] ?? '') ?: $result['guid'];
+    $result['message'] = trim((string)($decoded['message'] ?? ''));
+
+    return $result;
+}
+
 // Automatically ensure config.php exists on disk
 function ensureConfigPhp(): bool {
     $cfgPath = __DIR__ . '/config.php';
@@ -183,6 +361,9 @@ define('FALLBACK_ADMIN_USERNAME', getenv('FALLBACK_ADMIN_USER') ?: 'eopadmin');
 define('FALLBACK_ADMIN_PASSWORD_HASH', '$2y$12$eopEmergencyAdminFallbackHashPlaceholder2026XyZ');
 
 define('DEFAULT_POLICY_NAME', getenv('EOP_POLICY_NAME') ?: 'Default');
+// Exchange GUID of the policy named above, resolved by the setup wizard when the
+// policy was supplied as a GUID. Empty when it was never confirmed.
+define('DEFAULT_POLICY_GUID', getenv('EOP_POLICY_GUID') ?: '');
 define('APP_TITLE', 'EOP Anti-Spam Policy Manager');
 define('APP_URL', 'https://eop.corp.example.com');
 
@@ -360,6 +541,7 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
     $thumb = eopNormalizeThumbprint($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'));
     $org = $eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com');
     $policy = $eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy');
+    $policyGuid = eopNormalizeGuid($eop['policy_guid'] ?? ($existing['EOP_POLICY_GUID'] ?? ''));
     $masterKey = (defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
         ? AUTH_MASTER_ENCRYPTION_KEY
         : ($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16))));
@@ -416,6 +598,7 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
         'M365_CERT_THUMBPRINT="' . $thumb . '"',
         'M365_ORGANIZATION="' . $org . '"',
         'EOP_POLICY_NAME="' . $policy . '"',
+        'EOP_POLICY_GUID="' . $policyGuid . '"',
         'M365_CLIENT_SECRET="' . ($existing['M365_CLIENT_SECRET'] ?? 'YOUR_AZURE_APP_CLIENT_SECRET') . '"',
         '',
         '# ------------------------------------------------------------------------------',
@@ -491,10 +674,17 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
     $thumb = addslashes(eopNormalizeThumbprint($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80')));
     $org = addslashes($eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com'));
     $policy = addslashes($eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy'));
+    $policyGuid = addslashes(eopNormalizeGuid($eop['policy_guid'] ?? ($existing['EOP_POLICY_GUID'] ?? '')));
     $masterKey = addslashes((defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
         ? AUTH_MASTER_ENCRYPTION_KEY
         : ($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16)))));
     $appUrl = addslashes($existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com')));
+    // The stock description only describes the shipped default. A policy chosen in
+    // the wizard (or resolved from a GUID) gets a neutral label rather than being
+    // mislabelled as the built-in default.
+    $policyDescription = $policy === 'Default Inbound Anti-Spam Policy'
+        ? 'Default Inbound Anti-Spam Policy (Applied to all recipients)'
+        : 'Primary Inbound Anti-Spam Policy (Selected during setup)';
     $dateStr = date('Y-m-d H:i:s');
 
     $cfg = "<?php\n" .
@@ -612,10 +802,13 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
 "define('FALLBACK_ADMIN_USERNAME', eopEnv('FALLBACK_ADMIN_USER', '{$fallbackUser}'));\n" .
 "define('FALLBACK_ADMIN_PASSWORD_HASH', '\$2y\$12\$EmergencyFallbackAdminHash2026SecureBcrypt');\n\n" .
 "define('DEFAULT_POLICY_NAME', eopEnv('EOP_POLICY_NAME', '{$policy}'));\n" .
+"// Exchange GUID of the policy named above, when the setup wizard resolved it.\n" .
+"// Empty when the policy was never confirmed against Exchange Online.\n" .
+"define('DEFAULT_POLICY_GUID', eopEnv('EOP_POLICY_GUID', '{$policyGuid}'));\n" .
 "define('APP_TITLE', 'EOP Anti-Spam Policy Manager');\n" .
 "define('APP_URL', eopEnv('APP_URL', '{$appUrl}'));\n\n" .
 "\$GLOBALS['AVAILABLE_POLICIES'] = [\n" .
-"    '{$policy}' => 'Default Inbound Anti-Spam Policy (Applied to all recipients)',\n" .
+"    '{$policy}' => '{$policyDescription}',\n" .
 "    'Strict Anti-Spam Policy'  => 'Strict Security Baseline (Targeted VIPs & High Value Mailboxes)',\n" .
 "    'Executive Inbound Policy' => 'Custom Executive Mailbox Inbound Filtering',\n" .
 "    'Custom Inbound Filter'    => 'Custom Departmental Filter Policy'\n" .
@@ -637,6 +830,7 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
 
 $error = null;
 $notice = null;
+$warning = null;
 $success = null;
 $dbTestResult = $_SESSION['wizard']['db_test_result'] ?? null;
 $ldapTestResult = $_SESSION['wizard']['ldap_test_result'] ?? null;
@@ -830,13 +1024,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'eop_policies' => "CREATE TABLE IF NOT EXISTS `eop_policies` (
                     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     `policy_name` VARCHAR(255) NOT NULL UNIQUE,
+                    `policy_guid` CHAR(36) NULL,
                     `description` TEXT NULL,
                     `is_default` TINYINT(1) NOT NULL DEFAULT 0,
                     `last_synced_at` DATETIME NULL,
                     `sync_status` ENUM('synced', 'pending', 'failed') NOT NULL DEFAULT 'pending',
                     `sync_message` TEXT NULL,
                     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY `uniq_policy_guid` (`policy_guid`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
                 'eop_ldap_config' => "CREATE TABLE IF NOT EXISTS `eop_ldap_config` (
@@ -1190,11 +1386,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $clientId = trim($_POST['client_id'] ?? '');
         $thumbprint = trim($_POST['thumbprint'] ?? '');
         $orgDomain = trim($_POST['org_domain'] ?? '');
-        $policy = trim($_POST['policy'] ?? 'Default Inbound Anti-Spam Policy');
+        // A policy may be identified by its display name or by its Exchange GUID.
+        // Both are accepted here and normalised to whatever Exchange will take for
+        // -Identity; the distinction is only about how the value is stored.
+        $policy = eopNormalizePolicyIdentifier((string)($_POST['policy'] ?? 'Default Inbound Anti-Spam Policy'));
+        $verifyPolicy = !empty($_POST['verify_policy']);
         $privateKey = '';
         $passphrase = $_POST['passphrase'] ?? '';
         $pkcs12Bundle = '';
         $pkcs12Filename = '';
+        $pkcs12Path = '';
+        $policyLookup = [
+            'status'  => 'skipped',
+            'name'    => '',
+            'guid'    => eopNormalizeGuid($policy),
+            'message' => '',
+        ];
+
+        if ($policy === '') {
+            $error = "Enter the anti-spam policy by its name in Exchange or by its policy GUID.";
+        }
 
         // Only a full PKCS#12 bundle is accepted. A bare PEM private key would
         // produce a record that can never authenticate the scheduled pull, so the
@@ -1215,6 +1426,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $pkcs12Bundle = base64_encode($rawBundle);
                     $pkcs12Filename = basename($upload['name']);
+                    $pkcs12Path = (string)$upload['tmp_name'];
 
                     // The private key column is kept populated from the bundle for
                     // compatibility with anything that still reads the PEM column.
@@ -1246,6 +1458,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "Please provide your Microsoft 365 Tenant ID, Client App ID, and Certificate Thumbprint.";
         }
 
+        // Resolve the policy against Exchange Online. This needs the certificate that
+        // was just uploaded, so it can only run once the PKCS#12 checks above passed.
+        // A definitive "no such policy" from Exchange is a hard stop; a lookup that
+        // could not be carried out at all is only a warning, because a build host
+        // with no route to the tenant still has to be configurable.
+        if (!isset($error) && $verifyPolicy) {
+            $policyLookup = eopLookupPolicyOnExchange($policy, [
+                'tenant_id'    => $tenantId,
+                'client_id'    => $clientId,
+                'thumbprint'   => eopNormalizeThumbprint($thumbprint),
+                'org_domain'   => $orgDomain,
+                'pfx_path'     => $pkcs12Path,
+                'pfx_password' => (string)$passphrase,
+            ]);
+
+            if ($policyLookup['status'] === 'not_found') {
+                $error = "Exchange Online has no hosted content filter policy matching '{$policy}'. Check the name, or paste the policy GUID instead, and try again.";
+            } elseif ($policyLookup['status'] === 'verified') {
+                $resolved = $policyLookup['name'] !== '' ? $policyLookup['name'] : $policy;
+                $policy = $resolved;
+                $notice = "Policy verified on Exchange Online as '{$resolved}'"
+                    . ($policyLookup['guid'] !== '' ? " (GUID {$policyLookup['guid']})." : ".");
+            } else {
+                $warning = "The policy could not be verified against Exchange Online, so it was saved as entered. "
+                    . ($policyLookup['message'] !== '' ? $policyLookup['message'] : 'The lookup did not complete.');
+            }
+        }
+
         if (!isset($error)) {
             $_SESSION['wizard']['eop'] = [
                 'tenant_id' => $tenantId,
@@ -1253,6 +1493,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'thumbprint' => eopNormalizeThumbprint($thumbprint),
                 'org_domain' => $orgDomain,
                 'policy' => $policy,
+                'policy_guid' => $policyLookup['guid'] !== '' ? $policyLookup['guid'] : eopNormalizeGuid($policy),
+                'policy_verified' => $policyLookup['status'] === 'verified',
                 'private_key' => $privateKey,
                 'pkcs12_bundle' => $pkcs12Bundle,
                 'pkcs12_filename' => $pkcs12Filename,
@@ -1316,6 +1558,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':u'  => $ldap['fallback_admin_username'],
                     ':p'  => $pwdHash,
                     ':p2' => $pwdHash
+                ]);
+            }
+
+            // 3c. Promote the policy chosen in Step 4 to the active default. The
+            // eop_policies seed from Step 2 inserts a hard-coded name, so without
+            // this the wizard's policy (which may have been supplied as a GUID and
+            // resolved to a name) would be ignored by Database::getDefaultPolicyName().
+            $finalPolicy = trim((string)($eop['policy'] ?? ''));
+            if ($finalPolicy !== '') {
+                $pdo->exec("UPDATE `eop_policies` SET `is_default` = 0");
+                $policyStmt = $pdo->prepare("INSERT INTO `eop_policies` (`policy_name`, `description`, `is_default`, `sync_status`, `policy_guid`)
+                                             VALUES (:name, :desc, 1, :status, :guid)
+                                             ON DUPLICATE KEY UPDATE `is_default` = 1, `policy_guid` = IF(:guid2 != '', :guid3, `policy_guid`), `sync_status` = :status2, `updated_at` = NOW()");
+                $finalPolicyGuid = eopNormalizeGuid($eop['policy_guid'] ?? '');
+                $finalPolicyStatus = !empty($eop['policy_verified']) ? 'synced' : 'pending';
+                $finalPolicyDesc = 'Primary Inbound Anti-Spam Policy (Selected by the setup wizard)';
+                $policyStmt->execute([
+                    ':name' => $finalPolicy,
+                    ':desc' => $finalPolicyDesc,
+                    ':status' => $finalPolicyStatus,
+                    ':guid' => $finalPolicyGuid !== '' ? $finalPolicyGuid : null,
+                    ':guid2' => $finalPolicyGuid,
+                    ':guid3' => $finalPolicyGuid,
+                    ':status2' => $finalPolicyStatus,
                 ]);
             }
 
@@ -1468,6 +1734,13 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
             <div class="mb-6 p-4 rounded-xl bg-emerald-950/60 border border-emerald-800 text-emerald-200 text-xs flex items-center gap-3">
                 <svg class="w-5 h-5 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 <span><?php echo htmlspecialchars($notice); ?></span>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($warning): ?>
+            <div class="mb-6 p-4 rounded-xl bg-amber-950/60 border border-amber-800 text-amber-200 text-xs flex items-start gap-3">
+                <svg class="w-5 h-5 text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                <span><?php echo htmlspecialchars($warning); ?></span>
             </div>
         <?php endif; ?>
 
@@ -1923,7 +2196,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     <div class="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold">4</div>
                     <div>
                         <h2 class="text-lg font-bold text-white">Exchange Online Protection (EOP) Connection</h2>
-                        <p class="text-slate-400 text-xs">Enter your Microsoft 365 Entra App Registration, Certificate Thumbprint, and RSA Private Key for PowerShell sync.</p>
+                        <p class="text-slate-400 text-xs">Enter your Microsoft 365 Entra App Registration, Certificate Thumbprint, and target anti-spam policy (by name or GUID) for PowerShell sync.</p>
                     </div>
                 </div>
 
@@ -1951,9 +2224,32 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                             <label class="block text-xs font-medium text-slate-300 mb-1">Organization Domain</label>
                             <input type="text" name="org_domain" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['org_domain'] ?? 'corp.example.com'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
                         </div>
-                        <div>
-                            <label class="block text-xs font-medium text-slate-300 mb-1">Default Anti-Spam Policy Name</label>
-                            <input type="text" name="policy" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['policy'] ?? 'Default Inbound Anti-Spam Policy'); ?>" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                        <div class="sm:col-span-2">
+                            <div class="flex items-center justify-between mb-1 gap-2">
+                                <label class="block text-xs font-medium text-slate-300">Default Anti-Spam Policy (Name or GUID)</label>
+                                <span id="policyKindBadge" class="shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-700 text-slate-300 border border-slate-600">Name</span>
+                            </div>
+                            <input type="text" id="policyInput" name="policy" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['policy'] ?? 'Default Inbound Anti-Spam Policy'); ?>" required autocomplete="off" spellcheck="false" placeholder="Default Inbound Anti-Spam Policy or 4c7c8f21-9a3e-4f2b-8d5e-1a2b3c4d5e6f" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
+                            <p class="text-[11px] text-slate-400 mt-1">
+                                Accepts either the policy display name or its Exchange GUID
+                                (<code>Get-HostedContentFilterPolicy</code>). A GUID is canonicalised to lowercase
+                                <code>8-4-4-4-12</code> and, when Exchange verification below succeeds, resolved back to the
+                                policy name &mdash; which is what the rest of the application keys its lists on. The GUID is
+                                stored alongside the name in <code>EOP_POLICY_GUID</code>.
+                            </p>
+                            <label class="mt-2.5 flex items-start gap-2 text-[11px] text-slate-300 cursor-pointer">
+                                <input type="checkbox" name="verify_policy" value="1" <?php echo !isset($_POST['verify_policy_present']) || isset($_POST['verify_policy']) ? 'checked' : ''; ?> class="mt-0.5 w-3.5 h-3.5 rounded bg-slate-900 border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
+                                <span>
+                                    Verify this policy against Exchange Online before continuing.
+                                    <span class="block text-slate-500">
+                                        Connects with the certificate uploaded below and calls
+                                        <code>Get-HostedContentFilterPolicy</code>. A policy Exchange does not recognise is
+                                        rejected; if the lookup cannot run at all (no <code>pwsh</code>, no route to the
+                                        tenant) the value is saved as entered and a warning is shown.
+                                    </span>
+                                </span>
+                            </label>
+                            <input type="hidden" name="verify_policy_present" value="1">
                         </div>
                     </div>
 
@@ -2047,6 +2343,39 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                             <div class="text-emerald-400 font-sans font-semibold mt-1">AES-256 Key Stored</div>
                         </div>
                     </div>
+                </div>
+
+                <!-- Policy Identity Card: which anti-spam policy the sync will target -->
+                <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-700/60 text-xs mb-6">
+                    <div class="font-bold text-cyan-400 mb-1.5 flex items-center justify-between gap-2 flex-wrap">
+                        <span>Anti-Spam Policy Target</span>
+                        <?php if (!empty($_SESSION['wizard']['eop']['policy_verified'])): ?>
+                            <span class="text-emerald-400 font-sans text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800">Verified on Exchange Online</span>
+                        <?php else: ?>
+                            <span class="text-amber-400 font-sans text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-800">Not verified</span>
+                        <?php endif; ?>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-[11px] space-y-0.5 text-slate-300 font-mono">
+                        <div>
+                            <span class="text-slate-500">Name:</span>
+                            <?php echo htmlspecialchars($_SESSION['wizard']['eop']['policy'] ?? '(not set)'); ?>
+                        </div>
+                        <div>
+                            <span class="text-slate-500">GUID:</span>
+                            <?php
+                                $reviewGuid = eopNormalizeGuid($_SESSION['wizard']['eop']['policy_guid'] ?? '');
+                                echo $reviewGuid !== ''
+                                    ? htmlspecialchars($reviewGuid)
+                                    : '<span class="text-slate-500">resolved at first sync</span>';
+                            ?>
+                        </div>
+                    </div>
+                    <p class="text-[11px] text-slate-500 mt-2">
+                        Both forms are accepted in Step 4. When a GUID is supplied and Exchange verification succeeded, it is
+                        resolved to this name before being written to <code>.env</code>, so every policy-keyed list in MariaDB
+                        stays consistent. Without verification the identifier is stored as entered &mdash;
+                        <code>-Identity</code> still accepts either form.
+                    </p>
                 </div>
 
                 <!-- Permanent Lock Warning Notice -->
@@ -2168,6 +2497,35 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
         }
     }
 
+    // Mirrors eopNormalizeGuid() on the server: strips urn:uuid:/braces/separators
+    // and reports whether the policy field holds a GUID rather than a display name.
+    function describePolicyIdentifier(raw) {
+        var value = (raw || '').trim().toLowerCase();
+        if (value === '') return 'empty';
+        value = value.replace(/^urn:uuid:/, '').replace(/^\{|\}$/g, '');
+        var hex = value.replace(/[^0-9a-f]/g, '');
+        if (hex.length === 32 && /^[0-9a-f]+$/.test(hex)) return 'guid';
+        return 'name';
+    }
+
+    function updatePolicyKindIndicator() {
+        var input = document.getElementById('policyInput');
+        var badge = document.getElementById('policyKindBadge');
+        if (!input || !badge) return;
+
+        var kind = describePolicyIdentifier(input.value);
+        if (kind === 'guid') {
+            badge.textContent = 'GUID';
+            badge.className = 'shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-cyan-950/70 text-cyan-300 border border-cyan-800';
+        } else if (kind === 'name') {
+            badge.textContent = 'Name';
+            badge.className = 'shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-700 text-slate-300 border border-slate-600';
+        } else {
+            badge.textContent = 'Required';
+            badge.className = 'shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-950/70 text-rose-300 border border-rose-800';
+        }
+    }
+
     // Attach listeners on load
     document.addEventListener('DOMContentLoaded', function() {
         var passInput = document.getElementById('fallbackAdminPassInput');
@@ -2176,6 +2534,13 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
             passInput.addEventListener('keyup', updatePasswordPolicy);
             passInput.addEventListener('change', updatePasswordPolicy);
             updatePasswordPolicy();
+        }
+
+        var policyInput = document.getElementById('policyInput');
+        if (policyInput) {
+            policyInput.addEventListener('input', updatePolicyKindIndicator);
+            policyInput.addEventListener('change', updatePolicyKindIndicator);
+            updatePolicyKindIndicator();
         }
     });
 

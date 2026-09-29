@@ -18,6 +18,9 @@ export interface AppConfig {
   ldapDomain: string;
 
   defaultPolicyName: string;
+  /** Exchange GUID of the anti-spam policy, resolved by the setup wizard when the
+   *  policy was supplied as a GUID. Empty when it was never confirmed. */
+  defaultPolicyGuid?: string;
   appTitle: string;
   appUrl: string;
   sessionTimeoutMinutes: number;

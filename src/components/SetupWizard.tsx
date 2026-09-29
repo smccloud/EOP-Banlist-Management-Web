@@ -44,6 +44,20 @@ interface SetupWizardProps {
   onOpenConfigPage: () => void;
 }
 
+/**
+ * Canonicalises an Exchange Online object GUID to the lowercase 8-4-4-4-12 form,
+ * mirroring eopNormalizeGuid() in setup.php. Returns null when the value is not a
+ * GUID, which is how the wizard tells a policy name apart from a policy GUID.
+ */
+const normalizePolicyGuid = (raw: string): string | null => {
+  let value = raw.trim().toLowerCase();
+  if (value === '') return null;
+  value = value.replace(/^urn:uuid:/, '').replace(/^\{|\}$/g, '');
+  const hex = value.replace(/[^0-9a-f]/g, '');
+  if (hex.length !== 32 || !/^[0-9a-f]+$/.test(hex)) return null;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
 export const SetupWizard: React.FC<SetupWizardProps> = ({
   config,
   setConfig,
@@ -112,6 +126,16 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
   const [certThumbprint, setCertThumbprint] = useState(config.certificateThumbprint || '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80');
   const [orgDomain, setOrgDomain] = useState(config.organization || 'corp.example.com');
   const [defaultPolicy, setDefaultPolicy] = useState(config.defaultPolicyName || 'Default Inbound Anti-Spam Policy');
+  const [verifyPolicyOnExchange, setVerifyPolicyOnExchange] = useState(true);
+  // A policy is identified either by its display name or by its Exchange GUID.
+  // Both forms are valid for Get-HostedContentFilterPolicy -Identity, so whatever
+  // is in the field is what gets written to EOP_POLICY_NAME; when that field holds
+  // a GUID it is also recorded in EOP_POLICY_GUID. This mirrors the path setup.php
+  // takes when its Exchange lookup cannot run — a real install with a reachable
+  // tenant resolves the GUID to the display name before writing it.
+  const policyGuid = normalizePolicyGuid(defaultPolicy);
+  const policyIdentifier = defaultPolicy.trim();
+  const defaultPolicyGuid = policyGuid ?? config.defaultPolicyGuid ?? '';
   const [privateKeyPem, setPrivateKeyPem] = useState(config.privateKeyPem || `-----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g
 2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z1A2B3C4D5E6F7G8H9I0J1K2L3M
@@ -215,7 +239,8 @@ M365_TENANT_ID="${tenantId}"
 M365_CLIENT_ID="${clientId}"
 M365_CERT_THUMBPRINT="${certThumbprint}"
 M365_ORGANIZATION="${orgDomain}"
-EOP_POLICY_NAME="${defaultPolicy}"
+EOP_POLICY_NAME="${policyIdentifier}"
+EOP_POLICY_GUID="${defaultPolicyGuid}"
 M365_CLIENT_SECRET="YOUR_AZURE_APP_CLIENT_SECRET"
 
 # Application Security
@@ -335,12 +360,15 @@ define('FALLBACK_ADMIN_ENABLED', ${fallbackAdminEnabled ? 'true' : 'false'});
 define('FALLBACK_ADMIN_USERNAME', eopEnv('FALLBACK_ADMIN_USER', '${fallbackAdminUsername || 'eopadmin'}'));
 define('FALLBACK_ADMIN_PASSWORD_HASH', '$2y$12$EmergencyFallbackAdminHash2026SecureBcrypt');
 
-define('DEFAULT_POLICY_NAME', eopEnv('EOP_POLICY_NAME', '${defaultPolicy}'));
+define('DEFAULT_POLICY_NAME', eopEnv('EOP_POLICY_NAME', '${policyIdentifier}'));
+// Exchange GUID of the policy named above, resolved by the setup wizard when the
+// policy was supplied as a GUID. Empty when it was never confirmed.
+define('DEFAULT_POLICY_GUID', eopEnv('EOP_POLICY_GUID', '${defaultPolicyGuid}'));
 define('APP_TITLE', 'EOP Anti-Spam Policy Manager');
 define('APP_URL', eopEnv('APP_URL', 'https://${orgDomain ? `eop.${orgDomain}` : 'eop.corp.example.com'}'));
 
 $GLOBALS['AVAILABLE_POLICIES'] = [
-    '${defaultPolicy}' => 'Default Inbound Anti-Spam Policy (Applied to all recipients)',
+    '${policyIdentifier}' => '${policyIdentifier === 'Default Inbound Anti-Spam Policy' ? 'Default Inbound Anti-Spam Policy (Applied to all recipients)' : 'Primary Inbound Anti-Spam Policy (Selected during setup)'}',
     'Strict Anti-Spam Policy'  => 'Strict Security Baseline (Targeted VIPs & High Value Mailboxes)',
     'Executive Inbound Policy' => 'Custom Executive Mailbox Inbound Filtering',
     'Custom Inbound Filter'    => 'Custom Departmental Filter Policy'
@@ -515,11 +543,21 @@ define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');
     setTimeout(() => {
       setEopTesting(false);
       const isPkcs12 = Boolean(pkcs12Bundle || pkcs12FileName);
+
+      const policyLine = !verifyPolicyOnExchange
+        ? `Policy "${policyIdentifier}" will be saved as entered; Exchange verification is switched off.`
+        : policyGuid
+          ? `Policy GUID ${policyGuid} recognised and queued for Get-HostedContentFilterPolicy lookup on deployment. A real setup.php run with a reachable tenant resolves it to the display name before writing EOP_POLICY_NAME.`
+          : `Policy "${policyIdentifier}" recognised as a policy name and queued for Get-HostedContentFilterPolicy lookup on deployment.`;
+
       setEopTestResult({
         success: true,
-        message: isPkcs12
-          ? 'PKCS#12 certificate bundle opened & validated! AES-256-GCM passphrase decrypted successfully.'
-          : 'OpenSSL private key validated and AES-256-GCM passphrase decrypted successfully!',
+        message: [
+          isPkcs12
+            ? 'PKCS#12 certificate bundle opened & validated! AES-256-GCM passphrase decrypted successfully.'
+            : 'OpenSSL private key validated and AES-256-GCM passphrase decrypted successfully!',
+          policyLine,
+        ].join(' '),
         keyType: isPkcs12
           ? 'PKCS#12 (.pfx/.p12) Certificate & Private Key Bundle'
           : 'RSA 2048-bit Private Key (PKCS#1)'
@@ -531,7 +569,8 @@ define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');
         clientId,
         certificateThumbprint: certThumbprint,
         organization: orgDomain,
-        defaultPolicyName: defaultPolicy,
+        defaultPolicyName: policyIdentifier,
+        defaultPolicyGuid,
         privateKeyPem,
         pkcs12Bundle,
         pkcs12Filename: pkcs12FileName || undefined,
@@ -572,7 +611,8 @@ define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');
         clientId,
         certificateThumbprint: certThumbprint,
         organization: orgDomain,
-        defaultPolicyName: defaultPolicy,
+        defaultPolicyName: policyIdentifier,
+        defaultPolicyGuid,
         privateKeyPem,
         pkcs12Bundle,
         pkcs12Filename: pkcs12FileName || undefined,
@@ -1650,6 +1690,59 @@ $cert.Thumbprint`}
                   placeholder="corp.example.com"
                   className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
                 />
+              </div>
+
+              <div className="sm:col-span-2">
+                <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300">
+                    Default Anti-Spam Policy (Name or GUID):
+                  </label>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      policyGuid
+                        ? 'bg-cyan-950/70 text-cyan-300 border-cyan-800'
+                        : defaultPolicy.trim() === ''
+                          ? 'bg-rose-950/70 text-rose-300 border-rose-800'
+                          : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600'
+                    }`}
+                  >
+                    {policyGuid ? 'GUID' : defaultPolicy.trim() === '' ? 'Required' : 'Name'}
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  value={defaultPolicy}
+                  onChange={(e) => setDefaultPolicy(e.target.value)}
+                  placeholder="Default Inbound Anti-Spam Policy or 4c7c8f21-9a3e-4f2b-8d5e-1a2b3c4d5e6f"
+                  spellCheck={false}
+                  autoComplete="off"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-amber-500 focus:outline-hidden"
+                />
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">
+                  Accepts either the policy display name or its Exchange GUID
+                  (<code className="font-mono">Get-HostedContentFilterPolicy</code>); both are valid for
+                  <code className="font-mono"> -Identity</code>. A GUID is canonicalised to lowercase
+                  <code className="font-mono"> 8-4-4-4-12</code> and written to
+                  <code className="font-mono"> EOP_POLICY_GUID</code> alongside
+                  <code className="font-mono"> EOP_POLICY_NAME</code>.
+                </p>
+                <label className="mt-2.5 flex items-start gap-2 text-[11px] text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={verifyPolicyOnExchange}
+                    onChange={(e) => setVerifyPolicyOnExchange(e.target.checked)}
+                    className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-0"
+                  />
+                  <span>
+                    Verify this policy against Exchange Online before continuing.
+                    <span className="block text-slate-500 dark:text-slate-400">
+                      Connects with the certificate uploaded below and calls
+                      <code className="font-mono"> Get-HostedContentFilterPolicy</code>. A policy Exchange does not recognise is
+                      rejected; if the lookup cannot run at all (no <code className="font-mono">pwsh</code>, no route to the
+                      tenant) the value is saved as entered and a warning is shown.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div className="sm:col-span-2">

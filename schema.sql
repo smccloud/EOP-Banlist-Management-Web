@@ -102,13 +102,43 @@ CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_audit_log` (
 CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_policies` (
     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `policy_name` VARCHAR(128) NOT NULL UNIQUE,
+    `policy_guid` CHAR(36) NULL,
     `description` VARCHAR(255) NULL,
     `last_synced_at` DATETIME NULL,
     `sync_status` ENUM('synced', 'pending', 'failed') NOT NULL DEFAULT 'pending',
     `sync_message` TEXT NULL,
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uniq_policy_guid` (`policy_guid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Existing installations created before policy GUIDs were supported. Both steps
+-- are guarded so re-running this script against an up-to-date database is a no-op.
+SET @policy_guid_col := (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = 'eop_antispam_db'
+      AND TABLE_NAME = 'eop_policies'
+      AND COLUMN_NAME = 'policy_guid'
+);
+SET @policy_guid_sql := IF(@policy_guid_col = 0,
+    'ALTER TABLE `eop_antispam_db`.`eop_policies` ADD COLUMN `policy_guid` CHAR(36) NULL AFTER `policy_name`',
+    'DO 0');
+PREPARE policy_guid_stmt FROM @policy_guid_sql;
+EXECUTE policy_guid_stmt;
+DEALLOCATE PREPARE policy_guid_stmt;
+
+SET @policy_guid_key := (
+    SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = 'eop_antispam_db'
+      AND TABLE_NAME = 'eop_policies'
+      AND INDEX_NAME = 'uniq_policy_guid'
+);
+SET @policy_guid_key_sql := IF(@policy_guid_key = 0,
+    'ALTER TABLE `eop_antispam_db`.`eop_policies` ADD UNIQUE KEY `uniq_policy_guid` (`policy_guid`)',
+    'DO 0');
+PREPARE policy_guid_key_stmt FROM @policy_guid_key_sql;
+EXECUTE policy_guid_key_stmt;
+DEALLOCATE PREPARE policy_guid_key_stmt;
 
 -- Insert default policies
 INSERT INTO `eop_antispam_db`.`eop_policies` (`policy_name`, `description`, `sync_status`)

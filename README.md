@@ -334,10 +334,13 @@ The application features an automated initial setup routine (`setup.php`) execut
    - Configures the mandatory **Authorized Group DN** with live bind testing.
    - Optionally configures the emergency non-LDAP fallback administrator.
 4. **Step 4 - Microsoft 365 Exchange Online Protection (EOP)**:
-   - Configures Tenant ID, Client App ID, Certificate Thumbprint, Organization Domain, target anti-spam policy name, and RSA Private Key with AES-256-GCM encrypted passphrase.
+   - Configures Tenant ID, Client App ID, Certificate Thumbprint, Organization Domain, and the target anti-spam policy.
+   - **Policy identified by name *or* GUID**: a single field accepts either the policy display name or its Exchange GUID (`Get-HostedContentFilterPolicy -Identity` takes either). A GUID is canonicalised to lowercase `8-4-4-4-12` and the field shows a live *Name* / *GUID* badge as you type.
+   - **Exchange verification** (on by default): connects with the uploaded PKCS#12 bundle and calls `Get-HostedContentFilterPolicy`. A policy Exchange does not recognise is rejected outright; a GUID that resolves is written back as the policy display name so every policy-keyed list in MariaDB stays consistent. If the lookup cannot run at all (no `pwsh`, no route to the tenant) the identifier is saved as entered and an amber warning is shown. Untick the checkbox to skip the lookup entirely.
    - **Upload Private Key Button**: Directly upload `.pem`, `.key`, or `.txt` private key files with client-side parsing and server-side multipart support, or paste the PEM block manually.
 5. **Step 5 - Review & Permanent Security Lock**:
-   - Summarizes all configured parameters.
+   - Summarizes all configured parameters, including the resolved policy name, its GUID, and whether it was verified against Exchange Online.
+   - Promotes the Step 4 policy to the active default in `eop_policies` (`is_default = 1`).
    - Writes `config.php` and creates a filesystem lock file (`installed.lock`) alongside the MariaDB `eop_setup_lock` table.
    - **Strict Re-Run Prevention**: Subsequent requests to `setup.php` immediately respond with **403 Forbidden** and cannot be re-executed without deliberate root-level intervention.
 
@@ -515,7 +518,7 @@ The application queries Active Directory connection parameters directly from the
 ### Scheduled Cron Daemon (Pull-Only)
 
 To prevent unintended overwrites of Microsoft 365 policies, the background cron daemon (`cron-sync.php --action=pull`) is **strictly pull-only**:
-- It targets the **default policy configured in the Setup Wizard** (stored in `.env` as `EOP_POLICY_NAME` and in `config.php` as `DEFAULT_POLICY_NAME`).
+- It targets the **default policy configured in the Setup Wizard** (stored in `.env` as `EOP_POLICY_NAME` and in `config.php` as `DEFAULT_POLICY_NAME`, with the resolved GUID alongside it in `EOP_POLICY_GUID` / `DEFAULT_POLICY_GUID`). `-Identity` accepts either the name or the GUID.
 - It pulls remote entries from Microsoft 365 using `Get-HostedContentFilterPolicy`.
 - Discovered entries are reconciled into the corresponding MariaDB tables without modifying Exchange Online.
 
@@ -1006,7 +1009,8 @@ Key application parameters:
 | `tenant_id` | `eop_auth_config` (DB) | Microsoft 365 / Azure AD Tenant ID | GUID |
 | `client_id` | `eop_auth_config` (DB) | App Registration Client ID | GUID |
 | `certificate_thumbprint` | `eop_auth_config` (DB) | App-Only Certificate Thumbprint | SHA1 Hex |
-| `DEFAULT_POLICY_NAME` | `config.php` | Target Exchange Online Protection policy | `Default` |
+| `DEFAULT_POLICY_NAME` | `config.php` | Target Exchange Online Protection policy (name, or GUID when unverified) | `Default` |
+| `DEFAULT_POLICY_GUID` | `config.php` | Exchange GUID of the policy, resolved by the setup wizard. Empty when never confirmed | *(empty)* |
 | `SESSION_TIMEOUT` | `config.php` | Seconds before inactivity timeout | `3600` (60 min) |
 
 ---
