@@ -23,6 +23,25 @@ $policyName = $_POST['policy'] ?? ($_GET['policy'] ?? DEFAULT_POLICY_NAME);
 
 // CSRF validation
 $token = $_POST['csrf_token'] ?? ($_GET['csrf'] ?? '');
+
+// Read-only probe used by the UI to notice that a scheduled sync changed the
+// data. It runs before the CSRF gate because it is a GET made by the page itself
+// on a timer, and it reveals nothing beyond a change token: no entries, no
+// policy details, and the caller is still authenticated by requireAuth above.
+//
+// It is safe without a CSRF token for the same reason a cache validator is: it
+// only ever echoes a derived fingerprint, so a cross-site request cannot read
+// application data or change anything. It also sends no-store so an intermediary
+// cannot answer with a stale token and suppress a needed refresh.
+if ($action === 'data_version') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+    echo json_encode(['version' => Database::getDataVersion($policyName)]);
+    exit;
+}
+
 if (!verifyCsrfToken($token)) {
     setFlash('error', 'CSRF validation failed. Action aborted.');
     header("Location: index.php?policy=" . urlencode($policyName) . "&tab=" . urlencode($listType));

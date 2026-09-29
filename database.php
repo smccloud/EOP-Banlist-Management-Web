@@ -699,6 +699,57 @@ class Database {
     }
 
     /**
+     * A cheap fingerprint of everything the UI renders for a policy, used to
+     * detect that a scheduled sync changed the data underneath an open page.
+     *
+     * The counts and the max(updated_at) are aggregate-only, so this stays cheap
+     * even with a large table, and it moves for every mutation the cron performs:
+     * a pull inserts, a reconcile deletes, both bump updated_at. The policy row
+     * contributes its own sync metadata, so a run that changed nothing but its
+     * status still registers.
+     *
+     * Returns a string rather than a bool so the caller can compare tokens
+     * directly and skip the reload when nothing moved.
+     */
+    public static function getDataVersion(string $policyName): string {
+        try {
+            $pdo = self::getConnection();
+            $parts = [];
+
+            foreach (['allowed_senders', 'blocked_senders', 'allowed_domains', 'blocked_domains'] as $listType) {
+                $table = self::getTableName($listType);
+                $stmt = $pdo->prepare("SELECT COUNT(*) AS c, COALESCE(MAX(updated_at), '') AS u FROM {$table} WHERE policy_name = :policy");
+                $stmt->execute([':policy' => $policyName]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+                $parts[] = $listType . ':' . ($row['c'] ?? 0) . ':' . ($row['u'] ?? '');
+            }
+
+            $polStmt = $pdo->prepare("SELECT COALESCE(last_synced_at, '') AS l, COALESCE(sync_status, '') AS s, COALESCE(updated_at, '') AS u
+                                      FROM " . TABLE_POLICIES . " WHERE policy_name = :policy");
+            $polStmt->execute([':policy' => $policyName]);
+            $pol = $polStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            $parts[] = 'policy:' . ($pol['l'] ?? '') . ':' . ($pol['s'] ?? '') . ':' . ($pol['u'] ?? '');
+
+            // Outstanding deletion confirmations are rendered as a banner, so a
+            // change there has to count as a change too.
+            try {
+                self::ensureConfirmationsTable();
+                $confStmt = $pdo->prepare("SELECT COUNT(*) AS c FROM " . self::confirmationsTable() . "
+                                           WHERE policy_name = :policy AND status IN ('pending', 'accepted', 'denied')");
+                $confStmt->execute([':policy' => $policyName]);
+                $parts[] = 'confirm:' . (int)$confStmt->fetchColumn();
+            } catch (Throwable $e) {
+                $parts[] = 'confirm:na';
+            }
+
+            return implode('|', $parts);
+        } catch (Throwable $e) {
+            error_log('[Database::getDataVersion Error] ' . $e->getMessage());
+            return 'error';
+        }
+    }
+
+    /**
      * Normalised local values for a policy/list, in the same casing the
      * reconciler compares against.
      */

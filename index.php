@@ -106,6 +106,14 @@ if (in_array($currentTab, ['allowed_senders', 'blocked_senders', 'allowed_domain
 }
 
 $totalPages = max(1, (int)ceil($totalItems / $limit));
+
+// Fingerprint of what this render is based on. The page polls the data_version
+// action and reloads when the token moves, so a cron run that changed the lists
+// shows up without the administrator having to reload by hand. A reload is the
+// only update path here because the page is server-rendered, and the no-store
+// headers above guarantee the reloaded response is rebuilt from MariaDB rather
+// than from any cache.
+$dataVersion = Database::getDataVersion($selectedPolicy);
 ?>
 <!DOCTYPE html>
 <html lang="en" class="scroll-smooth">
@@ -1742,6 +1750,75 @@ support@vendor.org, Vendor notification" : "partner.com, Main vendor domain
             updateThemeUI();
         }
         updateThemeUI();
+    </script>
+
+    <!-- Scheduled-sync change detection -->
+    <script>
+        (function () {
+            // Reloading discards whatever is in the form, so only do it when the
+            // page is genuinely idle: nothing focused, no dialog open, no file
+            // chosen. An administrator who is mid-edit keeps their input, and the
+            // next poll after they navigate picks the change up anyway.
+            const isBusy = function () {
+                const active = document.activeElement;
+                if (active) {
+                    const tag = (active.tagName || '').toLowerCase();
+                    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+                        return true;
+                    }
+                }
+                // The dialogs are the fixed overlays that toggle a `hidden`
+                // class, e.g. #quickAddModal / #bulkAddModal / #smartSortModal.
+                if (document.querySelector('.fixed.inset-0:not(.hidden)')) {
+                    return true;
+                }
+                if (document.querySelector('input[type="file"]')?.files?.length) {
+                    return true;
+                }
+                return false;
+            };
+
+            let baseline = <?= json_encode($dataVersion) ?>;
+            let inFlight = false;
+
+            const check = async function () {
+                // A backgrounded tab gets throttled anyway, and a hidden tab is
+                // not being read, so polling it just spends server time.
+                if (document.hidden || inFlight) return;
+                inFlight = true;
+                try {
+                    const res = await fetch(
+                        'actions.php?action=data_version&policy=' + encodeURIComponent(<?= json_encode($selectedPolicy) ?>),
+                        { headers: { 'Accept': 'application/json' }, cache: 'no-store', credentials: 'same-origin' }
+                    );
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if (typeof data.version === 'string' && data.version !== baseline) {
+                        if (!isBusy()) {
+                            window.location.reload();
+                            return;
+                        }
+                        // Defer rather than drop it, so a change made mid-edit is
+                        // still picked up once the field is left alone.
+                        baseline = data.version;
+                    }
+                } catch (e) {
+                    // A failed probe must never disturb the page; the next tick retries.
+                } finally {
+                    inFlight = false;
+                }
+            };
+
+            // 60s keeps a scheduled run visible within a poll interval without
+            // making every open tab a meaningful load on the database.
+            setInterval(check, 60000);
+
+            // Coming back to a tab that was hidden for a while should reflect the
+            // current state immediately rather than after the remainder of the tick.
+            document.addEventListener('visibilitychange', function () {
+                if (!document.hidden) check();
+            });
+        })();
     </script>
 </body>
 </html>
