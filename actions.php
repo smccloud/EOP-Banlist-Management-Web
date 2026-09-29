@@ -367,9 +367,31 @@ if ($action === 'trigger_sync') {
             setFlash('success', "Exchange Online push completed successfully! Pushed {$totPushed} entries across all 4 tables to Microsoft 365: " . count($pushedAllowedSenders) . " Allowed Senders, " . count($pushedBlockedSenders) . " Blocked Senders, " . count($pushedAllowedDomains) . " Allowed Domains, " . count($pushedBlockedDomains) . " Blocked Domains for policy '{$policyName}'.");
         }
     } else {
+        // Log the whole thing before it is truncated for storage. The flash is
+        // capped at 300 chars and the audit row at 200, and on a push the banner
+        // then fills with the header and certificate thumbprint, so the part that
+        // names the actual failure lands past the cut. PHP's error_log goes to
+        // stderr, which php-fpm forwards to the NGINX error log, so this is where
+        // the full output is recoverable.
+        error_log(sprintf(
+            "[EOP Sync Failure] action=%s policy=%s exit=%d user=%s ip=%s\n--- BEGIN FULL OUTPUT ---\n%s\n--- END FULL OUTPUT ---",
+            $actionParam,
+            $policyName,
+            $returnVar,
+            $user['username'] ?? 'unknown',
+            $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            $logMsg
+        ));
         Database::updatePolicySyncStatus($policyName, 'failed', $logMsg);
-        Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', "Sync ({$actionParam}) failed: " . substr($logMsg, 0, 200), $user['username']);
-        setFlash('warning', "Sync script exited with code {$returnVar}. Output: " . htmlspecialchars(substr($logMsg, 0, 300)));
+        // details is TEXT, so there is room to keep the part of the output that
+        // names the failure rather than the banner that precedes it.
+        Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', "Sync ({$actionParam}) failed: " . substr($logMsg, -2000), $user['username']);
+        // Show the tail, not the head. The script prints its banner, the policy
+        // name and the certificate thumbprint before doing any work, so a prefix
+        // is always the least useful part of the output; the guard that refused
+        // the push is at the end. The full output is in the NGINX error log.
+        $flashTail = strlen($logMsg) > 600 ? substr($logMsg, -600) : $logMsg;
+        setFlash('warning', "Sync script exited with code {$returnVar}. End of output: " . htmlspecialchars($flashTail));
     }
 
     header("Location: index.php?policy=" . urlencode($policyName) . "&tab=sync_center");
