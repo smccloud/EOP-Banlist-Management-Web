@@ -432,12 +432,27 @@ class Database {
 
         $delete = $pdo->prepare("DELETE FROM {$table} WHERE id = :id AND policy_name = :policy");
         $removed = [];
+        $notRemoved = [];
         foreach ($localRows as $row) {
             $normalized = strtolower(trim((string)$row['item_value']));
             if (!isset($remote[$normalized])) {
                 $delete->execute([':id' => (int)$row['id'], ':policy' => $policyName]);
-                $removed[] = $row['item_value'];
+                // Only count what the database actually removed. Previously every row
+                // present in $localRows was reported as deleted whether or not the
+                // DELETE matched, so a row that was already gone produced a "removed"
+                // count that the table then contradicted.
+                if ($delete->rowCount() > 0) {
+                    $removed[] = $row['item_value'];
+                } else {
+                    $notRemoved[] = $row['item_value'];
+                }
             }
+        }
+
+        if ($notRemoved) {
+            // Surfaced rather than swallowed: a non-zero count here means the local
+            // table and the reconciler disagree, which is worth seeing in the cron log.
+            self::logAudit('SYNC', $listType, $policyName, count($notRemoved) . ' items', 'Absent from Exchange Online but the delete matched no row: ' . implode(', ', array_slice($notRemoved, 0, 25)), $actor);
         }
 
         if ($removed) {
@@ -455,6 +470,7 @@ class Database {
             'unchanged' => count($localRows) - count($removed),
             'errors'    => $insertResult['errors'],
             'removed_values' => $removed,
+            'not_removed_values' => $notRemoved,
         ];
     }
 
