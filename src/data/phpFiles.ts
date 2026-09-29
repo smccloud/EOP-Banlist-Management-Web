@@ -4029,7 +4029,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                 </a>
                 <a href="<?php echo $currentStep > 3 ? '?step=3' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo $currentStep === 3 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : ($currentStep > 3 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
                     <div class="text-[10px] font-mono">STEP 3</div>
-                    <div class="truncate">AD LDAP</div>
+                    <div class="truncate">AD/LDAP</div>
                 </a>
                 <a href="<?php echo $currentStep > 4 ? '?step=4' : '#'; ?>" class="py-2 px-1 rounded-xl transition <?php echo $currentStep === 4 ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40' : ($currentStep > 4 ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-500'); ?>">
                     <div class="text-[10px] font-mono">STEP 4</div>

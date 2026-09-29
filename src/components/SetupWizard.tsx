@@ -724,7 +724,7 @@ define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');
           {[
             { step: 1, label: 'Welcome & Prereqs', icon: ShieldCheck },
             { step: 2, label: 'Database & Schema', icon: Database },
-            { step: 3, label: 'AD LDAP Auth', icon: UserCheck },
+            { step: 3, label: 'AD/LDAP Auth', icon: UserCheck },
             { step: 4, label: 'Exchange Online', icon: Key },
             { step: 5, label: 'Finalize & Lock', icon: Lock },
           ].map(({ step, label, icon: Icon }) => (
@@ -1893,7 +1893,7 @@ $cert.Thumbprint`}
 
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
                   <div className="font-sans font-bold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-1">
-                    <UserCheck className="w-3.5 h-3.5" /> AD LDAP &amp; Fallback
+                    <UserCheck className="w-3.5 h-3.5" /> AD/LDAP &amp; Fallback
                   </div>
                   <div className="text-[11px] space-y-0.5 text-slate-600 dark:text-slate-300">
                     <div>Host: {ldapHost}:{ldapPort}</div>
