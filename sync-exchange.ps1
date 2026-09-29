@@ -44,8 +44,15 @@ if ([string]::IsNullOrWhiteSpace($DbName))  { $DbName = [string]$env:EOP_DB_NAME
 if ([string]::IsNullOrWhiteSpace($DbUser))  { $DbUser = [string]$env:EOP_DB_USER }
 if ([string]::IsNullOrWhiteSpace($DbPass))  { $DbPass = [string]$env:EOP_DB_PASS }
 
+# Build marker. Bump this whenever the behaviour of this script changes, and check
+# it against the repository when diagnosing a failure. A stale copy on the server
+# has silently disabled the fail-closed push guards before, and the symptom looked
+# like a data problem rather than a deployment problem.
+$ScriptBuild = '2026-09-29-failclosed-1'
+
 Write-Host "=========================================================="
 Write-Host "EOP Anti-Spam Sync: Policy='$PolicyName' | Action=$Action"
+Write-Host "Script build: $ScriptBuild"
 if ($Action -eq "Pull") {
     Write-Host "CRON MODE: PULL ONLY (Exchange Online -> MariaDB)" -ForegroundColor Yellow
     Write-Host "Cron job will only pull changes from EOP; local entries are NOT pushed." -ForegroundColor Yellow
