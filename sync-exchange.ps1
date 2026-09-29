@@ -67,43 +67,58 @@ try {
 
 Write-Host "Certificate Thumbprint: $certThumbprint (App: $clientId, Tenant: $tenantId, Org: $organization)" -ForegroundColor Cyan
 
-# Adds every non-blank leaf under $Item to $Sink, recursing through nested
-# collections. Exchange Online returns these policy properties as single-level
-# string lists, but the cmdlet's return shape is not guaranteed across module
-# versions, and a nested list serialises to an array-of-arrays that the PHP side
-# cannot reconcile.
-function Add-StringLeaves {
-    param($Item, [System.Collections.Generic.List[string]]$Sink)
-
-    if ($null -eq $Item) { return }
-
-    if ($Item -is [string]) {
-        if (-not [string]::IsNullOrWhiteSpace($Item)) { $Sink.Add($Item.Trim()) }
-        return
-    }
-
-    if ($Item -is [System.Collections.IDictionary]) {
-        foreach ($key in $Item.Keys) { Add-StringLeaves -Item $Item[$key] -Sink $Sink }
-        return
-    }
-
-    if ($Item -is [System.Collections.IEnumerable]) {
-        foreach ($child in $Item) { Add-StringLeaves -Item $child -Sink $Sink }
-        return
-    }
-
-    # Non-string scalars (numbers, booleans) are not valid list entries.
-}
-
-# Returns a flat, all-string array regardless of the shape handed back. The
-# leading comma stops PowerShell from unrolling a single-element array on return,
-# which would otherwise serialise a one-entry list as a bare JSON string instead
-# of a one-element array.
+# Returns a flat, all-string array regardless of the shape handed back.
+#
+# Exchange Online returns these policy properties as single-level string lists,
+# but the exact shape is not guaranteed across ExchangeOnlineManagement module
+# versions, and both failure modes are destructive downstream:
+#   * A one-element array unrolls on return and serialises as a bare JSON string
+#     instead of a one-element array, so the leading comma below is required.
+#   * A nested collection serialises as an array-of-arrays. The PHP reconciler
+#     casts each element to string, which yields the literal "Array" for every
+#     entry, collapsing the whole list to one key and making every local row look
+#     absent from Exchange Online.
+#
+# A queue is used rather than recursion, and the accumulator is a local variable
+# rather than a typed parameter: PowerShell can bind a strongly-typed
+# parameterised argument as a copy, which would discard every Add() call.
 function Get-FlatStringArray {
     param($Values)
-    $sink = [System.Collections.Generic.List[string]]::new()
-    Add-StringLeaves -Item $Values -Sink $sink
-    return , $sink.ToArray()
+
+    $flat = [System.Collections.Generic.List[string]]::new()
+    $queue = [System.Collections.Generic.Queue[object]]::new()
+    if ($null -ne $Values) {
+        $queue.Enqueue($Values)
+    }
+
+    while ($queue.Count -gt 0) {
+        $item = $queue.Dequeue()
+
+        if ($null -eq $item) { continue }
+
+        if ($item -is [string]) {
+            $text = ([string]$item).Trim()
+            if ($text -ne '') { $flat.Add($text) }
+            continue
+        }
+
+        if ($item -is [System.Collections.IDictionary]) {
+            foreach ($key in $item.Keys) { $queue.Enqueue($item[$key]) }
+            continue
+        }
+
+        if ($item -is [System.Collections.IEnumerable]) {
+            foreach ($child in $item) { $queue.Enqueue($child) }
+            continue
+        }
+
+        # Any other leaf is coerced rather than discarded, so an unexpected
+        # return type degrades to a string instead of emptying the list.
+        $text = ([string]$item).Trim()
+        if ($text -ne '') { $flat.Add($text) }
+    }
+
+    return , $flat.ToArray()
 }
 
 function Connect-EopExchangeOnline {
