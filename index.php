@@ -15,14 +15,16 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/functions.php';
 
-// If database is not configured or core tables are not initialized yet, redirect to setup wizard
-if (!Database::isConfigured()) {
-    header('Location: setup.php');
-    exit;
-}
-if (!Database::isInitialized()) {
-    header('Location: setup.php?step=2');
-    exit;
+// If system is already installed and locked, do not redirect to setup.php
+if (!file_exists(__DIR__ . '/installed.lock')) {
+    if (!Database::isConfigured()) {
+        header('Location: setup.php');
+        exit;
+    }
+    if (!Database::isInitialized()) {
+        header('Location: setup.php?step=2');
+        exit;
+    }
 }
 
 $user = requireAuth();

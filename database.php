@@ -60,10 +60,16 @@ class Database {
                 return false;
             }
             $targetTable = defined('TABLE_ALLOWED_SENDERS') ? TABLE_ALLOWED_SENDERS : 'eop_allowed_senders';
-            $check = $pdo->query("SHOW TABLES LIKE '{$targetTable}'");
-            return ($check && $check->rowCount() > 0);
+            $stmt = $pdo->query("SELECT 1 FROM `{$targetTable}` LIMIT 1");
+            return ($stmt !== false);
         } catch (Throwable $e) {
-            return false;
+            try {
+                $targetTable = defined('TABLE_ALLOWED_SENDERS') ? TABLE_ALLOWED_SENDERS : 'eop_allowed_senders';
+                $check = $pdo->query("SHOW TABLES LIKE " . $pdo->quote($targetTable));
+                return ($check && $check->fetchColumn() !== false);
+            } catch (Throwable $ex) {
+                return false;
+            }
         }
     }
 
@@ -72,7 +78,7 @@ class Database {
      */
     public static function getConnection(bool $dieOnError = true): ?PDO {
         if (!self::isConfigured()) {
-            if (php_sapi_name() !== 'cli' && !headers_sent()) {
+            if (php_sapi_name() !== 'cli' && !headers_sent() && !file_exists(__DIR__ . '/installed.lock')) {
                 header('Location: setup.php');
                 exit;
             }

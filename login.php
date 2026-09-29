@@ -16,14 +16,16 @@ require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/ldap.php';
 require_once __DIR__ . '/functions.php';
 
-// If database is not configured or core tables are not initialized yet, redirect to setup wizard
-if (!Database::isConfigured()) {
-    header('Location: setup.php');
-    exit;
-}
-if (!Database::isInitialized()) {
-    header('Location: setup.php?step=2');
-    exit;
+// If system is already installed and locked, do not redirect to setup.php (which is locked with 403)
+if (!file_exists(__DIR__ . '/installed.lock')) {
+    if (!Database::isConfigured()) {
+        header('Location: setup.php');
+        exit;
+    }
+    if (!Database::isInitialized()) {
+        header('Location: setup.php?step=2');
+        exit;
+    }
 }
 
 // Redirect if already logged in
@@ -33,6 +35,13 @@ if (!empty($_SESSION['user'])) {
 }
 
 $error = null;
+if (file_exists(__DIR__ . '/installed.lock')) {
+    if (!Database::isConfigured()) {
+        $error = 'MariaDB is not configured. Please check DB_HOST and DB_NAME in .env or config.php.';
+    } elseif (!Database::isInitialized()) {
+        $error = 'Could not connect to MariaDB or verify schema tables. Check database credentials in .env.';
+    }
+}
 $timeoutMsg = isset($_GET['msg']) && $_GET['msg'] === 'timeout';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
