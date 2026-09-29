@@ -5748,7 +5748,7 @@ The application includes a standard page-by-page setup wizard that runs during f
    - Supports **nested/recursive Active Directory groups** using LDAP matching rule OID \`1.2.840.113556.1.4.1941\` (\`LDAP_MATCHING_RULE_IN_CHAIN\`).
 
 4. **Exchange Online Protection Certificate Sync Engine (Cron Pull-Only vs Manual Push All)**:
-   - **Scheduled Cron Daemon (Pull Only)**: The Linux crontab runner (\`cron-sync.php --action=pull\`) is strictly limited to pulling changes from Exchange Online into MariaDB via \`Get-HostedContentFilterPolicy\`. It **never pushes** or overwrites Microsoft 365 automatically:
+   - **Scheduled Cron Daemon (Pull Only)**: The Linux crontab runner (\`cron-sync.php --action=pull\`) targets the **default policy configured in the Setup Wizard** (\`${cfg.defaultPolicyName}\`) and is strictly limited to pulling changes from Exchange Online into MariaDB via \`Get-HostedContentFilterPolicy\`. It **never pushes** or overwrites Microsoft 365 automatically:
      \`\`\`powershell
      # Scheduled Cron: Pull remote changes from Microsoft 365 into MariaDB
      Get-HostedContentFilterPolicy -Identity "${cfg.defaultPolicyName}"

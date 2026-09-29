@@ -73,6 +73,96 @@ function Get-NonEmptyArray {
     return @($Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 }
 
+function Connect-EopExchangeOnline {
+    param (
+        [string]$AppId,
+        [string]$Thumbprint,
+        [string]$Organization,
+        [string]$PfxFile,
+        [string]$PfxSecret
+    )
+
+    $cert = $null
+
+    # 1. Cross-platform .NET loading of PKCS#12 certificate (Debian Linux & Windows compatible)
+    # Does not rely on Windows-only Import-PfxCertificate cmdlet or Windows-specific Cert:\ drive
+    if (-not [string]::IsNullOrWhiteSpace($PfxFile) -and (Test-Path -LiteralPath $PfxFile)) {
+        Write-Host "Loading PKCS#12 certificate from '$PfxFile'..."
+        try {
+            $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+            if ([string]::IsNullOrEmpty($PfxSecret)) {
+                $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($PfxFile, "", $keyFlags)
+            } else {
+                $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($PfxFile, $PfxSecret, $keyFlags)
+            }
+            Write-Host "Certificate loaded successfully: Subject='$($cert.Subject)', Thumbprint='$($cert.Thumbprint)'" -ForegroundColor Cyan
+        } catch {
+            Write-Warning "Could not instantiate X509Certificate2 from $PfxFile: $($_.Exception.Message)"
+        }
+
+        # 2. Register in CurrentUser X509 store via cross-platform .NET API
+        if ($null -ne $cert) {
+            try {
+                $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+                    [System.Security.Cryptography.X509Certificates.StoreName]::My,
+                    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+                )
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $store.Add($cert)
+                $store.Close()
+                Write-Host "Certificate registered in CurrentUser X509 store."
+            } catch {
+                # Store registration is optional when passing -Certificate object directly
+            }
+        }
+    }
+
+    Write-Host "Connecting to Exchange Online (AppId: $AppId, Organization: $Organization)..."
+    $connected = $false
+    $connectErrors = @()
+
+    # Method 1: Pass [X509Certificate2] object directly (-Certificate parameter)
+    if ($null -ne $cert) {
+        try {
+            Write-Host "Attempting Connect-ExchangeOnline with -Certificate object..."
+            Connect-ExchangeOnline -Certificate $cert -AppId $AppId -Organization $Organization -ErrorAction Stop
+            $connected = $true
+        } catch {
+            $connectErrors += "Method 1 (-Certificate): $($_.Exception.Message)"
+        }
+    }
+
+    # Method 2: Pass certificate file path + SecureString password
+    if (-not $connected -and -not [string]::IsNullOrWhiteSpace($PfxFile) -and (Test-Path -LiteralPath $PfxFile)) {
+        try {
+            Write-Host "Attempting Connect-ExchangeOnline with -CertificateFilePath..."
+            $secPwd = ConvertTo-SecureString -String ($PfxSecret ?? "") -AsPlainText -Force
+            Connect-ExchangeOnline -CertificateFilePath $PfxFile -CertificatePassword $secPwd -AppId $AppId -Organization $Organization -ErrorAction Stop
+            $connected = $true
+        } catch {
+            $connectErrors += "Method 2 (-CertificateFilePath): $($_.Exception.Message)"
+        }
+    }
+
+    # Method 3: Connect with -CertificateThumbprint (requires cert in store)
+    if (-not $connected -and -not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+        try {
+            Write-Host "Attempting Connect-ExchangeOnline with -CertificateThumbprint ($Thumbprint)..."
+            Connect-ExchangeOnline -AppId $AppId -CertificateThumbprint $Thumbprint -Organization $Organization -ErrorAction Stop
+            $connected = $true
+        } catch {
+            $connectErrors += "Method 3 (-CertificateThumbprint): $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $connected) {
+        Write-Error "Connect-ExchangeOnline failed on all authentication methods: $($connectErrors -join ' | ')"
+        exit 1
+    }
+
+    Write-Host "Successfully connected to Exchange Online." -ForegroundColor Green
+}
+
 if ($Action -eq "Pull") {
     # --------------------------------------------------------------------------
     # CRON JOB ACTION: PULL ONLY from EOP (Get-HostedContentFilterPolicy)
@@ -91,24 +181,8 @@ if ($Action -eq "Pull") {
         exit 1
     }
 
-    Write-Host "[CRON PULL] Importing certificate into the current user store..."
-    $securePassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
-    $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistLocalMachine `
-              -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
-    try {
-        Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -KeyStorageFlags $keyFlags | Out-Null
-    } catch {
-        Write-Error "Import-PfxCertificate failed: $($_.Exception.Message)"
-        exit 1
-    }
-
-    Write-Host "[CRON PULL] Connecting to Exchange Online via Connect-ExchangeOnline..."
-    try {
-        Connect-ExchangeOnline -AppId $clientId -CertificateThumbprint $certThumbprint -Organization $organization -ErrorAction Stop
-    } catch {
-        Write-Error "Connect-ExchangeOnline failed: $($_.Exception.Message)"
-        exit 1
-    }
+    # Connect to Exchange Online using cross-platform .NET certificate authentication
+    Connect-EopExchangeOnline -AppId $clientId -Thumbprint $certThumbprint -Organization $organization -PfxFile $pfxPath -PfxSecret $pfxPassword
 
     Write-Host "[CRON PULL] Querying policy '$PolicyName' via Get-HostedContentFilterPolicy..."
     try {
@@ -171,7 +245,7 @@ if ($Action -eq "Pull") {
 
     Write-Host "Executing Manual Admin Push to EOP via Set-HostedContentFilterPolicy..."
     try {
-        Connect-ExchangeOnline -AppId $clientId -CertificateThumbprint $certThumbprint -Organization $organization -ErrorAction Stop
+        Connect-EopExchangeOnline -AppId $clientId -Thumbprint $certThumbprint -Organization $organization -PfxFile $env:EOP_CERT_PFX_PATH -PfxSecret $env:EOP_CERT_PFX_PASSWORD
         Set-HostedContentFilterPolicy -Identity $PolicyName `
             -AllowedSenders $allowedSenders `
             -BlockedSenders $blockedSenders `

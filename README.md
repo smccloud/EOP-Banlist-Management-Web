@@ -515,11 +515,12 @@ The application queries Active Directory connection parameters directly from the
 ### Scheduled Cron Daemon (Pull-Only)
 
 To prevent unintended overwrites of Microsoft 365 policies, the background cron daemon (`cron-sync.php --action=pull`) is **strictly pull-only**:
+- It targets the **default policy configured in the Setup Wizard** (stored in `.env` as `EOP_POLICY_NAME` and in `config.php` as `DEFAULT_POLICY_NAME`).
 - It pulls remote entries from Microsoft 365 using `Get-HostedContentFilterPolicy`.
 - Discovered entries are reconciled into the corresponding MariaDB tables without modifying Exchange Online.
 
 ```powershell
-# Scheduled Cron (Pull Only): Reconcile remote changes into MariaDB
+# Scheduled Cron (Pull Only): Reconcile remote changes into MariaDB for the default policy
 Get-HostedContentFilterPolicy -Identity "Default"
 ```
 
@@ -938,17 +939,25 @@ sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUser
 
 ### Step 6: Crontab Background Pull-Only Sync
 
-Configure the Pull-Only cron schedule under the `www-data` user to automatically pull remote changes from Microsoft 365 every 15 minutes:
+Configure the Pull-Only cron schedule under the `www-data` user to automatically pull remote changes from Microsoft 365 every 15 minutes.
+
+> **Policy Configuration Note**: Use the **default policy set in the Setup Wizard** (configured in Step 4 of the wizard and stored as `EOP_POLICY_NAME` in `.env` and `DEFAULT_POLICY_NAME` in `config.php`). If you omit `--policy`, `cron-sync.php` automatically defaults to this policy.
 
 ```bash
 sudo crontab -u www-data -e
 ```
 
-Add the following entry:
+Add the crontab entry for your default policy:
 
 ```cron
+# Option A: Explicitly specify the default policy set during the Setup Wizard (e.g. "Default" or your custom policy name):
 */15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --action=pull --policy="Default" >> /var/log/eop-sync.log 2>&1
+
+# Option B: Omit --policy to automatically use the default policy configured in the Setup Wizard (.env / config.php):
+*/15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --action=pull >> /var/log/eop-sync.log 2>&1
 ```
+
+*(If managing multiple distinct policies in your tenant, you can configure additional crontab lines for each secondary policy as desired.)*
 
 ---
 
