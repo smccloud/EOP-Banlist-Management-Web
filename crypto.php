@@ -31,7 +31,11 @@ if (!function_exists('eopEncryptionKey')) {
     function eopEncryptionKey(): string {
         $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== ''
             ? AUTH_MASTER_ENCRYPTION_KEY
-            : 'eop_master_secret';
+            : (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: ($_ENV['AUTH_MASTER_ENCRYPTION_KEY'] ?? ''));
+
+        if ($secret === '') {
+            $secret = 'eop_master_secret';
+        }
 
         return hash('sha256', $secret, true);
     }

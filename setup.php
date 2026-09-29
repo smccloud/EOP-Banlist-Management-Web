@@ -15,6 +15,50 @@ declare(strict_types=1);
 // Debian filesystem lockfile path
 $lockFile = __DIR__ . '/installed.lock';
 
+// Load shared AES-256-GCM encryption library
+if (file_exists(__DIR__ . '/crypto.php')) {
+    require_once __DIR__ . '/crypto.php';
+}
+
+// Standalone fallback in case crypto.php is ever missing or inaccessible
+if (!function_exists('eopEncryptSecret')) {
+    function eopEncryptSecret(string $plaintext): string {
+        if ($plaintext === '') {
+            return '';
+        }
+        $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== ''
+            ? AUTH_MASTER_ENCRYPTION_KEY
+            : (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: ($_ENV['AUTH_MASTER_ENCRYPTION_KEY'] ?? 'eop_master_secret'));
+        $key = hash('sha256', $secret, true);
+        $iv = random_bytes(12);
+        $tag = '';
+        $ciphertext = openssl_encrypt($plaintext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        if ($ciphertext === false) {
+            throw new RuntimeException('AES-256-GCM encryption of secret failed.');
+        }
+        return 'EOPENC1:' . base64_encode($iv . $tag . $ciphertext);
+    }
+}
+
+if (!function_exists('eopDecryptSecret')) {
+    function eopDecryptSecret(?string $stored): ?string {
+        if ($stored === null) return null;
+        if ($stored === '') return '';
+        if (!str_starts_with($stored, 'EOPENC1:')) return $stored;
+        $raw = base64_decode(substr($stored, strlen('EOPENC1:')), true);
+        if ($raw === false || strlen($raw) < 29) return null;
+        $iv = substr($raw, 0, 12);
+        $tag = substr($raw, 12, 16);
+        $ciphertext = substr($raw, 28);
+        $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== ''
+            ? AUTH_MASTER_ENCRYPTION_KEY
+            : (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: ($_ENV['AUTH_MASTER_ENCRYPTION_KEY'] ?? 'eop_master_secret'));
+        $key = hash('sha256', $secret, true);
+        $decrypted = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+        return $decrypted !== false ? $decrypted : null;
+    }
+}
+
 // Automatically ensure config.php exists on disk
 function ensureConfigPhp(): bool {
     $cfgPath = __DIR__ . '/config.php';
@@ -285,7 +329,14 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
     $thumb = $eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80');
     $org = $eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com');
     $policy = $eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy');
-    $masterKey = $existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16));
+    $masterKey = (defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
+        ? AUTH_MASTER_ENCRYPTION_KEY
+        : ($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16))));
+    if (!defined('AUTH_MASTER_ENCRYPTION_KEY')) {
+        define('AUTH_MASTER_ENCRYPTION_KEY', $masterKey);
+    }
+    putenv("AUTH_MASTER_ENCRYPTION_KEY={$masterKey}");
+    $_ENV['AUTH_MASTER_ENCRYPTION_KEY'] = $masterKey;
     $appUrl = $existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com'));
 
     $dateStr = date('Y-m-d H:i:s');
@@ -409,7 +460,9 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
     $thumb = addslashes($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'));
     $org = addslashes($eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com'));
     $policy = addslashes($eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy'));
-    $masterKey = addslashes($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16)));
+    $masterKey = addslashes((defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
+        ? AUTH_MASTER_ENCRYPTION_KEY
+        : ($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16)))));
     $appUrl = addslashes($existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com')));
     $dateStr = date('Y-m-d H:i:s');
 
@@ -1131,6 +1184,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // in crypto.php, so the wizard and the runtime agree on the format and
             // the key is always AUTH_MASTER_ENCRYPTION_KEY rather than something
             // derived from data stored in the same row.
+            $existingEnv = readExistingEnv();
+            $masterKey = (defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
+                ? AUTH_MASTER_ENCRYPTION_KEY
+                : ($existingEnv['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: ''));
+            if ($masterKey === '') {
+                $masterKey = bin2hex(random_bytes(16));
+            }
+            if (!defined('AUTH_MASTER_ENCRYPTION_KEY')) {
+                define('AUTH_MASTER_ENCRYPTION_KEY', $masterKey);
+            }
+            putenv("AUTH_MASTER_ENCRYPTION_KEY={$masterKey}");
+            $_ENV['AUTH_MASTER_ENCRYPTION_KEY'] = $masterKey;
+            $_SERVER['AUTH_MASTER_ENCRYPTION_KEY'] = $masterKey;
+
             $authStmt = $pdo->prepare("INSERT INTO `eop_auth_config` 
                 (`tenant_id`, `client_id`, `certificate_thumbprint`, `key_filename`, `private_key`, `pkcs12_bundle`, `encrypted_password`, `encryption_iv`, `encryption_tag`, `organization`, `key_type`, `is_active`, `uploaded_by`)
                 VALUES (:tid, :cid, :thumb, :filename, :pem, :p12, :cipher, NULL, NULL, :org, :ktype, 1, 'INITIAL_SETUP')");

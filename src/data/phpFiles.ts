@@ -2847,6 +2847,26 @@ declare(strict_types=1);
 // Debian filesystem lockfile path
 $lockFile = __DIR__ . '/installed.lock';
 
+// Load shared AES-256-GCM encryption library
+if (file_exists(__DIR__ . '/crypto.php')) {
+    require_once __DIR__ . '/crypto.php';
+}
+
+if (!function_exists('eopEncryptSecret')) {
+    function eopEncryptSecret(string $plaintext): string {
+        if ($plaintext === '') return '';
+        $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== ''
+            ? AUTH_MASTER_ENCRYPTION_KEY
+            : (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: 'eop_master_secret');
+        $key = hash('sha256', $secret, true);
+        $iv = random_bytes(12);
+        $tag = '';
+        $ciphertext = openssl_encrypt($plaintext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+        if ($ciphertext === false) throw new RuntimeException('AES-256-GCM encryption failed.');
+        return 'EOPENC1:' . base64_encode($iv . $tag . $ciphertext);
+    }
+}
+
 // Automatically ensure config.php exists on disk
 function ensureConfigPhp(): bool {
     $cfgPath = __DIR__ . '/config.php';
@@ -3736,24 +3756,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
             }
 
-            // 4. Save EOP Auth config (AES encrypted password)
-            $aesKey = hash('sha256', $eop['tenant_id'] . 'EOP_SALT_2026', true);
-            $iv = openssl_random_pseudo_bytes(12);
-            $tag = '';
-            $ciphertext = openssl_encrypt($eop['passphrase'], 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
+            // 4. Save EOP Auth config. The private key, the PKCS#12 bundle and the
+            // passphrase are each encrypted with AES-256-GCM via the shared envelope
+            // in crypto.php, so the wizard and the runtime agree on the format and
+            // the key is always AUTH_MASTER_ENCRYPTION_KEY rather than something
+            // derived from data stored in the same row.
+            $existingEnv = readExistingEnv();
+            $masterKey = (defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
+                ? AUTH_MASTER_ENCRYPTION_KEY
+                : ($existingEnv['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: ''));
+            if ($masterKey === '') {
+                $masterKey = bin2hex(random_bytes(16));
+            }
+            if (!defined('AUTH_MASTER_ENCRYPTION_KEY')) {
+                define('AUTH_MASTER_ENCRYPTION_KEY', $masterKey);
+            }
+            putenv("AUTH_MASTER_ENCRYPTION_KEY={$masterKey}");
+            $_ENV['AUTH_MASTER_ENCRYPTION_KEY'] = $masterKey;
+            $_SERVER['AUTH_MASTER_ENCRYPTION_KEY'] = $masterKey;
 
             $authStmt = $pdo->prepare("INSERT INTO \`eop_auth_config\` 
-                (\`tenant_id\`, \`client_id\`, \`certificate_thumbprint\`, \`key_filename\`, \`private_key_pem\`, \`encrypted_password\`, \`encryption_iv\`, \`encryption_tag\`, \`organization\`, \`key_type\`, \`is_active\`, \`uploaded_by\`)
-                VALUES (:tid, :cid, :thumb, 'eop-cert-private.key', :pem, :cipher, :iv_b64, :tag_b64, :org, 'RSA_PEM', 1, 'INITIAL_SETUP')");
+                (\`tenant_id\`, \`client_id\`, \`certificate_thumbprint\`, \`key_filename\`, \`private_key\`, \`pkcs12_bundle\`, \`encrypted_password\`, \`encryption_iv\`, \`encryption_tag\`, \`organization\`, \`key_type\`, \`is_active\`, \`uploaded_by\`)
+                VALUES (:tid, :cid, :thumb, :filename, :pem, :p12, :cipher, NULL, NULL, :org, :ktype, 1, 'INITIAL_SETUP')");
             $authStmt->execute([
                 ':tid' => $eop['tenant_id'],
                 ':cid' => $eop['client_id'],
                 ':thumb' => $eop['thumbprint'],
-                ':pem' => $eop['private_key'],
-                ':cipher' => base64_encode($ciphertext ?: ''),
-                ':iv_b64' => base64_encode($iv),
-                ':tag_b64' => base64_encode($tag),
-                ':org' => $eop['org_domain']
+                ':filename' => $eop['pkcs12_filename'] ?: 'eop-cert-private.key',
+                ':pem' => eopEncryptSecret($eop['private_key']),
+                ':p12' => !empty($eop['pkcs12_bundle']) ? eopEncryptSecret($eop['pkcs12_bundle']) : null,
+                ':cipher' => eopEncryptSecret($eop['passphrase']),
+                ':org' => $eop['org_domain'],
+                ':ktype' => !empty($eop['pkcs12_bundle']) ? 'PKCS12_PFX' : 'RSA_PEM'
             ]);
 
             // 5. Write full finalized environment settings to .env and config.php files
