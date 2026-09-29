@@ -97,8 +97,7 @@ if ($action === 'delete_item') {
 // --------------------------------------------------------------------------
 if ($action === 'bulk_import') {
     $bulkData = trim($_POST['bulk_data'] ?? '');
-    $lines = explode("
-", str_replace("", "", $bulkData));
+    $lines = explode("\n", str_replace("\r", "", $bulkData));
     $parsed = [];
 
     foreach ($lines as $line) {
@@ -148,8 +147,7 @@ if ($action === 'smart_sort_import') {
 
     $bulkData = trim($_POST['bulk_data'] ?? '');
     $defaultNote = trim($_POST['default_note'] ?? 'Smart Auto-Sorted Import');
-    $lines = explode("
-", str_replace("", "", $bulkData));
+    $lines = explode("\n", str_replace("\r", "", $bulkData));
 
     $senders = [];
     $domains = [];

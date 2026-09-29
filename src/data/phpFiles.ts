@@ -278,7 +278,7 @@ class Database {
                 return false;
             }
             $targetTable = defined('TABLE_ALLOWED_SENDERS') ? TABLE_ALLOWED_SENDERS : 'eop_allowed_senders';
-            $stmt = $pdo->query("SELECT 1 FROM " . $targetTable . " LIMIT 1");
+            $stmt = $pdo->query("SELECT 1 FROM \`{$targetTable}\` LIMIT 1");
             return ($stmt !== false);
         } catch (Throwable $e) {
             try {
@@ -575,6 +575,514 @@ class Database {
     }
 
     /**
+     * Flattens a decoded remote list into plain strings.
+     *
+     * A JSON array of strings is returned as-is. An element that is itself an
+     * array or object is unwrapped one level so a nested collection from the
+     * PowerShell side does not reach the comparator as a non-scalar. Returns null
+     * when an element cannot be reduced to a string, which callers treat as a
+     * malformed payload.
+     */
+    private static function flattenRemoteValues(array $remoteValues): ?array {
+        $flat = [];
+        foreach ($remoteValues as $value) {
+            if (is_array($value)) {
+                foreach ($value as $inner) {
+                    if (is_array($inner) || is_object($inner)) {
+                        return null;
+                    }
+                    $flat[] = (string)$inner;
+                }
+                continue;
+            }
+            if (is_object($value)) {
+                return null;
+            }
+            if (is_bool($value)) {
+                return null;
+            }
+            $flat[] = (string)$value;
+        }
+        return $flat;
+    }
+
+    /**
+     * Reconcile a local list against the authoritative remote list from Exchange Online.
+     * Inserts remote entries missing locally and removes local rows that no longer exist
+     * in Exchange Online. Every removal is audit logged.
+     *
+     * The remote payload is flattened defensively: a list element that is itself an
+     * array means the producer emitted a nested collection, and a bare
+     * (string) cast on it would yield the literal "Array" — which would collapse
+     * every entry onto one key and make the whole list look absent remotely,
+     * deleting every local row. Such entries are unwrapped; anything that is
+     * still not a scalar afterwards aborts the reconcile instead.
+     */
+    public static function reconcileListWithRemote(string $listType, string $policyName, array $remoteValues, string $actor): array {
+        $pdo = self::getConnection();
+        $table = self::getTableName($listType);
+        $col = self::getValueColumn($listType);
+
+        $remote = [];
+        $flattened = self::flattenRemoteValues($remoteValues);
+        if ($flattened === null) {
+            throw new RuntimeException(
+                "Remote {$listType} payload for policy '{$policyName}' contained nested or non-scalar entries. "
+                . 'Refusing to reconcile: a malformed payload would make every local row look absent from Exchange Online.'
+            );
+        }
+        foreach ($flattened as $value) {
+            $normalized = strtolower(trim($value));
+            if ($normalized !== '') {
+                $remote[$normalized] = true;
+            }
+        }
+
+        $select = $pdo->prepare("SELECT id, {$col} AS item_value FROM {$table} WHERE policy_name = :policy");
+        $select->execute([':policy' => $policyName]);
+        $localRows = $select->fetchAll(PDO::FETCH_ASSOC);
+
+        $candidates = [];
+        foreach (array_keys($remote) as $value) {
+            $candidates[] = ['value' => $value, 'note' => 'Pulled from Exchange Online'];
+        }
+        $insertResult = self::bulkInsert($listType, $policyName, $candidates, $actor);
+
+        $delete = $pdo->prepare("DELETE FROM {$table} WHERE id = :id AND policy_name = :policy");
+        $removed = [];
+        $notRemoved = [];
+        foreach ($localRows as $row) {
+            $normalized = strtolower(trim((string)$row['item_value']));
+            if (!isset($remote[$normalized])) {
+                $delete->execute([':id' => (int)$row['id'], ':policy' => $policyName]);
+                // Only count what the database actually removed. Previously every row
+                // present in $localRows was reported as deleted whether or not the
+                // DELETE matched, so a row that was already gone produced a "removed"
+                // count that the table then contradicted.
+                if ($delete->rowCount() > 0) {
+                    $removed[] = $row['item_value'];
+                } else {
+                    $notRemoved[] = $row['item_value'];
+                }
+            }
+        }
+
+        if ($notRemoved) {
+            // Surfaced rather than swallowed: a non-zero count here means the local
+            // table and the reconciler disagree, which is worth seeing in the cron log.
+            self::logAudit('SYNC', $listType, $policyName, count($notRemoved) . ' items', 'Absent from Exchange Online but the delete matched no row: ' . implode(', ', array_slice($notRemoved, 0, 25)), $actor);
+        }
+
+        if ($removed) {
+            // 'REMOVE', not 'DELETE': eop_audit_log.action is an ENUM of
+            // ADD/REMOVE/UPDATE/SYNC/LOGIN/LOGOUT. Passing 'DELETE' made this
+            // INSERT fail under strict mode, and logAudit swallows the error, so
+            // every deletion the pull performed was invisible in the audit trail.
+            self::logAudit('REMOVE', $listType, $policyName, count($removed) . ' items', 'Removed by cron pull (absent from Exchange Online): ' . implode(', ', array_slice($removed, 0, 25)), $actor);
+        }
+
+        return [
+            'remote'    => count($remote),
+            'inserted'  => $insertResult['inserted'],
+            'removed'   => count($removed),
+            'unchanged' => count($localRows) - count($removed),
+            'errors'    => $insertResult['errors'],
+            'removed_values' => $removed,
+            'not_removed_values' => $notRemoved,
+        ];
+    }
+
+    /**
+     * Resolve the table backing sync confirmations. config.php is regenerated by
+     * the setup wizard, so an existing install will not define the new constant;
+     * fall back to the literal name rather than raising an Error.
+     */
+    private static function confirmationsTable(): string {
+        return defined('TABLE_SYNC_CONFIRMATIONS') ? TABLE_SYNC_CONFIRMATIONS : 'eop_sync_confirmations';
+    }
+
+    /**
+     * Create the confirmation table on demand. The setup wizard creates it for
+     * fresh installs, but the wizard locks after first run, so an existing
+     * database has to be able to acquire it without operator intervention.
+     *
+     * CREATE TABLE IF NOT EXISTS is a no-op when the table exists but still
+     * requires the CREATE privilege, so a deployment whose app user cannot run
+     * DDL would otherwise break every sync. Failure is swallowed and only
+     * attempted once: the individual accessors already degrade, and a guard with
+     * no readable confirmation row always falls through to "prompted", which
+     * withholds the deletion. That is the safe direction to fail in.
+     */
+    private static function ensureConfirmationsTable(): void {
+        static $ensured = false;
+        if ($ensured) {
+            return;
+        }
+        $ensured = true;
+        try {
+            $table = self::confirmationsTable();
+            self::getConnection()->exec("CREATE TABLE IF NOT EXISTS \`{$table}\` (
+                \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                \`policy_name\` VARCHAR(255) NOT NULL,
+                \`list_type\` VARCHAR(50) NOT NULL,
+                \`local_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+                \`remote_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+                \`pending_values\` MEDIUMTEXT NULL,
+                \`values_truncated\` TINYINT(1) NOT NULL DEFAULT 0,
+                \`status\` ENUM('pending', 'accepted', 'denied', 'applied') NOT NULL DEFAULT 'pending',
+                \`requested_by\` VARCHAR(100) NOT NULL DEFAULT 'CRON_DAEMON',
+                \`decided_by\` VARCHAR(100) NULL,
+                \`decided_at\` DATETIME NULL,
+                \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY \`uniq_policy_list\` (\`policy_name\`, \`list_type\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        } catch (Throwable $e) {
+            error_log('[Database::ensureConfirmationsTable] ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Fetch the outstanding or decided confirmation for a policy/list, if any.
+     */
+    public static function getSyncConfirmation(string $policyName, string $listType): ?array {
+        try {
+            self::ensureConfirmationsTable();
+            $stmt = self::getConnection()->prepare(
+                'SELECT * FROM ' . self::confirmationsTable() . ' WHERE policy_name = :policy AND list_type = :list LIMIT 1'
+            );
+            $stmt->execute([':policy' => $policyName, ':list' => $listType]);
+            $row = $stmt->fetch();
+            return $row ?: null;
+        } catch (Throwable $e) {
+            error_log('[Database::getSyncConfirmation Error] ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * All confirmations, optionally narrowed to one policy. Used by the UI.
+     */
+    public static function getSyncConfirmations(?string $policyName = null): array {
+        try {
+            self::ensureConfirmationsTable();
+            if ($policyName !== null) {
+                $stmt = self::getConnection()->prepare(
+                    'SELECT * FROM ' . self::confirmationsTable() . ' WHERE policy_name = :policy ORDER BY list_type ASC'
+                );
+                $stmt->execute([':policy' => $policyName]);
+            } else {
+                $stmt = self::getConnection()->query(
+                    'SELECT * FROM ' . self::confirmationsTable() . ' ORDER BY policy_name ASC, list_type ASC'
+                );
+            }
+            return $stmt ? $stmt->fetchAll() : [];
+        } catch (Throwable $e) {
+            error_log('[Database::getSyncConfirmations Error] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Record (or refresh) the values at risk for a policy/list, resetting the
+     * request to 'pending' so the UI shows the current local state.
+     */
+    public static function recordSyncConfirmation(string $policyName, string $listType, int $localCount, array $values, bool $truncated, string $actor): void {
+        try {
+            self::ensureConfirmationsTable();
+            $stmt = self::getConnection()->prepare(
+                'INSERT INTO ' . self::confirmationsTable() . '
+                 (policy_name, list_type, local_count, remote_count, pending_values, values_truncated, status, requested_by)
+                 VALUES (:policy, :list, :local, 0, :values, :trunc, \\'pending\\', :actor)
+                 ON DUPLICATE KEY UPDATE
+                    \`local_count\` = VALUES(\`local_count\`),
+                    \`remote_count\` = 0,
+                    \`pending_values\` = VALUES(\`pending_values\`),
+                    \`values_truncated\` = VALUES(\`values_truncated\`),
+                    \`status\` = \\'pending\\',
+                    \`requested_by\` = VALUES(\`requested_by\`),
+                    \`decided_by\` = NULL,
+                    \`decided_at\` = NULL,
+                    \`updated_at\` = NOW()'
+            );
+            $stmt->execute([
+                ':policy' => $policyName,
+                ':list' => $listType,
+                ':local' => $localCount,
+                ':values' => json_encode(array_values($values)),
+                ':trunc' => $truncated ? 1 : 0,
+                ':actor' => $actor,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[Database::recordSyncConfirmation Error] ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Record an administrator's accept/deny decision. The decision is stored, not
+     * acted on: cron-sync.php consumes it on its next run for this policy.
+     */
+    public static function resolveSyncConfirmation(string $policyName, string $listType, string $decision, string $actor): bool {
+        if (!in_array($decision, ['accepted', 'denied'], true)) {
+            return false;
+        }
+        try {
+            self::ensureConfirmationsTable();
+            $stmt = self::getConnection()->prepare(
+                'UPDATE ' . self::confirmationsTable() . '
+                 SET \`status\` = :status, \`decided_by\` = :actor, \`decided_at\` = NOW()
+                 WHERE policy_name = :policy AND list_type = :list'
+            );
+            $stmt->execute([
+                ':status' => $decision,
+                ':actor' => $actor,
+                ':policy' => $policyName,
+                ':list' => $listType,
+            ]);
+            if ($stmt->rowCount() === 0) {
+                return false;
+            }
+
+            // 'DELETE' is not a member of the eop_audit_log action ENUM, so the
+            // decision is logged as an UPDATE to stay within the existing schema.
+            self::logAudit(
+                'UPDATE',
+                $listType,
+                $policyName,
+                'SYNC_CONFIRMATION',
+                "Empty remote list: deletion of local entries {$decision} by {$actor}. "
+                . ($decision === 'accepted' ? 'The next cron run will apply it.' : 'Local entries will be kept.'),
+                $actor
+            );
+            return true;
+        } catch (Throwable $e) {
+            error_log('[Database::resolveSyncConfirmation Error] ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Drop a confirmation once the hazard no longer applies.
+     */
+    public static function clearSyncConfirmation(string $policyName, string $listType): void {
+        try {
+            self::ensureConfirmationsTable();
+            $stmt = self::getConnection()->prepare(
+                'DELETE FROM ' . self::confirmationsTable() . ' WHERE policy_name = :policy AND list_type = :list'
+            );
+            $stmt->execute([':policy' => $policyName, ':list' => $listType]);
+        } catch (Throwable $e) {
+            error_log('[Database::clearSyncConfirmation Error] ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Delete exactly the values captured in a confirmation. Deleting the captured
+     * set rather than "everything currently present" means rows added after the
+     * administrator approved are not silently destroyed.
+     */
+    private static function applyConfirmedDeletion(string $listType, string $policyName, array $values, string $actor): array {
+        $pdo = self::getConnection();
+        $table = self::getTableName($listType);
+        $col = self::getValueColumn($listType);
+
+        $delete = $pdo->prepare("DELETE FROM {$table} WHERE {$col} = :val AND policy_name = :policy");
+        $removed = [];
+        $errors = [];
+        foreach ($values as $value) {
+            try {
+                $delete->execute([':val' => $value, ':policy' => $policyName]);
+                if ($delete->rowCount() > 0) {
+                    $removed[] = $value;
+                }
+            } catch (Throwable $e) {
+                $errors[] = "Failed to remove {$value}: " . $e->getMessage();
+            }
+        }
+
+        if ($removed) {
+            // 'REMOVE' is a member of the eop_audit_log action ENUM; 'DELETE' is
+            // not, and the failed INSERT was swallowed by logAudit.
+            self::logAudit(
+                'REMOVE',
+                $listType,
+                $policyName,
+                count($removed) . ' items',
+                'Removed by cron pull after administrator accepted deletion of an empty remote list: ' . implode(', ', array_slice($removed, 0, 25)),
+                $actor
+            );
+        }
+
+        return ['removed' => count($removed), 'removed_values' => $removed, 'errors' => $errors];
+    }
+
+    /**
+     * Normalised local values for a policy/list, in the same casing the
+     * reconciler compares against.
+     */
+    private static function fetchNormalizedValues(string $listType, string $policyName): array {
+        $pdo = self::getConnection();
+        $table = self::getTableName($listType);
+        $col = self::getValueColumn($listType);
+        $stmt = $pdo->prepare("SELECT {$col} AS item_value FROM {$table} WHERE policy_name = :policy");
+        $stmt->execute([':policy' => $policyName]);
+
+        $values = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $normalized = strtolower(trim((string)$row['item_value']));
+            if ($normalized !== '') {
+                $values[$normalized] = $normalized;
+            }
+        }
+        return $values;
+    }
+
+    /**
+     * Reconcile a pulled list, refusing to empty a populated local list without an
+     * explicit administrator decision.
+     *
+     * An empty remote list is indistinguishable from a policy that genuinely has
+     * no entries, and the reconciler deletes every local row absent from the
+     * remote set. A single bad pull would therefore wipe the list. So when the
+     * remote list is empty and local rows exist, the deletion is held back and a
+     * confirmation is raised for the UI instead. The administrator's accept/deny
+     * is stored and consumed here on a later run.
+     *
+     * The returned array is the normal reconcile result plus:
+     *   guard        - none | prompted | awaiting_decision | denied | applied
+     *   confirmation - the confirmation row when one is outstanding
+     */
+    public static function reconcileListWithRemoteGuarded(string $listType, string $policyName, array $remoteValues, string $actor): array {
+        self::ensureConfirmationsTable();
+
+        $flattened = self::flattenRemoteValues($remoteValues);
+        if ($flattened === null) {
+            throw new RuntimeException(
+                "Remote {$listType} payload for policy '{$policyName}' contained nested or non-scalar entries. "
+                . 'Refusing to reconcile: a malformed payload would make every local row look absent from Exchange Online.'
+            );
+        }
+
+        $remoteSet = [];
+        foreach ($flattened as $value) {
+            $normalized = strtolower(trim($value));
+            if ($normalized !== '') {
+                $remoteSet[$normalized] = true;
+            }
+        }
+        $remoteCount = count($remoteSet);
+        $existing = self::getSyncConfirmation($policyName, $listType);
+
+        $passThrough = static function (array $result, string $guard, ?array $confirmation = null): array {
+            $result['guard'] = $guard;
+            $result['confirmation'] = $confirmation;
+            return $result;
+        };
+
+        // Remote has data: normal reconcile. Any outstanding confirmation is stale.
+        if ($remoteCount > 0) {
+            if ($existing !== null) {
+                self::clearSyncConfirmation($policyName, $listType);
+            }
+            return $passThrough(self::reconcileListWithRemote($listType, $policyName, $remoteValues, $actor), 'none');
+        }
+
+        $localValues = self::fetchNormalizedValues($listType, $policyName);
+        $localCount = count($localValues);
+
+        // Empty remote and empty local: nothing is at risk.
+        if ($localCount === 0) {
+            if ($existing !== null) {
+                self::clearSyncConfirmation($policyName, $listType);
+            }
+            return $passThrough(self::reconcileListWithRemote($listType, $policyName, [], $actor), 'none');
+        }
+
+        $skippedResult = static function (string $guard, ?array $confirmation) use ($localCount, $listType, $policyName, $actor, $passThrough): array {
+            return $passThrough([
+                'remote'         => 0,
+                'inserted'       => 0,
+                'removed'        => 0,
+                'unchanged'      => $localCount,
+                'errors'         => [],
+                'removed_values' => [],
+            ], $guard, $confirmation);
+        };
+
+        // Administrator accepted: apply the captured set this run.
+        if ($existing !== null && $existing['status'] === 'accepted') {
+            $captured = json_decode((string)($existing['pending_values'] ?? '[]'), true);
+            $captured = is_array($captured) ? $captured : [];
+            $applied = self::applyConfirmedDeletion($listType, $policyName, $captured, $actor);
+
+            $stmt = self::getConnection()->prepare(
+                'UPDATE ' . self::confirmationsTable() . ' SET \`status\` = \\'applied\\', \`decided_at\` = NOW() WHERE \`id\` = :id'
+            );
+            $stmt->execute([':id' => (int)$existing['id']]);
+
+            self::logAudit(
+                'SYNC',
+                $listType,
+                $policyName,
+                'SYNC_CONFIRMATION',
+                "Applied administrator-approved deletion of {$applied['removed']} entries from an empty remote list.",
+                $actor
+            );
+
+            return $passThrough([
+                'remote'         => 0,
+                'inserted'       => 0,
+                'removed'        => $applied['removed'],
+                'unchanged'      => max(0, $localCount - $applied['removed']),
+                'errors'         => $applied['errors'],
+                'removed_values' => $applied['removed_values'],
+            ], 'applied');
+        }
+
+        // Administrator denied: keep the rows and do not ask again.
+        if ($existing !== null && $existing['status'] === 'denied') {
+            return $skippedResult('denied', $existing);
+        }
+
+        // A decision is already outstanding; refresh the captured set so the UI
+        // reflects the current local state, but keep it pending and do not re-prompt.
+        if ($existing !== null && $existing['status'] === 'pending') {
+            [$values, $truncated] = self::captureValues($localValues);
+            self::recordSyncConfirmation($policyName, $listType, $localCount, $values, $truncated, $actor);
+            $refreshed = self::getSyncConfirmation($policyName, $listType);
+            return $skippedResult('awaiting_decision', $refreshed);
+        }
+
+        // No decision yet: raise the confirmation and hold the deletion.
+        [$values, $truncated] = self::captureValues($localValues);
+        self::recordSyncConfirmation($policyName, $listType, $localCount, $values, $truncated, $actor);
+        $raised = self::getSyncConfirmation($policyName, $listType);
+        self::logAudit(
+            'SYNC',
+            $listType,
+            $policyName,
+            'SYNC_CONFIRMATION',
+            "Remote list came back empty while {$localCount} local entries exist. Deletion withheld pending administrator confirmation.",
+            $actor
+        );
+        return $skippedResult('prompted', $raised);
+    }
+
+    /**
+     * Bound the captured value set so the column cannot be overflowed. When the
+     * set is truncated the approved deletion is correspondingly narrower, which
+     * errs towards keeping rows rather than deleting unapproved ones.
+     */
+    private static function captureValues(array $localValues): array {
+        $limit = 20000;
+        $values = array_values($localValues);
+        if (count($values) > $limit) {
+            return [array_slice($values, 0, $limit), true];
+        }
+        return [$values, false];
+    }
+
+    /**
      * Record an audit log entry in eop_audit_log
      */
     public static function logAudit(string $action, string $listType, string $policyName, string $targetValue, string $details, string $username): void {
@@ -770,13 +1278,13 @@ class Database {
             }
 
             $pattern = '/^' . preg_quote($key, '/') . '=.*/m';
-            $escapedVal = (strpos($value, ' ') !== false) ? '\"' . addcslashes($value, '\"\\$') . '\"' : $value;
-            $replacement = \"{\$key}={\$escapedVal}\";
+            $escapedVal = (strpos($value, ' ') !== false) ? '"' . addcslashes($value, '"\\\\$') . '"' : $value;
+            $replacement = "{$key}={$escapedVal}";
 
             if (preg_match($pattern, $content)) {
                 $newContent = preg_replace($pattern, $replacement, $content);
             } else {
-                $newContent = rtrim($content) . \"\\n{\$replacement}\\n\";
+                $newContent = rtrim($content) . "\\n{$replacement}\\n";
             }
 
             if (@file_put_contents($envPath, $newContent) !== false) {
@@ -860,54 +1368,43 @@ class Database {
     }
 
     /**
-     * Encrypt private key passphrase/password using AES-256-GCM before database storage
+     * Encrypt a secret for storage using the shared AES-256-GCM envelope
+     * (see crypto.php). The IV and tag travel inside the ciphertext, so the
+     * encryption_iv / encryption_tag columns are written as NULL. They are left in
+     * the schema for compatibility with the previous column-per-field format and
+     * are no longer read or written by any code path.
      */
-    public static function encryptKeyPassword(string $password): array {
-        if ($password === '') {
-            return ['ciphertext' => '', 'iv' => '', 'tag' => ''];
-        }
-        $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') ? AUTH_MASTER_ENCRYPTION_KEY : 'eop_master_secret';
-        $key = hash('sha256', $secret, true);
-        $iv = random_bytes(12); // Standard 96-bit IV for GCM
-        $tag = '';
-        $ciphertext = openssl_encrypt($password, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16);
-        return [
-            'ciphertext' => base64_encode($ciphertext),
-            'iv'         => base64_encode($iv),
-            'tag'        => base64_encode($tag),
-        ];
+    public static function encryptKeyPassword(string $password): string {
+        return eopEncryptSecret($password);
     }
 
     /**
-     * Decrypt private key passphrase/password using AES-256-GCM
+     * Decrypt a stored secret. Returns null when the value cannot be decrypted,
+     * for example when AUTH_MASTER_ENCRYPTION_KEY does not match the record.
      */
-    public static function decryptKeyPassword(string $ciphertextB64, string $ivB64, string $tagB64): ?string {
-        if ($ciphertextB64 === '') {
-            return '';
-        }
-        try {
-            $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') ? AUTH_MASTER_ENCRYPTION_KEY : 'eop_master_secret';
-            $key = hash('sha256', $secret, true);
-            $ciphertext = base64_decode($ciphertextB64);
-            $iv = base64_decode($ivB64);
-            $tag = base64_decode($tagB64);
-            $decrypted = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
-            return $decrypted !== false ? $decrypted : null;
-        } catch (Exception $e) {
-            error_log('[Database::decryptKeyPassword Error] ' . $e->getMessage());
-            return null;
-        }
+    public static function decryptKeyPassword(?string $stored): ?string {
+        return eopDecryptSecret($stored);
     }
 
     /**
-     * Fetch active EOP private key & certificate authentication record from database table eop_auth_config
+     * Fetch active EOP private key & certificate authentication record from database table eop_auth_config.
+     * The private key, PKCS#12 bundle and passphrase are decrypted here so every caller
+     * receives plaintext; a null field means the value could not be decrypted.
      */
     public static function getEopAuthConfig(): ?array {
         try {
             $pdo = self::getConnection();
             $stmt = $pdo->query("SELECT * FROM " . TABLE_EOP_AUTH_CONFIG . " WHERE is_active = 1 ORDER BY id DESC LIMIT 1");
             $config = $stmt->fetch();
-            return $config ?: null;
+            if (!$config) {
+                return null;
+            }
+
+            $config['private_key'] = self::decryptKeyPassword($config['private_key'] ?? '');
+            $config['pkcs12_bundle'] = self::decryptKeyPassword($config['pkcs12_bundle'] ?? '');
+            $config['encrypted_password'] = self::decryptKeyPassword($config['encrypted_password'] ?? '');
+
+            return $config;
         } catch (Exception $e) {
             error_log('[Database::getEopAuthConfig Error] ' . $e->getMessage());
             return null;
@@ -921,23 +1418,22 @@ class Database {
         try {
             $pdo = self::getConnection();
             $stmt = $pdo->prepare("INSERT INTO " . TABLE_EOP_AUTH_CONFIG . " 
-                (tenant_id, client_id, certificate_thumbprint, key_filename, private_key, encrypted_password, encryption_iv, encryption_tag, key_type, organization, is_active, uploaded_by, created_at, updated_at)
-                VALUES (:tenant, :client, :thumbprint, :filename, :privkey, :enc_pass, :iv, :tag, :ktype, :org, 1, :user, NOW(), NOW())");
-
-            $enc = self::encryptKeyPassword($data['password'] ?? '');
+                (tenant_id, client_id, certificate_thumbprint, key_filename, private_key, pkcs12_bundle, encrypted_password, encryption_iv, encryption_tag, key_type, organization, is_active, uploaded_by, created_at, updated_at)
+                VALUES (:tenant, :client, :thumbprint, :filename, :privkey, :p12, :enc_pass, NULL, NULL, :ktype, :org, 1, :user, NOW(), NOW())");
 
             $thumbprint = strtoupper(preg_replace('/[^a-zA-Z0-9]/', '', $data['certificate_thumbprint'] ?? ''));
+            $pkcs12 = trim((string)($data['pkcs12_bundle'] ?? ''));
+            $keyType = $pkcs12 !== '' ? 'PKCS12_PFX' : ($data['key_type'] ?? 'RSA_PEM');
 
             $success = $stmt->execute([
                 ':tenant'     => trim($data['tenant_id'] ?? (defined('M365_TENANT_ID') ? M365_TENANT_ID : '')),
                 ':client'     => trim($data['client_id'] ?? (defined('M365_CLIENT_ID') ? M365_CLIENT_ID : '')),
                 ':thumbprint' => $thumbprint ?: (defined('M365_CERT_THUMBPRINT') ? M365_CERT_THUMBPRINT : ''),
                 ':filename'   => trim($data['key_filename'] ?? 'eop-cert-private.key'),
-                ':privkey'    => trim($data['private_key']),
-                ':enc_pass'   => $enc['ciphertext'],
-                ':iv'         => $enc['iv'],
-                ':tag'        => $enc['tag'],
-                ':ktype'      => $data['key_type'] ?? 'RSA_PEM',
+                ':privkey'    => self::encryptKeyPassword(trim((string)($data['private_key'] ?? ''))),
+                ':p12'        => $pkcs12 !== '' ? self::encryptKeyPassword($pkcs12) : null,
+                ':enc_pass'   => self::encryptKeyPassword((string)($data['password'] ?? '')),
+                ':ktype'      => $keyType,
                 ':org'        => trim($data['organization'] ?? (defined('M365_ORGANIZATION') ? M365_ORGANIZATION : 'corp.example.com')),
                 ':user'       => $uploadedBy,
             ]);
@@ -962,7 +1458,8 @@ class Database {
             $pdo = self::getConnection();
             $stmt = $pdo->prepare("SELECT id, tenant_id, client_id, certificate_thumbprint, key_filename, key_type, organization, is_active, uploaded_by, created_at, updated_at, 
                                    IF(encrypted_password != '', 1, 0) as has_encrypted_password,
-                                   SUBSTRING(private_key, 1, 60) as key_preview
+                                   IF(pkcs12_bundle IS NOT NULL AND pkcs12_bundle != '', 1, 0) as has_pkcs12,
+                                   IF(private_key LIKE 'EOPENC1:%', 1, 0) as private_key_encrypted
                                    FROM " . TABLE_EOP_AUTH_CONFIG . " ORDER BY id DESC LIMIT :limit");
             $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
             $stmt->execute();
@@ -1762,6 +2259,15 @@ $user = requireAuth();
 $csrfToken = getCsrfToken();
 $flash = getFlash();
 
+// This page renders live MariaDB state, so it must never be served from a cache.
+// Without an explicit Cache-Control a browser or intermediary is free to apply
+// heuristic freshness and re-serve a stale list, which looks exactly like "the
+// entries are not refreshing". header() only works before output, and nothing has
+// been emitted yet at this point.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+
 // Post-push summary popup data
 $pushSummary = $_SESSION['push_summary'] ?? null;
 unset($_SESSION['push_summary']);
@@ -1786,6 +2292,13 @@ foreach ($allDbPolicies as $p) {
 if (!isset($availablePolicies[$defaultPolicy])) {
     $availablePolicies[$defaultPolicy] = 'Primary Inbound Anti-Spam Policy';
 }
+
+// Withheld deletions awaiting an administrator decision, for the selected policy
+$syncConfirmations = Database::getSyncConfirmations($selectedPolicy);
+$pendingConfirmations = array_values(array_filter(
+    $syncConfirmations,
+    static fn($c) => in_array($c['status'], ['pending', 'accepted', 'denied'], true)
+));
 
 // Current active tab
 $currentTab = $_GET['tab'] ?? 'allowed_senders';
@@ -1939,29 +2452,206 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
     <!-- Main Container -->
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 grow w-full">
 
-        <!-- Flash Alert (Auto-dismisses in 5s) -->
+        <!-- Flash Alert (auto-dismisses, with a visible countdown) -->
+        <?php
+        // 5s was too short to read a long message, let alone act on it - a
+        // confirm-then-navigate flow could lose the prompt mid-read. 20s with a
+        // live countdown and a progress bar; the close button still dismisses
+        // immediately, and hovering pauses the countdown.
+        $flashAutoDismissMs = 20000;
+        ?>
         <?php if ($flash): ?>
-            <div id="flashAlertBanner" class="mb-5 p-4 rounded-lg flex items-center justify-between border transition-all duration-300 <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60') ?>">
-                <div class="flex items-center space-x-2">
-                    <i class="fa-solid <?= $flash['type'] === 'success' ? 'fa-circle-check text-emerald-600 dark:text-emerald-400' : 'fa-circle-exclamation text-rose-600 dark:text-rose-400' ?>"></i>
+            <div id="flashAlertBanner" data-autodismiss-ms="<?= $flashAutoDismissMs ?>" class="mb-5 p-4 rounded-lg flex items-center justify-between gap-3 border transition-all duration-300 relative overflow-hidden <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : ($flash['type'] === 'warning' ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60')) ?>">
+                <div class="flex items-center space-x-2 min-w-0">
+                    <i class="fa-solid <?= $flash['type'] === 'success' ? 'fa-circle-check text-emerald-600 dark:text-emerald-400' : ($flash['type'] === 'warning' ? 'fa-triangle-exclamation text-amber-600 dark:text-amber-400' : 'fa-circle-exclamation text-rose-600 dark:text-rose-400') ?>"></i>
                     <span class="text-sm font-medium"><?= htmlspecialchars($flash['message']) ?></span>
                 </div>
-                <div class="flex items-center space-x-2">
-                    <span class="text-[11px] text-slate-400 font-mono hidden sm:inline">auto-dismissing</span>
-                    <button onclick="this.closest('#flashAlertBanner').remove()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm cursor-pointer p-1"><i class="fa-solid fa-xmark"></i></button>
+                <div class="flex items-center gap-2 shrink-0">
+                    <span class="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums whitespace-nowrap" title="Auto-dismisses in 20 seconds. Hover to pause.">
+                        <span id="flashCountdown">20</span>s
+                    </span>
+                    <button onclick="this.closest('#flashAlertBanner').remove()" title="Dismiss now" aria-label="Dismiss notification" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm cursor-pointer p-1"><i class="fa-solid fa-xmark"></i></button>
                 </div>
+                <span id="flashProgressTrack" class="absolute left-0 bottom-0 h-0.5 w-full bg-black/5 dark:bg-white/5" aria-hidden="true">
+                    <span id="flashProgressBar" class="block h-full w-full origin-left bg-current opacity-30"></span>
+                </span>
             </div>
             <script>
-                setTimeout(function() {
+                (function () {
                     const el = document.getElementById('flashAlertBanner');
-                    if (el) {
+                    if (!el) return;
+
+                    const total = parseInt(el.dataset.autodismissMs, 10) || 20000;
+                    const label = document.getElementById('flashCountdown');
+                    const bar = document.getElementById('flashProgressBar');
+
+                    // driven by an absolute deadline rather than a decrementing
+                    // counter, so a backgrounded or throttled tab cannot drift
+                    let remaining = total;
+                    let last = performance.now();
+                    let paused = false;
+
+                    const dismiss = function () {
                         el.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
                         el.style.opacity = '0';
                         el.style.transform = 'translateY(-6px)';
-                        setTimeout(() => el.remove(), 400);
-                    }
-                }, 5000);
+                        setTimeout(function () { el.remove(); }, 400);
+                    };
+
+                    // Only touch the DOM when a value actually changes: the rAF
+                    // loop runs ~60x/s and the countdown only changes once a second.
+                    let lastSecond = null;
+                    let lastScale = null;
+                    const render = function (force) {
+                        const scale = Math.max(0, remaining / total);
+                        const second = Math.max(0, Math.ceil(remaining / 1000));
+                        if (label && (force || second !== lastSecond)) {
+                            label.textContent = String(second);
+                            lastSecond = second;
+                        }
+                        if (bar && (force || scale !== lastScale)) {
+                            bar.style.transform = 'scaleX(' + scale + ')';
+                            lastScale = scale;
+                        }
+                    };
+
+                    // Hovering pauses so a message cannot vanish mid-read.
+                    el.addEventListener('mouseenter', function () { paused = true; render(true); });
+                    el.addEventListener('mouseleave', function () {
+                        if (remaining <= 0) return;
+                        paused = false;
+                        last = performance.now();
+                        render(true);
+                    });
+
+                    render(true);
+
+                    const tick = function (now) {
+                        const delta = now - last;
+                        last = now;
+                        if (!paused) remaining -= delta;
+                        render(false);
+                        if (remaining <= 0) {
+                            dismiss();
+                            return;
+                        }
+                        requestAnimationFrame(tick);
+                    };
+                    requestAnimationFrame(tick);
+                })();
             </script>
+        <?php endif; ?>
+
+        <!-- Withheld Deletion Warning: cron pulled an empty list but local entries exist -->
+        <?php if ($pendingConfirmations !== []): ?>
+            <div class="mb-5 p-4 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-300 dark:border-rose-800/70 text-xs text-rose-900 dark:text-rose-200 space-y-3">
+                <div class="flex items-start gap-2.5">
+                    <i class="fa-solid fa-triangle-exclamation text-rose-600 dark:text-rose-400 mt-0.5"></i>
+                    <div class="space-y-1">
+                        <div class="font-bold text-sm text-rose-800 dark:text-rose-300">Deletion withheld for policy &ldquo;<?= htmlspecialchars($selectedPolicy) ?>&rdquo;</div>
+                        <p class="leading-relaxed">
+                            A sync run pulled an <strong>empty</strong> list from Exchange Online while local entries still exist.
+                            Cron has <strong>not deleted anything</strong>. An empty pull is indistinguishable from a policy
+                            that genuinely has no entries, so confirm before allowing the removal.
+                        </p>
+                    </div>
+                </div>
+
+                <?php foreach ($pendingConfirmations as $conf): ?>
+                    <?php
+                    $confList = (string)$conf['list_type'];
+                    $confStatus = (string)$conf['status'];
+                    $confCount = (int)$conf['local_count'];
+                    $confValues = json_decode((string)($conf['pending_values'] ?? '[]'), true);
+                    $confValues = is_array($confValues) ? $confValues : [];
+                    $confTruncated = !empty($conf['values_truncated']);
+                    $confAskedAt = (string)($conf['created_at'] ?? '');
+                    $confDecidedBy = (string)($conf['decided_by'] ?? '');
+                    $confLabels = [
+                        'allowed_senders' => 'Allowed Senders',
+                        'blocked_senders' => 'Blocked Senders',
+                        'allowed_domains' => 'Allowed Domains',
+                        'blocked_domains' => 'Blocked Domains',
+                    ];
+                    $confLabel = $confLabels[$confList] ?? $confList;
+                    ?>
+                    <div class="rounded-lg border border-rose-200 dark:border-rose-800/60 bg-white/60 dark:bg-slate-900/40 p-3 space-y-2">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="font-semibold flex items-center gap-2 flex-wrap">
+                                <a href="?policy=<?= urlencode($selectedPolicy) ?>&amp;tab=<?= urlencode($confList) ?>" class="underline decoration-dotted underline-offset-2"><?= htmlspecialchars($confLabel) ?></a>
+                                <span class="font-mono font-normal text-[11px] px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/60"><?= number_format($confCount) ?> local entries</span>
+                                <?php if ($confStatus === 'accepted'): ?>
+                                    <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60">Deletion approved &mdash; awaiting next cron run</span>
+                                <?php elseif ($confStatus === 'denied'): ?>
+                                    <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800/60">Deletion denied &mdash; entries kept</span>
+                                <?php else: ?>
+                                    <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-rose-200 dark:bg-rose-900/60 text-rose-900 dark:text-rose-200 border border-rose-300 dark:border-rose-800/60">Decision required</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <?php if ($confValues !== []): ?>
+                            <details class="text-[11px]">
+                                <summary class="cursor-pointer select-none text-rose-800 dark:text-rose-300 font-medium">
+                                    Entries that would be removed<?= count($confValues) > 25 ? ' (showing first 25 of ' . number_format(count($confValues)) . ')' : '' ?>
+                                </summary>
+                                <div class="mt-1.5 font-mono text-[11px] break-words leading-relaxed text-rose-800/90 dark:text-rose-300/90 max-h-32 overflow-y-auto">
+                                    <?= htmlspecialchars(implode(', ', array_slice($confValues, 0, 25))) ?>
+                                    <?php if ($confTruncated): ?>
+                                        <span class="block mt-1 font-sans italic">(list truncated for storage; only the captured entries would be removed)</span>
+                                    <?php endif; ?>
+                                </div>
+                            </details>
+                        <?php endif; ?>
+
+                        <div class="flex flex-wrap items-center gap-2 pt-1">
+                            <?php if ($confStatus === 'pending'): ?>
+                                <form method="POST" action="actions.php" class="inline" onsubmit="return confirm('Delete all <?= number_format($confCount) ?> <?= htmlspecialchars($confLabel) ?> entries for policy <?= htmlspecialchars($selectedPolicy) ?>? They are absent from Exchange Online, but you are approving a bulk removal of local data.');">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="resolve_sync_confirmation">
+                                    <input type="hidden" name="target_policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                    <input type="hidden" name="target_list" value="<?= htmlspecialchars($confList) ?>">
+                                    <input type="hidden" name="decision" value="denied">
+                                    <button type="submit" class="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-rose-300 dark:border-rose-700 text-rose-800 dark:text-rose-200 text-[11px] font-semibold hover:bg-rose-100 dark:hover:bg-rose-900/50 transition">
+                                        Deny &mdash; keep entries
+                                    </button>
+                                </form>
+                                <form method="POST" action="actions.php" class="inline" onsubmit="return confirm('Delete all <?= number_format($confCount) ?> <?= htmlspecialchars($confLabel) ?> entries for policy <?= htmlspecialchars($selectedPolicy) ?>? This cannot be undone from the web UI.');">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="resolve_sync_confirmation">
+                                    <input type="hidden" name="target_policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                    <input type="hidden" name="target_list" value="<?= htmlspecialchars($confList) ?>">
+                                    <input type="hidden" name="decision" value="accepted">
+                                    <button type="submit" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-semibold shadow-xs transition">
+                                        Accept &mdash; delete on next cron run
+                                    </button>
+                                </form>
+                            <?php else: ?>
+                                <span class="text-[11px] text-rose-800/80 dark:text-rose-300/80">
+                                    <?php if ($confStatus === 'accepted'): ?>
+                                        Decision recorded<?= $confDecidedBy !== '' ? ' by ' . htmlspecialchars($confDecidedBy) : '' ?>. The next cron run for this policy applies it.
+                                    <?php else: ?>
+                                        Deletion denied<?= $confDecidedBy !== '' ? ' by ' . htmlspecialchars($confDecidedBy) : '' ?>. These entries stay until a later pull removes them, and the confirmation clears once the remote list returns data.
+                                    <?php endif; ?>
+                                </span>
+                                <form method="POST" action="actions.php" class="inline">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="resolve_sync_confirmation">
+                                    <input type="hidden" name="target_policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                    <input type="hidden" name="target_list" value="<?= htmlspecialchars($confList) ?>">
+                                    <input type="hidden" name="decision" value="<?= $confStatus === 'accepted' ? 'denied' : 'accepted' ?>">
+                                    <button type="submit" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-rose-300 dark:border-rose-700 text-rose-800 dark:text-rose-200 text-[11px] font-semibold hover:bg-rose-100 dark:hover:bg-rose-900/50 transition">
+                                        <?= $confStatus === 'accepted' ? 'Revoke approval' : 'Approve after all' ?>
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                            <?php if ($confAskedAt !== ''): ?>
+                                <span class="text-[11px] text-rose-700/70 dark:text-rose-400/70 ml-auto">first seen <?= htmlspecialchars($confAskedAt) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
         <?php endif; ?>
 
         <!-- Policy Summary Cards -->
@@ -2469,24 +3159,21 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                                 <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
 
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs mb-5">
-                                    <!-- File Upload for Private Key -->
+                                    <!-- Only a full PKCS#12 bundle is accepted -->
                                     <div class="col-span-1 md:col-span-2">
                                         <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                            Upload Private Key File (.pem, .key, .pfx, .crt):
+                                            PKCS#12 Certificate Bundle (.pfx / .p12) <span class="text-rose-500">*</span>
                                         </label>
-                                        <input type="file" name="private_key_file" accept=".pem,.key,.pfx,.cer,.crt,.txt"
+                                        <input type="file" name="pfx_file" accept=".pfx,.p12" required
                                                class="w-full text-xs text-slate-500 dark:text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-950/80 dark:file:text-blue-300 hover:file:bg-blue-100 dark:hover:file:bg-blue-900 border border-slate-300 dark:border-slate-700 rounded-lg p-2 bg-slate-50 dark:bg-slate-800">
-                                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">Upload the RSA or PKCS#8 private key associated with your Azure AD App Registration certificate.</p>
+                                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                                            The bundle must contain the certificate and its private key; bare PEM private keys are rejected. It is
+                                            stored AES-256-GCM encrypted in <code>eop_auth_config.pkcs12_bundle</code> and imported into the
+                                            certificate store on every sync. The thumbprint is read from this file, so a mismatch with the field
+                                            below is reported and the bundle wins.
+                                        </p>
                                     </div>
 
-                                    <!-- Direct Paste Option -->
-                                    <div class="col-span-1 md:col-span-2">
-                                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                            Or Paste Private Key Text (PEM format):
-                                        </label>
-                                        <textarea name="private_key_text" rows="4" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
-                                                  class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg p-3 text-slate-900 dark:text-white font-mono text-[11px] focus:ring-2 focus:ring-blue-500 focus:outline-hidden"></textarea>
-                                    </div>
 
                                     <!-- Private Key Passphrase (Encrypted via AES-256-GCM) -->
                                     <div class="col-span-1">
@@ -2610,7 +3297,7 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                             </div>
                         </div>
 
-                        <!-- PART 2: Active Directory LDAP Settings Modification -->
+                        <!-- PART 3: Active Directory LDAP Settings Modification -->
                         <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
                             <div class="px-6 py-4 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
                                 <div class="flex items-center space-x-2.5">
@@ -2959,7 +3646,9 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                 <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
 
                 <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">Paste one item per line, or <code>value, optional note</code>:</p>
-                <textarea name="bulk_data" rows="8" required placeholder="<?= str_contains($currentTab, 'sender') ? "ceo@partner.com, High priority partner\nsupport@vendor.org, Vendor notification" : "partner.com, Main vendor domain\n*.subdomain.net, Wildcard domain" ?>"
+                <textarea name="bulk_data" rows="8" required placeholder="<?= str_contains($currentTab, 'sender') ? "ceo@partner.com, High priority partner
+support@vendor.org, Vendor notification" : "partner.com, Main vendor domain
+*.subdomain.net, Wildcard domain" ?>"
                           class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs rounded-lg p-3 font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden mb-4"></textarea>
 
                 <div class="flex items-center justify-end space-x-2">
@@ -5782,7 +6471,7 @@ if ($action === 'delete_item') {
 // --------------------------------------------------------------------------
 if ($action === 'bulk_import') {
     $bulkData = trim($_POST['bulk_data'] ?? '');
-    $lines = explode("\n", str_replace("\r", "", $bulkData));
+    $lines = explode("\\n", str_replace("\\r", "", $bulkData));
     $parsed = [];
 
     foreach ($lines as $line) {
@@ -5832,7 +6521,7 @@ if ($action === 'smart_sort_import') {
 
     $bulkData = trim($_POST['bulk_data'] ?? '');
     $defaultNote = trim($_POST['default_note'] ?? 'Smart Auto-Sorted Import');
-    $lines = explode("\n", str_replace("\r", "", $bulkData));
+    $lines = explode("\\n", str_replace("\\r", "", $bulkData));
 
     $senders = [];
     $domains = [];
@@ -5944,20 +6633,67 @@ if ($action === 'export_csv') {
 if ($action === 'trigger_sync') {
     $direction = strtolower(trim($_POST['direction'] ?? 'pull'));
     $actionParam = ($direction === 'push') ? 'Push' : 'Pull';
+    $redirect = "Location: index.php?policy=" . urlencode($policyName) . "&tab=sync_center";
 
-    // Execute PowerShell script on Debian server
-    $cmd = sprintf(
-        'pwsh -File %s -PolicyName %s -Action %s 2>&1',
+    // sync-exchange.ps1 reads its app-only auth values and the PKCS#12 bundle from
+    // the environment, not from parameters. This path never exported them, so every
+    // web-initiated sync failed with "Missing authentication values" - the cron path
+    // worked because cron-sync.php does export them.
+    $env = eopPrepareSyncEnvironment(Database::getEopAuthConfig());
+    if (!$env['ok']) {
+        Database::updatePolicySyncStatus($policyName, 'failed', $env['error']);
+        setFlash('error', "Exchange Online sync could not start: " . $env['error']);
+        header($redirect);
+        exit;
+    }
+
+    // A push reads the local lists from MariaDB, so it needs the credentials too.
+    if ($actionParam === 'Push') {
+        eopExportSyncDatabaseEnvironment();
+
+        // Hand the PDO row counts to the PowerShell side, which reads the same
+        // lists through the MariaDB CLI. If the two disagree the push is refused
+        // rather than applied, so a failed or missing client cannot replace the
+        // Exchange policy with garbage.
+        $expectEnvMap = [
+            'allowed_senders' => 'EOP_EXPECT_ALLOWED_SENDERS',
+            'blocked_senders' => 'EOP_EXPECT_BLOCKED_SENDERS',
+            'allowed_domains' => 'EOP_EXPECT_ALLOWED_DOMAINS',
+            'blocked_domains' => 'EOP_EXPECT_BLOCKED_DOMAINS',
+        ];
+        foreach ($expectEnvMap as $listType => $varName) {
+            putenv($varName . '=' . Database::countListItems($listType, $policyName));
+        }
+    }
+
+    $shellParts = [
         escapeshellarg(SYNC_SCRIPT_PATH),
-        escapeshellarg($policyName),
-        escapeshellarg($actionParam)
-    );
+        '-PolicyName ' . escapeshellarg($policyName),
+        '-Action ' . escapeshellarg($actionParam),
+    ];
+    if ($actionParam === 'Pull') {
+        // The Pull path stages its JSON through a temp file named by the environment.
+        $pullOutput = tempnam(sys_get_temp_dir(), 'eoppull_');
+        if ($pullOutput === false) {
+            setFlash('error', 'Could not create a temporary file for the Exchange Online pull response.');
+            header($redirect);
+            exit;
+        }
+        register_shutdown_function(static function () use ($pullOutput): void {
+            if (is_file($pullOutput)) {
+                @unlink($pullOutput);
+            }
+        });
+        putenv('EOP_PULL_OUTPUT=' . $pullOutput);
+    }
+
+    $cmd = 'pwsh -NoProfile -NonInteractive -File ' . implode(' ', $shellParts) . ' 2>&1';
 
     $output = [];
     $returnVar = 0;
     exec($cmd, $output, $returnVar);
 
-    $logMsg = implode("\n", $output);
+    $logMsg = implode("\\n", $output);
     if ($returnVar === 0) {
         if ($actionParam === 'Pull') {
             Database::updatePolicySyncStatus($policyName, 'synced', 'Pulled changes from Exchange Online into MariaDB');
@@ -6030,89 +6766,133 @@ if ($action === 'update_ldap_config') {
 }
 
 // --------------------------------------------------------------------------
-// 7. Upload & Save EOP Private Key with AES-256 Encrypted Passphrase (eop_auth_config)
+// 7. Upload & Save EOP PKCS#12 Certificate Bundle (eop_auth_config)
+//    Only a full PKCS#12 (.pfx/.p12) bundle is accepted. A bare PEM private key
+//    is rejected: Connect-ExchangeOnline needs the certificate and its key
+//    together, so a PEM-only record could never authenticate the scheduled pull.
 // --------------------------------------------------------------------------
 if ($action === 'upload_eop_key') {
-    $privateKeyContent = '';
-    $fileName = 'eop-cert-private.key';
+    $passphrase = (string)($_POST['key_password'] ?? '');
+    $redirect = "Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center";
 
-    // 1. Check for file upload first
-    if (!empty($_FILES['private_key_file']['tmp_name']) && is_uploaded_file($_FILES['private_key_file']['tmp_name'])) {
-        $uploadedContent = file_get_contents($_FILES['private_key_file']['tmp_name']);
-        if ($uploadedContent !== false && trim($uploadedContent) !== '') {
-            $privateKeyContent = trim($uploadedContent);
-            $fileName = basename($_FILES['private_key_file']['name'] ?? 'eop-cert-private.key');
-        }
-    }
-
-    // 2. Fall back to pasted text area
-    if (empty($privateKeyContent) && !empty($_POST['private_key_text'])) {
-        $privateKeyContent = trim($_POST['private_key_text']);
-        $fileName = 'pasted-private-key.pem';
-    }
-
-    if (empty($privateKeyContent)) {
-        setFlash('error', 'No private key file uploaded or pasted. Please select a file or paste PEM content.');
-        header("Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center");
+    if (empty($_FILES['pfx_file']['tmp_name']) || !is_uploaded_file($_FILES['pfx_file']['tmp_name'])) {
+        setFlash('error', 'A PKCS#12 (.pfx or .p12) bundle is required. PEM private keys are not accepted.');
+        header($redirect);
         exit;
     }
 
-    $authData = [
-        'private_key'           => $privateKeyContent,
+    $upload = $_FILES['pfx_file'];
+    if (($upload['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+        setFlash('error', "PKCS#12 upload failed (error code {$upload['error']}).");
+        header($redirect);
+        exit;
+    }
+
+    $pkcs12Raw = file_get_contents($upload['tmp_name']);
+    if ($pkcs12Raw === false || $pkcs12Raw === '') {
+        setFlash('error', 'The uploaded PKCS#12 file could not be read.');
+        header($redirect);
+        exit;
+    }
+
+    // openssl_pkcs12_read only succeeds on a real bundle, so this also proves the
+    // file is a PKCS#12 and not a renamed PEM, CER or P7B.
+    $parsed = [];
+    if (!openssl_pkcs12_read($pkcs12Raw, $parsed, $passphrase)) {
+        $err = openssl_error_string() ?: 'not a valid PKCS#12 bundle';
+        setFlash('error', "PKCS#12 validation failed: {$err}. Check that the passphrase is correct and the file really is a .pfx/.p12 bundle.");
+        header($redirect);
+        exit;
+    }
+
+    if (empty($parsed['cert']) || empty($parsed['pkey'])) {
+        setFlash('error', 'The PKCS#12 bundle must contain both a certificate and its private key.');
+        header($redirect);
+        exit;
+    }
+
+    $fileName = basename((string)($upload['name'] ?? 'eop-cert.pfx'));
+
+    // The bundle holds the certificate that Connect-ExchangeOnline will import, so
+    // its thumbprint is authoritative. Fall back to the typed value only when the
+    // fingerprint cannot be derived (openssl_x509_fingerprint is PHP 8.1+).
+    $thumbprint = trim($_POST['certificate_thumbprint'] ?? '');
+    $derived = function_exists('openssl_x509_fingerprint')
+        ? strtoupper(str_replace(':', '', (string)openssl_x509_fingerprint($parsed['cert'], 'sha1')))
+        : '';
+
+    if ($derived !== '') {
+        if ($thumbprint !== '' && $thumbprint !== $derived) {
+            setFlash('warning', "Thumbprint overridden: the form said {$thumbprint} but the uploaded bundle is {$derived}. The bundle is what gets imported, so {$derived} was stored.");
+        }
+        $thumbprint = $derived;
+    }
+
+    if ($thumbprint === '') {
+        setFlash('error', 'Certificate Thumbprint could not be determined from the bundle and was not supplied.');
+        header($redirect);
+        exit;
+    }
+
+    $saved = Database::saveEopAuthConfig([
+        // private_key is kept populated from the bundle so the record stays usable
+        // by anything that still reads the PEM column.
+        'private_key'           => trim($parsed['pkey']),
+        'pkcs12_bundle'         => base64_encode($pkcs12Raw),
         'key_filename'          => $fileName,
-        'password'              => $_POST['key_password'] ?? '',
-        'certificate_thumbprint'=> trim($_POST['certificate_thumbprint'] ?? ''),
+        'password'              => $passphrase,
+        'certificate_thumbprint'=> $thumbprint,
         'tenant_id'             => trim($_POST['tenant_id'] ?? ''),
         'client_id'             => trim($_POST['client_id'] ?? ''),
         'organization'          => trim($_POST['organization'] ?? 'corp.example.com'),
-        'key_type'              => str_contains($privateKeyContent, 'ENCRYPTED') ? 'PKCS8_PEM' : 'RSA_PEM',
-    ];
+        'key_type'              => 'PKCS12_PFX',
+    ], $user['username']);
 
-    if (empty($authData['certificate_thumbprint'])) {
-        setFlash('error', 'Certificate Thumbprint cannot be empty.');
-        header("Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center");
-        exit;
-    }
-
-    $saved = Database::saveEopAuthConfig($authData, $user['username']);
     if ($saved) {
-        $msg = "Private key '{$fileName}' and its AES-256 encrypted password were saved successfully into MariaDB table 'eop_auth_config'!";
-        setFlash('success', $msg);
+        setFlash(
+            'success',
+            "PKCS#12 bundle '{$fileName}' (thumbprint {$thumbprint}) was AES-256-GCM encrypted and saved into MariaDB table 'eop_auth_config'."
+        );
     } else {
-        setFlash('error', 'Failed to save private key configuration into database table.');
+        setFlash('error', 'Failed to save the certificate configuration into database table.');
     }
 
-    header("Location: index.php?policy=" . urlencode($policyName) . "&tab=config_center");
+    header($redirect);
     exit;
 }
 
 // --------------------------------------------------------------------------
 // 8. Test EOP Private Key Decryption & Signature Verification
 // --------------------------------------------------------------------------
+// 8. Test EOP Certificate: AES-256-GCM decryption + PKCS#12 readability
+// --------------------------------------------------------------------------
 if ($action === 'test_eop_key') {
     $activeAuth = Database::getEopAuthConfig();
-    if (!$activeAuth || empty($activeAuth['private_key'])) {
-        setFlash('error', 'No active private key record found in MariaDB table eop_auth_config.');
+    if (!$activeAuth) {
+        setFlash('error', 'No active certificate record found in MariaDB table eop_auth_config.');
+    } elseif (empty($activeAuth['pkcs12_bundle'])) {
+        setFlash('error', 'The active record has no PKCS#12 bundle. Upload a .pfx, otherwise the scheduled pull cannot authenticate.');
     } else {
-        $passphrase = '';
-        if (!empty($activeAuth['encrypted_password'])) {
-            $decrypted = Database::decryptKeyPassword(
-                $activeAuth['encrypted_password'],
-                $activeAuth['encryption_iv'] ?? '',
-                $activeAuth['encryption_tag'] ?? ''
-            );
-            $passphrase = $decrypted ?? '';
-        }
+        // getEopAuthConfig already decrypts the stored secrets
+        $passphrase = (string)($activeAuth['encrypted_password'] ?? '');
+        $blob = base64_decode((string)$activeAuth['pkcs12_bundle'], true);
 
-        $privKeyObj = openssl_pkey_get_private($activeAuth['private_key'], $passphrase);
-        if ($privKeyObj) {
-            $details = openssl_pkey_get_details($privKeyObj);
-            $bits = $details['bits'] ?? 'unknown';
-            $type = ($details['type'] === OPENSSL_KEYTYPE_RSA) ? 'RSA' : 'Other';
-            setFlash('success', "Private key parsed and verified successfully! Key type: {$type}, Bits: {$bits}, AES-256 passphrase decrypted OK. Ready for Exchange Online certificate token signing.");
+        if ($blob === false || $blob === '') {
+            setFlash('error', 'The decrypted PKCS#12 bundle is not valid base64. The record is corrupt.');
         } else {
-            $err = openssl_error_string() ?: 'Invalid private key or incorrect passphrase';
-            setFlash('error', "OpenSSL private key verification failed: {$err}");
+            // Verify the same artifact the cron imports, not just the extracted PEM
+            $parsed = [];
+            if (!openssl_pkcs12_read($blob, $parsed, $passphrase)) {
+                $err = openssl_error_string() ?: 'unreadable with the stored passphrase';
+                setFlash('error', "Decryption succeeded but the PKCS#12 bundle could not be opened: {$err}. The stored passphrase may not match the bundle.");
+            } elseif (empty($parsed['pkey'])) {
+                setFlash('error', 'The PKCS#12 bundle contains no private key.');
+            } else {
+                $details = openssl_pkey_get_details(openssl_pkey_get_private($parsed['pkey']));
+                $bits = $details['bits'] ?? 'unknown';
+                $type = ($details['type'] === OPENSSL_KEYTYPE_RSA) ? 'RSA' : 'Other';
+                setFlash('success', "Certificate verified: AES-256-GCM decryption OK, PKCS#12 opened, key type {$type}, {$bits} bits, thumbprint {$activeAuth['certificate_thumbprint']}. Ready for Exchange Online certificate authentication.");
+            }
         }
     }
 
@@ -6141,6 +6921,41 @@ if ($action === 'update_default_policy') {
         setFlash('success', "Default policy successfully updated to '{$newPolicyName}'. Updated in MariaDB (table eop_policies) and environment configuration.");
     } else {
         setFlash('error', "Failed to update default policy name in database.");
+    }
+
+    header($redirect);
+    exit;
+}
+
+// --------------------------------------------------------------------------
+// 10. Accept or Deny a Withheld Deletion (empty remote list confirmation)
+// --------------------------------------------------------------------------
+if ($action === 'resolve_sync_confirmation') {
+    $targetPolicy = trim($_POST['target_policy'] ?? $policyName);
+    $targetList = trim($_POST['target_list'] ?? '');
+    $decision = trim($_POST['decision'] ?? '');
+    $redirect = "Location: index.php?policy=" . urlencode($targetPolicy) . "&tab=" . urlencode($targetList);
+
+    $validLists = ['allowed_senders', 'blocked_senders', 'allowed_domains', 'blocked_domains'];
+    if ($targetPolicy === '' || !in_array($targetList, $validLists, true)) {
+        setFlash('error', 'Invalid confirmation target.');
+        header("Location: index.php");
+        exit;
+    }
+    if (!in_array($decision, ['accepted', 'denied'], true)) {
+        setFlash('error', 'Invalid decision. Expected accept or deny.');
+        header($redirect);
+        exit;
+    }
+
+    $ok = Database::resolveSyncConfirmation($targetPolicy, $targetList, $decision, $user['username']);
+
+    if (!$ok) {
+        setFlash('error', 'That confirmation no longer exists. It may have been cleared by a newer sync run.');
+    } elseif ($decision === 'accepted') {
+        setFlash('success', "Deletion of the '{$targetList}' entries for policy '{$targetPolicy}' approved. The next cron run will apply it.");
+    } else {
+        setFlash('success', "Deletion denied. The '{$targetList}' entries for policy '{$targetPolicy}' will be kept.");
     }
 
     header($redirect);
@@ -6284,13 +7099,21 @@ if ($Action -eq "Pull") {
     generateContent: () => `<?php
 // ==============================================================================
 // CLI Crontab Sync Runner for Debian
-// 
-// CRON POLICY ENFORCEMENT:
-// The cron job strictly PULLS changes from Exchange Online Protection (EOP)
-// into MariaDB. It does NOT push local MariaDB changes to EOP.
-// 
+//
+// SYNC DIRECTION:
+//   The default, and the safe default, is PULL: Exchange Online -> MariaDB.
+//   Pushing MariaDB changes to Exchange Online is opt-in and must be enabled
+//   explicitly, because an unattended job that writes to production anti-spam
+//   policies can lock mail out or stop blocking at 3am with nobody watching.
+//
+//   Enable with EOP_CRON_ALLOW_PUSH=true (see README). Even then, a push is
+//   refused if any of the four local lists is empty, because the push applies
+//   all four to Exchange and an empty list CLEARS it there. Override only with
+//   EOP_CRON_PUSH_ALLOW_EMPTY=true.
+//
 // Usage in crontab (e.g. every 15 minutes):
-// */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default Inbound Anti-Spam Policy"
+//   */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default Inbound Anti-Spam Policy"
+//   */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="..." --action=push
 // ==============================================================================
 
 declare(strict_types=1);
@@ -6306,45 +7129,384 @@ if (!file_exists(__DIR__ . '/config.php')) {
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
+require_once __DIR__ . '/functions.php';
+
+/**
+ * Read a boolean flag from the environment. config.php loads .env via putenv, so
+ * a value written there is visible here; the crontab can also export it.
+ */
+function eopReadFlag(string $key, bool $default = false): bool {
+    $raw = getenv($key);
+    if ($raw === false || trim($raw) === '') {
+        return $default;
+    }
+    return in_array(strtolower(trim($raw)), ['1', 'true', 'yes', 'on'], true);
+}
 
 $options = getopt('', ['policy::', 'action::', 'help']);
 
 if (isset($options['help'])) {
-    echo "Usage: php cron-sync.php [--policy=PolicyName] [--action=pull]\\n";
-    echo "Notice: The cron job strictly PULLS from Exchange Online to MariaDB (never pushes).\\n";
+    echo "Usage: php cron-sync.php [--policy=PolicyName] [--action=pull|push]\\n";
+    echo "  pull  (default) Exchange Online -> MariaDB. Always allowed.\\n";
+    echo "  push  MariaDB -> Exchange Online. Requires EOP_CRON_ALLOW_PUSH=true,\\n";
+    echo "        and is refused if any of the four local lists is empty unless\\n";
+    echo "        EOP_CRON_PUSH_ALLOW_EMPTY=true is also set.\\n";
     exit(0);
 }
 
 $policy = $options['policy'] ?? Database::getDefaultPolicyName();
-$action = strtolower($options['action'] ?? 'pull');
+$action = strtolower(trim((string)($options['action'] ?? 'pull')));
 
-// Enforce pull-only in cron
-if ($action !== 'pull') {
-    fwrite(STDERR, "[CRON POLICY ERROR] The cron job is configured to ONLY pull changes from EOP, not push them.\\n");
-    fwrite(STDERR, "To push changes, an authorized administrator must use the Web UI or run with explicit manual confirmation.\\n");
+if (!in_array($action, ['pull', 'push'], true)) {
+    fwrite(STDERR, "[CRON ERROR] Unknown --action '{$action}'. Expected 'pull' or 'push'.\\n");
     exit(1);
 }
 
-echo "[" . date('Y-m-d H:i:s') . "] Starting EOP Anti-Spam CRON PULL for policy: {$policy}\\n";
-echo "Sync Direction: PULL ONLY (Exchange Online -> MariaDB)\\n";
-echo "Notice: Local MariaDB changes will NOT be pushed to EOP.\\n";
+$isPush = ($action === 'push');
+$allowPush = eopReadFlag('EOP_CRON_ALLOW_PUSH');
+$allowEmptyPush = eopReadFlag('EOP_CRON_PUSH_ALLOW_EMPTY');
+
+// Pushing from an unattended job modifies production anti-spam policies, so it
+// has to be turned on deliberately rather than being reachable by a crontab edit.
+if ($isPush && !$allowPush) {
+    fwrite(STDERR, "[CRON POLICY ERROR] Push is disabled. The cron job pulls only unless EOP_CRON_ALLOW_PUSH=true is set.\\n");
+    fwrite(STDERR, "To push, either set EOP_CRON_ALLOW_PUSH=true in .env (see README), or have an authorized administrator use the Web UI.\\n");
+    exit(1);
+}
+
+echo "[" . date('Y-m-d H:i:s') . "] Starting EOP Anti-Spam CRON {$action} for policy: {$policy}\\n";
+if ($isPush) {
+    echo "Sync Direction: PUSH (MariaDB -> Exchange Online) - APPLIES TO PRODUCTION\\n";
+} else {
+    echo "Sync Direction: PULL ONLY (Exchange Online -> MariaDB)\\n";
+    echo "Notice: Local MariaDB changes will NOT be pushed to EOP.\\n";
+}
+
 
 // Execute PowerShell sync script in Pull-only mode on Debian
 $psScript = __DIR__ . '/sync-exchange.ps1';
-if (file_exists($psScript)) {
-    $cmd = sprintf('pwsh -File %s -PolicyName %s -Action Pull 2>&1', escapeshellarg($psScript), escapeshellarg($policy));
-    passthru($cmd, $returnVar);
+if (!file_exists($psScript)) {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: PowerShell script not found at {$psScript}\\n");
+    exit(1);
+}
 
-    if ($returnVar === 0) {
-        Database::updatePolicySyncStatus($policy, 'synced', 'Crontab automatic PULL from EOP completed');
-        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', 'Crontab pulled changes from Exchange Online (Pull-Only)', 'CRON_DAEMON');
-        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\\n";
+$pwsh = trim((string)shell_exec('command -v pwsh 2>/dev/null'));
+if ($pwsh === '') {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: pwsh not found. Install PowerShell 7 (https://aka.ms/powershell)\\n");
+    exit(1);
+}
+
+// PowerShell's Platform.SelectProductNameForDirectory('CACHE') returns an empty
+// string on Debian when XDG_CACHE_HOME is unset, which makes PowerShellGet fail
+// to initialise. Only applied when the crontab has not supplied one already.
+if (getenv('XDG_CACHE_HOME') === false) {
+    $xdgCache = '/var/cache/eop-antispam';
+    if (!is_dir($xdgCache)) {
+        @mkdir($xdgCache, 0755, true);
+    }
+    if (is_dir($xdgCache)) {
+        putenv('XDG_CACHE_HOME=' . $xdgCache);
+    }
+}
+
+// Exchange Online App-Only authentication values are read from the active
+// eop_auth_config record rather than hardcoded in the PowerShell script, so that
+// rotating the certificate or App Registration in the Web UI takes effect here
+// without a code change. The web UI's manual sync uses the same helper, so the
+// two paths cannot drift apart again.
+$authConfig = Database::getEopAuthConfig();
+$syncEnv = eopPrepareSyncEnvironment($authConfig, getenv('EOP_CERT_PFX_PATH') ?: '/etc/eop-antispam/eop-cert.pfx');
+
+if (!$syncEnv['ok']) {
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] CRON ERROR: ' . $syncEnv['error'] . "\\n");
+    Database::updatePolicySyncStatus($policy, 'failed', $syncEnv['error']);
+    exit(1);
+}
+
+$pfxPath = $syncEnv['pfx_path'];
+
+if (trim((string)($authConfig['pkcs12_bundle'] ?? '')) !== '' && (string)($authConfig['encrypted_password'] ?? '') === '') {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] NOTICE: no stored passphrase for the PKCS#12 bundle, attempting an empty passphrase.\\n");
+}
+
+// Paths and the policy name are passed to PowerShell through the environment
+// rather than interpolated into the command string, so values containing spaces
+// or quotes cannot break out of the PowerShell argument.
+putenv('EOP_PS_SCRIPT=' . $psScript);
+putenv('EOP_POLICY=' . $policy);
+
+// -----------------------------------------------------------------------------
+// PUSH: MariaDB -> Exchange Online (opt-in)
+// -----------------------------------------------------------------------------
+if ($isPush) {
+    // The push reads the local lists from MariaDB, so it needs the credentials.
+    eopExportSyncDatabaseEnvironment();
+
+    // Set-HostedContentFilterPolicy is applied with all four lists at once, so an
+    // empty local list does not mean "no change" - it CLEARS that list in
+    // Exchange. Refuse rather than discover that at 3am, unless the operator has
+    // explicitly said an empty list is intended.
+    $pushLists = ['allowed_senders', 'blocked_senders', 'allowed_domains', 'blocked_domains'];
+    $counts = [];
+    $empty = [];
+    foreach ($pushLists as $listType) {
+        $counts[$listType] = Database::countListItems($listType, $policy);
+        if ($counts[$listType] === 0) {
+            $empty[] = $listType;
+        }
+    }
+
+    if ($empty !== [] && !$allowEmptyPush) {
+        $detail = implode(', ', $empty);
+        fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] CRON POLICY ERROR: push refused for policy '{$policy}'.\\n");
+        fwrite(STDERR, "These local lists are empty: {$detail}.\\n");
+        fwrite(STDERR, "A push applies all four lists at once, so an empty list would CLEAR it in Exchange Online.\\n");
+        fwrite(STDERR, "Populate the list(s), or set EOP_CRON_PUSH_ALLOW_EMPTY=true if clearing them is intended.\\n");
+        Database::updatePolicySyncStatus($policy, 'failed', "Push refused: empty local list(s) {$detail}");
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Cron push refused: empty local list(s) {$detail}", 'CRON_DAEMON');
+        exit(1);
+    }
+
+    foreach ($counts as $listType => $count) {
+        printf("  local %-18s %d\\n", $listType, $count);
+    }
+
+    // Hand the PDO row counts to the PowerShell side. It reads the same lists
+    // through the MariaDB CLI, and if the two disagree then the local data is not
+    // being read consistently - the push is refused rather than applied. This is
+    // the guard that stops a failed or missing client from silently replacing the
+    // Exchange policy with garbage.
+    $expectEnvMap = [
+        'allowed_senders' => 'EOP_EXPECT_ALLOWED_SENDERS',
+        'blocked_senders' => 'EOP_EXPECT_BLOCKED_SENDERS',
+        'allowed_domains' => 'EOP_EXPECT_ALLOWED_DOMAINS',
+        'blocked_domains' => 'EOP_EXPECT_BLOCKED_DOMAINS',
+    ];
+    foreach ($expectEnvMap as $listType => $varName) {
+        putenv($varName . '=' . (int)($counts[$listType] ?? 0));
+    }
+    if ($empty !== []) {
+        fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] WARNING: ' . count($empty) . " list(s) are empty and WILL BE CLEARED in Exchange Online (EOP_CRON_PUSH_ALLOW_EMPTY is set).\\n");
+    }
+
+    $pushShell = sprintf(
+        '%s -NoProfile -NonInteractive -File %s -PolicyName %s -Action Push 2>&1',
+        escapeshellarg($pwsh),
+        escapeshellarg($psScript),
+        escapeshellarg($policy)
+    );
+
+    // EOP_SYNC_DEBUG=1 makes sync-exchange.ps1 dump the exact client output and
+    // each guard decision. Inherited from the environment, so it can be set inline
+    // for a one-off run.
+    if (!getenv('EOP_SYNC_DEBUG')) {
+        echo "(hint: re-run with EOP_SYNC_DEBUG=1 to trace the MariaDB client output)\\n";
+    }
+
+    $pushOutput = [];
+    $pushExit = 0;
+    passthru($pushShell, $pushExit);
+
+    if ($pushExit === 0) {
+        $total = array_sum($counts);
+        Database::updatePolicySyncStatus($policy, 'synced', "Cron push applied {$total} entries across 4 lists");
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pushed MariaDB -> Exchange Online (Push): {$total} entries across 4 lists", 'CRON_DAEMON');
+        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP push completed successfully.\\n";
+        exit(0);
+    }
+
+    Database::updatePolicySyncStatus($policy, 'failed', "Cron push exited with code {$pushExit}");
+    Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab push failed with code {$pushExit}", 'CRON_DAEMON');
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] Cron push failed with code {$pushExit}\\n");
+    exit(1);
+}
+
+// -----------------------------------------------------------------------------
+// PULL: Exchange Online -> MariaDB (default)
+// -----------------------------------------------------------------------------
+$pullOutput = tempnam(sys_get_temp_dir(), 'eoppull_');
+if ($pullOutput === false) {
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] CRON ERROR: could not create a temporary file for the pull response.\\n");
+    exit(1);
+}
+
+putenv('EOP_PULL_OUTPUT=' . $pullOutput);
+
+// The pull transcript is removed on every exit path, including fatal errors. The
+// temporary PKCS#12 bundle is cleaned up by eopPrepareSyncEnvironment().
+register_shutdown_function(static function () use ($pullOutput): void {
+    if (is_file($pullOutput)) {
+        @unlink($pullOutput);
+    }
+});
+
+// Every pwsh invocation is a separate process, so importing the module here
+// would not carry over to the run below. The import is therefore performed in
+// the *same* session that executes sync-exchange.ps1. The preflight below exists
+// only to report the import failure loudly, instead of letting the script fall
+// through to its own success message.
+$importCmd = 'Import-Module ExchangeOnlineManagement -ErrorAction Stop';
+
+$preflightShell = sprintf(
+    '%s -NoProfile -NonInteractive -Command %s 2>&1',
+    escapeshellarg($pwsh),
+    escapeshellarg($importCmd)
+);
+
+$preflightOutput = [];
+$preflightExit = 0;
+exec($preflightShell, $preflightOutput, $preflightExit);
+
+if ($preflightExit !== 0) {
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: could not import ExchangeOnlineManagement (exit {$preflightExit}).\\n");
+    foreach ($preflightOutput as $line) {
+        fwrite(STDERR, '    ' . $line . "\\n");
+    }
+    Database::updatePolicySyncStatus($policy, 'failed', 'ExchangeOnlineManagement module import failed');
+    exit(1);
+}
+
+echo "ExchangeOnlineManagement module imported successfully.\\n";
+
+$runShell = sprintf(
+    '%s -NoProfile -NonInteractive -Command %s 2>&1',
+    escapeshellarg($pwsh),
+    escapeshellarg(sprintf(
+        '$ErrorActionPreference = "Stop"; %s; & $env:EOP_PS_SCRIPT -PolicyName $env:EOP_POLICY -Action Pull',
+        $importCmd
+    ))
+);
+
+passthru($runShell, $returnVar);
+
+if ($returnVar === 0) {
+    $remote = null;
+    if (is_readable($pullOutput)) {
+        $decoded = json_decode((string)file_get_contents($pullOutput), true);
+        if (is_array($decoded)) {
+            $remote = $decoded;
+        }
+    }
+
+    if ($remote === null) {
+        fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: the pull finished but wrote no readable policy payload.\\n");
+        Database::updatePolicySyncStatus($policy, 'failed', 'Cron pull produced no readable remote policy payload');
+        exit(1);
+    }
+
+    $listMap = [
+        'allowed_senders' => 'allowed_senders',
+        'blocked_senders' => 'blocked_senders',
+        'allowed_domains' => 'allowed_domains',
+        'blocked_domains' => 'blocked_domains',
+    ];
+
+    $totalInserted = 0;
+    $totalRemoved = 0;
+    $awaitingDecision = [];
+    $heldByDecision = [];
+
+    foreach ($listMap as $listType => $payloadKey) {
+        $values = $remote[$payloadKey] ?? [];
+        if (!is_array($values)) {
+            // A one-entry PowerShell list serialises as a bare JSON string rather
+            // than an array (a function return unrolls a single-element array).
+            // sync-exchange.ps1 now prevents that, but older payloads may still
+            // exist, so a lone string is wrapped rather than discarded.
+            if (is_string($values)) {
+                $values = ($values === '') ? [] : [$values];
+            } else {
+                fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: the remote payload for '{$listType}' is neither a list nor a string.\\n");
+                Database::updatePolicySyncStatus($policy, 'failed', "Remote payload for {$listType} was not a list");
+                exit(1);
+            }
+        }
+
+        try {
+            $result = Database::reconcileListWithRemoteGuarded($listType, $policy, $values, 'CRON_DAEMON');
+        } catch (RuntimeException $e) {
+            // Never reconcile against a payload we could not read: the reconciler
+            // deletes local rows absent from the remote list, so a malformed
+            // payload would wipe the table.
+            fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] CRON ERROR: ' . $e->getMessage() . "\\n");
+            Database::updatePolicySyncStatus($policy, 'failed', "Malformed remote payload for {$listType}");
+            exit(1);
+        }
+
+        $guard = $result['guard'] ?? 'none';
+        $confirmation = $result['confirmation'] ?? null;
+        $localCount = (int)($confirmation['local_count'] ?? 0);
+
+        if ($guard === 'prompted' || $guard === 'awaiting_decision') {
+            // Deletion withheld and still needs a human decision.
+            $awaitingDecision[$listType] = ['local_count' => $localCount, 'guard' => $guard];
+            printf(
+                "  %-18s remote=%-5d held=%-5d confirmation required\\n",
+                $listType, $result['remote'], $localCount
+            );
+        } elseif ($guard === 'denied') {
+            // An administrator already refused; entries are deliberately kept and
+            // cron must not nag about it on every run.
+            $heldByDecision[$listType] = ['local_count' => $localCount, 'guard' => 'denied'];
+            printf(
+                "  %-18s remote=%-5d kept=%-5d deletion previously denied\\n",
+                $listType, $result['remote'], $localCount
+            );
+        } else {
+            // 'none', or 'applied' where an accepted decision was executed now.
+            $totalInserted += $result['inserted'];
+            $totalRemoved += $result['removed'];
+
+            printf(
+                "  %-18s remote=%-5d inserted=%-5d removed=%-5d\\n",
+                $listType, $result['remote'], $result['inserted'], $result['removed']
+            );
+        }
+
+        foreach ($result['errors'] as $insertError) {
+            fwrite(STDERR, '    ' . $insertError . "\\n");
+        }
+    }
+
+    if ($heldByDecision !== []) {
+        echo "NOTE: deletion of an empty remote list was previously DENIED for "
+            . count($heldByDecision) . ' list(s); those entries were kept by request: '
+            . implode(', ', array_keys($heldByDecision)) . ".\\n";
+        echo "      The confirmation clears automatically once Exchange Online returns entries.\\n";
+    }
+
+    if ($awaitingDecision !== []) {
+        // The pull itself succeeded, so this is not a failure exit: it is a state
+        // that needs a human decision. Surfaced loudly because a crontab mailer
+        // grepping for the success line would otherwise read this as clean.
+        echo str_repeat('-', 74), "\\n";
+        echo "ACTION REQUIRED: remote lists came back EMPTY but local entries exist.\\n";
+        echo "Deletion has been WITHHELD. Nothing was removed for the lists below.\\n";
+        foreach ($awaitingDecision as $listType => $info) {
+            $state = $info['guard'] === 'prompted'
+                ? 'confirmation raised, awaiting a decision'
+                : 'already awaiting a decision';
+            printf("  - %-18s local entries=%-6d %s\\n", $listType, $info['local_count'], $state);
+        }
+        echo "Review and accept or deny each list in the web UI under this policy.\\n";
+        echo str_repeat('-', 74), "\\n";
+
+        Database::updatePolicySyncStatus(
+            $policy,
+            'pending',
+            count($awaitingDecision) . ' list(s) withheld: empty remote list needs administrator confirmation'
+        );
+        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed; administrator confirmation required.\\n";
     } else {
-        Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");
-        echo "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}.\n";
+        $summary = "Cron pull: {$totalInserted} added, {$totalRemoved} removed";
+        Database::updatePolicySyncStatus($policy, 'synced', $summary);
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pulled changes from Exchange Online (Pull-Only): {$summary}", 'CRON_DAEMON');
+        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\\n";
     }
 } else {
-    echo "Error: PowerShell script not found at {$psScript}\n";
+    Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");
+    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}\\n");
+    exit(1);
 }
 `
   },
