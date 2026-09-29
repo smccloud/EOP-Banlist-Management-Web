@@ -2921,6 +2921,27 @@ if (!function_exists('eopEncryptSecret')) {
     }
 }
 
+/**
+ * Normalizes certificate thumbprint into a clean 40-character uppercase hexadecimal string.
+ * Handles raw 20-byte binary hashes (e.g. from openssl_x509_fingerprint binary mode) or strings with colons/spaces.
+ */
+function eopNormalizeThumbprint(mixed $input): string {
+    if (empty($input)) {
+        return '';
+    }
+    $str = (string)$input;
+    // Check if it's raw binary (e.g. 20-byte SHA-1 hash or non-printable chars)
+    if (strlen($str) === 20 || !ctype_print($str)) {
+        return strtoupper(bin2hex($str));
+    }
+    // Clean string input (strip colons, spaces, dashes)
+    $clean = strtoupper(preg_replace('/[^a-fA-F0-9]/', '', $str));
+    if ($clean !== '') {
+        return $clean;
+    }
+    return strtoupper(bin2hex($str));
+}
+
 // Automatically ensure config.php exists on disk
 function ensureConfigPhp(): bool {
     $cfgPath = __DIR__ . '/config.php';
@@ -3195,7 +3216,7 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
 
     $tenantId = $eop['tenant_id'] ?? ($existing['M365_TENANT_ID'] ?? '11111111-2222-3333-4444-555555555555');
     $clientId = $eop['client_id'] ?? ($existing['M365_CLIENT_ID'] ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-    $thumb = $eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80');
+    $thumb = eopNormalizeThumbprint($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'));
     $org = $eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com');
     $policy = $eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy');
     $masterKey = $existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16));
@@ -3319,7 +3340,7 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
 
     $tenantId = addslashes($eop['tenant_id'] ?? ($existing['M365_TENANT_ID'] ?? '11111111-2222-3333-4444-555555555555'));
     $clientId = addslashes($eop['client_id'] ?? ($existing['M365_CLIENT_ID'] ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'));
-    $thumb = addslashes($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'));
+    $thumb = addslashes(eopNormalizeThumbprint($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80')));
     $org = addslashes($eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com'));
     $policy = addslashes($eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy'));
     $masterKey = addslashes($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16)));
@@ -3875,6 +3896,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $eop = $_SESSION['wizard']['eop'];
         $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 
+        // Ensure thumbprint is always normalized to 40-character uppercase hexadecimal
+        if (!empty($eop['thumbprint'])) {
+            $eop['thumbprint'] = eopNormalizeThumbprint($eop['thumbprint']);
+            $_SESSION['wizard']['eop']['thumbprint'] = $eop['thumbprint'];
+        }
+
         try {
             // 1. Connect to MariaDB
             $dsn = "mysql:host={$db['host']};port={$db['port']};dbname={$db['name']};charset=utf8mb4";
@@ -3940,7 +3967,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $authStmt->execute([
                 ':tid' => $eop['tenant_id'],
                 ':cid' => $eop['client_id'],
-                ':thumb' => $eop['thumbprint'],
+                ':thumb' => eopNormalizeThumbprint($eop['thumbprint']),
                 ':filename' => $eop['pkcs12_filename'] ?: 'eop-cert-private.key',
                 ':pem' => eopEncryptSecret($eop['private_key']),
                 ':p12' => !empty($eop['pkcs12_bundle']) ? eopEncryptSecret($eop['pkcs12_bundle']) : null,

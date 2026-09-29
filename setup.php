@@ -59,6 +59,27 @@ if (!function_exists('eopDecryptSecret')) {
     }
 }
 
+/**
+ * Normalizes certificate thumbprint into a clean 40-character uppercase hexadecimal string.
+ * Handles raw 20-byte binary hashes (e.g. from openssl_x509_fingerprint binary mode) or strings with colons/spaces.
+ */
+function eopNormalizeThumbprint(mixed $input): string {
+    if (empty($input)) {
+        return '';
+    }
+    $str = (string)$input;
+    // Check if it's raw binary (e.g. 20-byte SHA-1 hash or non-printable chars)
+    if (strlen($str) === 20 || !ctype_print($str)) {
+        return strtoupper(bin2hex($str));
+    }
+    // Clean string input (strip colons, spaces, dashes)
+    $clean = strtoupper(preg_replace('/[^a-fA-F0-9]/', '', $str));
+    if ($clean !== '') {
+        return $clean;
+    }
+    return strtoupper(bin2hex($str));
+}
+
 // Automatically ensure config.php exists on disk
 function ensureConfigPhp(): bool {
     $cfgPath = __DIR__ . '/config.php';
@@ -336,7 +357,7 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
 
     $tenantId = $eop['tenant_id'] ?? ($existing['M365_TENANT_ID'] ?? '11111111-2222-3333-4444-555555555555');
     $clientId = $eop['client_id'] ?? ($existing['M365_CLIENT_ID'] ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-    $thumb = $eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80');
+    $thumb = eopNormalizeThumbprint($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'));
     $org = $eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com');
     $policy = $eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy');
     $masterKey = (defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
@@ -467,7 +488,7 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
 
     $tenantId = addslashes($eop['tenant_id'] ?? ($existing['M365_TENANT_ID'] ?? '11111111-2222-3333-4444-555555555555'));
     $clientId = addslashes($eop['client_id'] ?? ($existing['M365_CLIENT_ID'] ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'));
-    $thumb = addslashes($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'));
+    $thumb = addslashes(eopNormalizeThumbprint($eop['thumbprint'] ?? ($existing['M365_CERT_THUMBPRINT'] ?? '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80')));
     $org = addslashes($eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com'));
     $policy = addslashes($eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy'));
     $masterKey = addslashes((defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
@@ -1201,12 +1222,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     // Derive the real thumbprint from the uploaded certificate so the
                     // stored value cannot drift from the material being used.
-                    $fingerprint = strtoupper(str_replace(':', '', (string)openssl_x509_fingerprint($certs['cert'], 'sha1', true)));
-                    if ($fingerprint !== '') {
-                        if ($thumbprint === '' || strcasecmp(preg_replace('/[^a-fA-F0-9]/', '', $thumbprint), $fingerprint) !== 0) {
-                            $thumbprint = $fingerprint;
-                            $notice = "Certificate thumbprint was set from the uploaded PKCS#12 file: {$fingerprint}.";
+                    // Note: openssl_x509_fingerprint default binary=false returns a hex string.
+                    $rawFp = @openssl_x509_fingerprint($certs['cert'], 'sha1', false);
+                    $fingerprint = eopNormalizeThumbprint($rawFp ?: '');
+                    if ($fingerprint === '' && openssl_x509_export($certs['cert'], $pemCert)) {
+                        $cleanPem = preg_replace('/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s+/', '', $pemCert);
+                        $der = base64_decode($cleanPem);
+                        if ($der !== false && $der !== '') {
+                            $fingerprint = strtoupper(sha1($der));
                         }
+                    }
+                    if ($fingerprint !== '') {
+                        $thumbprint = $fingerprint;
+                        $notice = "Certificate thumbprint was set from the uploaded PKCS#12 file: {$fingerprint}.";
+                    } else {
+                        $thumbprint = eopNormalizeThumbprint($thumbprint);
                     }
                 }
             }
@@ -1220,7 +1250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['wizard']['eop'] = [
                 'tenant_id' => $tenantId,
                 'client_id' => $clientId,
-                'thumbprint' => $thumbprint,
+                'thumbprint' => eopNormalizeThumbprint($thumbprint),
                 'org_domain' => $orgDomain,
                 'policy' => $policy,
                 'private_key' => $privateKey,
@@ -1241,6 +1271,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $ldap = $_SESSION['wizard']['ldap'];
         $eop = $_SESSION['wizard']['eop'];
         $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+        // Ensure thumbprint is always normalized to 40-character uppercase hexadecimal
+        // (recovers cleanly even if existing session stored raw binary from previous step)
+        if (!empty($eop['thumbprint'])) {
+            $eop['thumbprint'] = eopNormalizeThumbprint($eop['thumbprint']);
+            $_SESSION['wizard']['eop']['thumbprint'] = $eop['thumbprint'];
+        }
 
         try {
             // 1. Connect to MariaDB
@@ -1307,7 +1344,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $authStmt->execute([
                 ':tid' => $eop['tenant_id'],
                 ':cid' => $eop['client_id'],
-                ':thumb' => $eop['thumbprint'],
+                ':thumb' => eopNormalizeThumbprint($eop['thumbprint']),
                 ':filename' => $eop['pkcs12_filename'] ?: 'eop-cert-private.key',
                 ':pem' => eopEncryptSecret($eop['private_key']),
                 ':p12' => !empty($eop['pkcs12_bundle']) ? eopEncryptSecret($eop['pkcs12_bundle']) : null,
@@ -2000,7 +2037,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         </div>
                         <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
                             <div>Tenant: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['tenant_id'] ?? ''), 0, 8); ?>...</div>
-                            <div>Thumb: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['thumbprint'] ?? ''), 0, 8); ?>...</div>
+                            <div>Thumb: <?php echo substr(htmlspecialchars(eopNormalizeThumbprint($_SESSION['wizard']['eop']['thumbprint'] ?? '')), 0, 8); ?>...</div>
                             <div>PKCS#12: <?php
                                 $reviewBundle = $_SESSION['wizard']['eop']['pkcs12_bundle'] ?? '';
                                 echo $reviewBundle !== ''
