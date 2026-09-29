@@ -142,6 +142,7 @@ define('TABLE_POLICIES',        'eop_policies');
 define('TABLE_LDAP_CONFIG',     'eop_ldap_config'); // Dedicated database table storing LDAP connection information
 define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config'); // Dedicated database table storing EOP private key & encrypted password
 define('TABLE_LOCAL_ADMINS',    'eop_local_admins'); // Dedicated database table storing emergency non-LDAP fallback administrator accounts
+define('TABLE_SYNC_CONFIRMATIONS', 'eop_sync_confirmations'); // Withheld deletions awaiting an administrator accept/deny decision
 
 // Master key for AES-256-GCM encryption of stored private key passphrases
 define('AUTH_MASTER_ENCRYPTION_KEY', getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: '');
@@ -1685,6 +1686,32 @@ ${cfg.fallbackAdminEnabled !== false ? `-- Seed default emergency fallback admin
 INSERT INTO \`${cfg.dbName}\`.\`eop_local_admins\` (\`username\`, \`password_hash\`, \`is_active\`, \`created_by\`)
 VALUES ('${cfg.fallbackAdminUsername || 'eopadmin'}', '${cfg.fallbackAdminPasswordHash || '$2y$12$EmergencyFallbackAdminHash2026SecureBcrypt'}', 1, 'INITIAL_SETUP_WIZARD')
 ON DUPLICATE KEY UPDATE \`password_hash\` = VALUES(\`password_hash\`), \`is_active\` = 1;` : ''}
+
+-- ----------------------------------------------------------------------------
+-- Table 9: Withheld Deletion Confirmations
+-- A cron pull that returns an EMPTY remote list cannot be distinguished from a
+-- policy that genuinely has no entries. Because the reconciler deletes local
+-- rows absent from the remote list, one bad pull would empty a populated list.
+-- Cron therefore withholds the deletion and records what is at risk here, and an
+-- administrator accepts or denies it in the web UI. The decision is stored, not
+-- acted on: the next cron run for that policy consumes it.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS \`${cfg.dbName}\`.\`eop_sync_confirmations\` (
+    \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    \`policy_name\` VARCHAR(255) NOT NULL,
+    \`list_type\` VARCHAR(50) NOT NULL,
+    \`local_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+    \`remote_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+    \`pending_values\` MEDIUMTEXT NULL,
+    \`values_truncated\` TINYINT(1) NOT NULL DEFAULT 0,
+    \`status\` ENUM('pending', 'accepted', 'denied', 'applied') NOT NULL DEFAULT 'pending',
+    \`requested_by\` VARCHAR(100) NOT NULL DEFAULT 'CRON_DAEMON',
+    \`decided_by\` VARCHAR(100) NULL,
+    \`decided_at\` DATETIME NULL,
+    \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY \`uniq_policy_list\` (\`policy_name\`, \`list_type\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
 -- Remote User Permissions Grant Example (Run on Remote MariaDB server)
@@ -3272,7 +3299,7 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
  * 
  * Page-by-page setup flow:
  * Step 1: System requirements & Prerequisites
- * Step 2: MariaDB Database Connection & Schema Population (all 9 tables)
+ * Step 2: MariaDB Database Connection & Schema Population (all 11 tables)
  * Step 3: Active Directory / OpenLDAP Configuration
  * Step 4: Exchange Online Protection (EOP) Setup & Private Key
  * Step 5: Review & Permanent Lock (Prevents re-running)
@@ -4018,6 +4045,7 @@ define(\'TABLE_POLICIES\',        \'eop_policies\');
 define(\'TABLE_LDAP_CONFIG\',     \'eop_ldap_config\');
 define(\'TABLE_EOP_AUTH_CONFIG\', \'eop_auth_config\');
 define(\'TABLE_LOCAL_ADMINS\',    \'eop_local_admins\');
+define(\'TABLE_SYNC_CONFIRMATIONS\', \'eop_sync_confirmations\');
 
 define(\'AUTH_MASTER_ENCRYPTION_KEY\', eopEnv(\'AUTH_MASTER_ENCRYPTION_KEY\', \'' . $masterKey . '\'));
 
@@ -4203,7 +4231,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->exec("CREATE DATABASE IF NOT EXISTS \`{$name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
             $pdo->exec("USE \`{$name}\`");
 
-            // Execute all 9 table schemas
+            // Execute all 11 table schemas
             $tables = [
                 'eop_allowed_senders' => "CREATE TABLE IF NOT EXISTS \`eop_allowed_senders\` (
                     \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -4327,6 +4355,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     KEY \`idx_local_admin_username\` (\`username\`),
                     KEY \`idx_local_admin_active\` (\`is_active\`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+
+                'eop_sync_confirmations' => "CREATE TABLE IF NOT EXISTS \`eop_sync_confirmations\` (
+                    \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    \`policy_name\` VARCHAR(255) NOT NULL,
+                    \`list_type\` VARCHAR(50) NOT NULL,
+                    \`local_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+                    \`remote_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+                    \`pending_values\` MEDIUMTEXT NULL,
+                    \`values_truncated\` TINYINT(1) NOT NULL DEFAULT 0,
+                    \`status\` ENUM('pending', 'accepted', 'denied', 'applied') NOT NULL DEFAULT 'pending',
+                    \`requested_by\` VARCHAR(100) NOT NULL DEFAULT 'CRON_DAEMON',
+                    \`decided_by\` VARCHAR(100) NULL,
+                    \`decided_at\` DATETIME NULL,
+                    \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY \`uniq_policy_list\` (\`policy_name\`, \`list_type\`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
             ];
 
@@ -4872,7 +4917,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     <div class="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold">2</div>
                     <div>
                         <h2 class="text-lg font-bold text-white">Database Connection &amp; Schema Population</h2>
-                        <p class="text-slate-400 text-xs">Enter your MariaDB connection credentials. Submitting will automatically populate all 9 database tables.</p>
+                        <p class="text-slate-400 text-xs">Enter your MariaDB connection credentials. Submitting will automatically populate all 11 database tables.</p>
                     </div>
                 </div>
 
@@ -4917,6 +4962,8 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                             <div>&bull; eop_ldap_config</div>
                             <div>&bull; eop_auth_config</div>
                             <div>&bull; eop_setup_lock</div>
+                        <div>&bull; eop_local_admins</div>
+                        <div>&bull; eop_sync_confirmations</div>
                         </div>
                     </div>
 
@@ -5220,7 +5267,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
                             <div>Host: <?php echo htmlspecialchars($_SESSION['wizard']['db']['host'] ?? '127.0.0.1'); ?></div>
                             <div>Database: <?php echo htmlspecialchars($_SESSION['wizard']['db']['name'] ?? 'eop_antispam_db'); ?></div>
-                            <div class="text-emerald-400 font-sans font-semibold mt-1">9 Tables Populated</div>
+                            <div class="text-emerald-400 font-sans font-semibold mt-1">11 Tables Populated</div>
                         </div>
                     </div>
 

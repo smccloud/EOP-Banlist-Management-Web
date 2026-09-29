@@ -509,5 +509,40 @@ if ($action === 'update_default_policy') {
     exit;
 }
 
+// --------------------------------------------------------------------------
+// 10. Accept or Deny a Withheld Deletion (empty remote list confirmation)
+// --------------------------------------------------------------------------
+if ($action === 'resolve_sync_confirmation') {
+    $targetPolicy = trim($_POST['target_policy'] ?? $policyName);
+    $targetList = trim($_POST['target_list'] ?? '');
+    $decision = trim($_POST['decision'] ?? '');
+    $redirect = "Location: index.php?policy=" . urlencode($targetPolicy) . "&tab=" . urlencode($targetList);
+
+    $validLists = ['allowed_senders', 'blocked_senders', 'allowed_domains', 'blocked_domains'];
+    if ($targetPolicy === '' || !in_array($targetList, $validLists, true)) {
+        setFlash('error', 'Invalid confirmation target.');
+        header("Location: index.php");
+        exit;
+    }
+    if (!in_array($decision, ['accepted', 'denied'], true)) {
+        setFlash('error', 'Invalid decision. Expected accept or deny.');
+        header($redirect);
+        exit;
+    }
+
+    $ok = Database::resolveSyncConfirmation($targetPolicy, $targetList, $decision, $user['username']);
+
+    if (!$ok) {
+        setFlash('error', 'That confirmation no longer exists. It may have been cleared by a newer sync run.');
+    } elseif ($decision === 'accepted') {
+        setFlash('success', "Deletion of the '{$targetList}' entries for policy '{$targetPolicy}' approved. The next cron run will apply it.");
+    } else {
+        setFlash('success', "Deletion denied. The '{$targetList}' entries for policy '{$targetPolicy}' will be kept.");
+    }
+
+    header($redirect);
+    exit;
+}
+
 header("Location: index.php");
 exit;

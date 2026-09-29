@@ -221,6 +221,8 @@ if ($returnVar === 0) {
 
     $totalInserted = 0;
     $totalRemoved = 0;
+    $awaitingDecision = [];
+    $heldByDecision = [];
 
     foreach ($listMap as $listType => $payloadKey) {
         $values = $remote[$payloadKey] ?? [];
@@ -239,7 +241,7 @@ if ($returnVar === 0) {
         }
 
         try {
-            $result = Database::reconcileListWithRemote($listType, $policy, $values, 'CRON_DAEMON');
+            $result = Database::reconcileListWithRemoteGuarded($listType, $policy, $values, 'CRON_DAEMON');
         } catch (RuntimeException $e) {
             // Never reconcile against a payload we could not read: the reconciler
             // deletes local rows absent from the remote list, so a malformed
@@ -248,26 +250,77 @@ if ($returnVar === 0) {
             Database::updatePolicySyncStatus($policy, 'failed', "Malformed remote payload for {$listType}");
             exit(1);
         }
-        $totalInserted += $result['inserted'];
-        $totalRemoved += $result['removed'];
 
-        printf(
-            "  %-18s remote=%-5d inserted=%-5d removed=%-5d\n",
-            $listType,
-            $result['remote'],
-            $result['inserted'],
-            $result['removed']
-        );
+        $guard = $result['guard'] ?? 'none';
+        $confirmation = $result['confirmation'] ?? null;
+        $localCount = (int)($confirmation['local_count'] ?? 0);
+
+        if ($guard === 'prompted' || $guard === 'awaiting_decision') {
+            // Deletion withheld and still needs a human decision.
+            $awaitingDecision[$listType] = ['local_count' => $localCount, 'guard' => $guard];
+            printf(
+                "  %-18s remote=%-5d held=%-5d confirmation required\n",
+                $listType, $result['remote'], $localCount
+            );
+        } elseif ($guard === 'denied') {
+            // An administrator already refused; entries are deliberately kept and
+            // cron must not nag about it on every run.
+            $heldByDecision[$listType] = ['local_count' => $localCount, 'guard' => 'denied'];
+            printf(
+                "  %-18s remote=%-5d kept=%-5d deletion previously denied\n",
+                $listType, $result['remote'], $localCount
+            );
+        } else {
+            // 'none', or 'applied' where an accepted decision was executed now.
+            $totalInserted += $result['inserted'];
+            $totalRemoved += $result['removed'];
+
+            printf(
+                "  %-18s remote=%-5d inserted=%-5d removed=%-5d\n",
+                $listType, $result['remote'], $result['inserted'], $result['removed']
+            );
+        }
 
         foreach ($result['errors'] as $insertError) {
             fwrite(STDERR, '    ' . $insertError . "\n");
         }
     }
 
-    $summary = "Cron pull: {$totalInserted} added, {$totalRemoved} removed";
-    Database::updatePolicySyncStatus($policy, 'synced', $summary);
-    Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pulled changes from Exchange Online (Pull-Only): {$summary}", 'CRON_DAEMON');
-    echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\n";
+    if ($heldByDecision !== []) {
+        echo "NOTE: deletion of an empty remote list was previously DENIED for "
+            . count($heldByDecision) . ' list(s); those entries were kept by request: '
+            . implode(', ', array_keys($heldByDecision)) . ".\n";
+        echo "      The confirmation clears automatically once Exchange Online returns entries.\n";
+    }
+
+    if ($awaitingDecision !== []) {
+        // The pull itself succeeded, so this is not a failure exit: it is a state
+        // that needs a human decision. Surfaced loudly because a crontab mailer
+        // grepping for the success line would otherwise read this as clean.
+        echo str_repeat('-', 74), "\n";
+        echo "ACTION REQUIRED: remote lists came back EMPTY but local entries exist.\n";
+        echo "Deletion has been WITHHELD. Nothing was removed for the lists below.\n";
+        foreach ($awaitingDecision as $listType => $info) {
+            $state = $info['guard'] === 'prompted'
+                ? 'confirmation raised, awaiting a decision'
+                : 'already awaiting a decision';
+            printf("  - %-18s local entries=%-6d %s\n", $listType, $info['local_count'], $state);
+        }
+        echo "Review and accept or deny each list in the web UI under this policy.\n";
+        echo str_repeat('-', 74), "\n";
+
+        Database::updatePolicySyncStatus(
+            $policy,
+            'pending',
+            count($awaitingDecision) . ' list(s) withheld: empty remote list needs administrator confirmation'
+        );
+        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed; administrator confirmation required.\n";
+    } else {
+        $summary = "Cron pull: {$totalInserted} added, {$totalRemoved} removed";
+        Database::updatePolicySyncStatus($policy, 'synced', $summary);
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pulled changes from Exchange Online (Pull-Only): {$summary}", 'CRON_DAEMON');
+        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\n";
+    }
 } else {
     Database::updatePolicySyncStatus($policy, 'failed', "Crontab pull exited with code {$returnVar}");
     fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] Cron pull failed with code {$returnVar}\n");

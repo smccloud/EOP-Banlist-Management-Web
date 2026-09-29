@@ -247,6 +247,32 @@ VALUES ('eopadmin', '$2y$12$eopEmergencyAdminFallbackHashPlaceholder2026XyZ', 1,
 ON DUPLICATE KEY UPDATE `password_hash` = VALUES(`password_hash`), `is_active` = 1;
 
 -- ----------------------------------------------------------------------------
+-- Table 9: Withheld Deletion Confirmations
+-- A cron pull that returns an EMPTY remote list cannot be distinguished from a
+-- policy that genuinely has no entries. Because the reconciler deletes local
+-- rows absent from the remote list, one bad pull would empty a populated list.
+-- Cron therefore withholds the deletion and records what is at risk here, and an
+-- administrator accepts or denies it in the web UI. The decision is stored, not
+-- acted on: the next cron run for that policy consumes it.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_sync_confirmations` (
+    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `policy_name` VARCHAR(255) NOT NULL,
+    `list_type` VARCHAR(50) NOT NULL,
+    `local_count` INT UNSIGNED NOT NULL DEFAULT 0,
+    `remote_count` INT UNSIGNED NOT NULL DEFAULT 0,
+    `pending_values` MEDIUMTEXT NULL,
+    `values_truncated` TINYINT(1) NOT NULL DEFAULT 0,
+    `status` ENUM('pending', 'accepted', 'denied', 'applied') NOT NULL DEFAULT 'pending',
+    `requested_by` VARCHAR(100) NOT NULL DEFAULT 'CRON_DAEMON',
+    `decided_by` VARCHAR(100) NULL,
+    `decided_at` DATETIME NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uniq_policy_list` (`policy_name`, `list_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
 -- Remote User Permissions Grant Example (Run on Remote MariaDB server)
 -- Replace 'DEBIAN_WEB_SERVER_IP' with the actual IP of your Debian host!
 -- ----------------------------------------------------------------------------

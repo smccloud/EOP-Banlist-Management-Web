@@ -103,6 +103,7 @@ define('TABLE_POLICIES',        'eop_policies');
 define('TABLE_LDAP_CONFIG',     'eop_ldap_config'); // Dedicated database table storing LDAP connection information
 define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config'); // Dedicated database table storing EOP private key & encrypted password
 define('TABLE_LOCAL_ADMINS',    'eop_local_admins'); // Dedicated database table storing emergency non-LDAP fallback administrator accounts
+define('TABLE_SYNC_CONFIRMATIONS', 'eop_sync_confirmations'); // Withheld deletions awaiting an administrator accept/deny decision
 
 // Master key for AES-256-GCM encryption of stored private key passphrases
 define('AUTH_MASTER_ENCRYPTION_KEY', eopEnv('AUTH_MASTER_ENCRYPTION_KEY', ''));

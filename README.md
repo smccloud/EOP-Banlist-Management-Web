@@ -298,7 +298,7 @@ The unified intake engine is split into two dedicated, color-coded buttons on th
   - `eop_blocked_senders`
   - `eop_allowed_domains`
   - `eop_blocked_domains`
-- Additional dedicated tables support audit logging (`eop_audit_log`), policy registries (`eop_policies`), runtime LDAP settings (`eop_ldap_config`), Exchange Online certificates (`eop_auth_config`), and setup lockout (`eop_setup_lock`).
+- Additional dedicated tables support audit logging (`eop_audit_log`), policy registries (`eop_policies`), runtime LDAP settings (`eop_ldap_config`), Exchange Online certificates (`eop_auth_config`), emergency local admins (`eop_local_admins`), setup lockout (`eop_setup_lock`), and withheld-deletion confirmations (`eop_sync_confirmations`).
 
 ### Exchange Online Certificate-Based Authentication (CBA)
 
@@ -521,6 +521,27 @@ To prevent unintended overwrites of Microsoft 365 policies, the background cron 
 - It targets the **default policy configured in the Setup Wizard** (stored in `.env` as `EOP_POLICY_NAME` and in `config.php` as `DEFAULT_POLICY_NAME`, with the resolved GUID alongside it in `EOP_POLICY_GUID` / `DEFAULT_POLICY_GUID`). `-Identity` accepts either the name or the GUID.
 - It pulls remote entries from Microsoft 365 using `Get-HostedContentFilterPolicy`.
 - Discovered entries are reconciled into the corresponding MariaDB tables without modifying Exchange Online.
+
+#### Withheld Deletion: Empty Remote Lists
+
+Reconciliation deletes local rows that are absent from the remote list. An **empty** remote list is indistinguishable from a policy that genuinely has no entries, so a single bad pull — a transient `Get-HostedContentFilterPolicy` response, a module-version quirk, a truncated payload — would empty a populated list and report success.
+
+Cron therefore withholds the deletion in that case:
+
+| Remote list | Local rows | Behaviour |
+|---|---|---|
+| has entries | any | Normal reconcile (insert missing, remove absent) |
+| **empty** | **none** | Nothing at risk; reconciles normally |
+| **empty** | **some** | **Deletion withheld.** A confirmation is raised in `eop_sync_confirmations`, the policy's `sync_status` becomes `pending`, and the cron output prints an `ACTION REQUIRED` block instead of the success line |
+
+An administrator then accepts or denies each affected list from the **web UI**, on the policy's page:
+
+- **Deny** — local entries are kept. The confirmation stays denied, so cron keeps withholding and does not re-prompt. It clears automatically once the remote list returns data.
+- **Accept** — the decision is *recorded, not executed*. The **next cron run for that policy** applies it and marks the confirmation `applied`.
+
+Accepting deletes exactly the values captured when the confirmation was raised, not whatever happens to be present at apply time, so entries added after approval are not silently destroyed. Decisions are recorded in `eop_audit_log`.
+
+`eop_sync_confirmations` is created on demand by the `Database` layer, so an existing installation picks it up without re-running the setup wizard. The web UI degrades to a silent no-op if the app user lacks DDL privileges; cron still withholds the deletion, which is the safe direction to fail in.
 
 ```powershell
 # Scheduled Cron (Pull Only): Reconcile remote changes into MariaDB for the default policy

@@ -340,6 +340,7 @@ define('TABLE_POLICIES',        'eop_policies');
 define('TABLE_LDAP_CONFIG',     'eop_ldap_config');
 define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config');
 define('TABLE_LOCAL_ADMINS',    'eop_local_admins');
+define('TABLE_SYNC_CONFIRMATIONS', 'eop_sync_confirmations');
 
 define('AUTH_MASTER_ENCRYPTION_KEY', eopEnv('AUTH_MASTER_ENCRYPTION_KEY', 'eop_master_aes256_secret_key_2026_debian'));
 
@@ -451,11 +452,13 @@ define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');
         'eop_policies',
         'eop_ldap_config',
         'eop_auth_config',
-        'eop_setup_lock'
+        'eop_setup_lock',
+        'eop_local_admins',
+        'eop_sync_confirmations'
       ];
       setDbTestResult({
         success: true,
-        message: `Successfully connected to MariaDB on ${dbHost}:${dbPort} and populated all 9 database tables!`,
+        message: `Successfully connected to MariaDB on ${dbHost}:${dbPort} and populated all 11 database tables!`,
         tablesCreated: tables
       });
 
@@ -1968,7 +1971,7 @@ $cert.Thumbprint`}
                     <div>Host: {dbHost}:{dbPort}</div>
                     <div>Database: {dbName}</div>
                     <div>User: {dbUser}</div>
-                    <div className="text-emerald-600 font-sans font-semibold mt-1">9 Tables Populated</div>
+                    <div className="text-emerald-600 font-sans font-semibold mt-1">11 Tables Populated</div>
                   </div>
                 </div>
 

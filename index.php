@@ -56,6 +56,13 @@ if (!isset($availablePolicies[$defaultPolicy])) {
     $availablePolicies[$defaultPolicy] = 'Primary Inbound Anti-Spam Policy';
 }
 
+// Withheld deletions awaiting an administrator decision, for the selected policy
+$syncConfirmations = Database::getSyncConfirmations($selectedPolicy);
+$pendingConfirmations = array_values(array_filter(
+    $syncConfirmations,
+    static fn($c) => in_array($c['status'], ['pending', 'accepted', 'denied'], true)
+));
+
 // Current active tab
 $currentTab = $_GET['tab'] ?? 'allowed_senders';
 if ($currentTab === 'ldap_config') {
@@ -210,9 +217,9 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
 
         <!-- Flash Alert (Auto-dismisses in 5s) -->
         <?php if ($flash): ?>
-            <div id="flashAlertBanner" class="mb-5 p-4 rounded-lg flex items-center justify-between border transition-all duration-300 <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60') ?>">
+            <div id="flashAlertBanner" class="mb-5 p-4 rounded-lg flex items-center justify-between border transition-all duration-300 <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : ($flash['type'] === 'warning' ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60')) ?>">
                 <div class="flex items-center space-x-2">
-                    <i class="fa-solid <?= $flash['type'] === 'success' ? 'fa-circle-check text-emerald-600 dark:text-emerald-400' : 'fa-circle-exclamation text-rose-600 dark:text-rose-400' ?>"></i>
+                    <i class="fa-solid <?= $flash['type'] === 'success' ? 'fa-circle-check text-emerald-600 dark:text-emerald-400' : ($flash['type'] === 'warning' ? 'fa-triangle-exclamation text-amber-600 dark:text-amber-400' : 'fa-circle-exclamation text-rose-600 dark:text-rose-400') ?>"></i>
                     <span class="text-sm font-medium"><?= htmlspecialchars($flash['message']) ?></span>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -231,6 +238,118 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                     }
                 }, 5000);
             </script>
+        <?php endif; ?>
+
+        <!-- Withheld Deletion Warning: cron pulled an empty list but local entries exist -->
+        <?php if ($pendingConfirmations !== []): ?>
+            <div class="mb-5 p-4 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-300 dark:border-rose-800/70 text-xs text-rose-900 dark:text-rose-200 space-y-3">
+                <div class="flex items-start gap-2.5">
+                    <i class="fa-solid fa-triangle-exclamation text-rose-600 dark:text-rose-400 mt-0.5"></i>
+                    <div class="space-y-1">
+                        <div class="font-bold text-sm text-rose-800 dark:text-rose-300">Deletion withheld for policy &ldquo;<?= htmlspecialchars($selectedPolicy) ?>&rdquo;</div>
+                        <p class="leading-relaxed">
+                            A sync run pulled an <strong>empty</strong> list from Exchange Online while local entries still exist.
+                            Cron has <strong>not deleted anything</strong>. An empty pull is indistinguishable from a policy
+                            that genuinely has no entries, so confirm before allowing the removal.
+                        </p>
+                    </div>
+                </div>
+
+                <?php foreach ($pendingConfirmations as $conf): ?>
+                    <?php
+                    $confList = (string)$conf['list_type'];
+                    $confStatus = (string)$conf['status'];
+                    $confCount = (int)$conf['local_count'];
+                    $confValues = json_decode((string)($conf['pending_values'] ?? '[]'), true);
+                    $confValues = is_array($confValues) ? $confValues : [];
+                    $confTruncated = !empty($conf['values_truncated']);
+                    $confAskedAt = (string)($conf['created_at'] ?? '');
+                    $confDecidedBy = (string)($conf['decided_by'] ?? '');
+                    $confLabels = [
+                        'allowed_senders' => 'Allowed Senders',
+                        'blocked_senders' => 'Blocked Senders',
+                        'allowed_domains' => 'Allowed Domains',
+                        'blocked_domains' => 'Blocked Domains',
+                    ];
+                    $confLabel = $confLabels[$confList] ?? $confList;
+                    ?>
+                    <div class="rounded-lg border border-rose-200 dark:border-rose-800/60 bg-white/60 dark:bg-slate-900/40 p-3 space-y-2">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="font-semibold flex items-center gap-2 flex-wrap">
+                                <a href="?policy=<?= urlencode($selectedPolicy) ?>&amp;tab=<?= urlencode($confList) ?>" class="underline decoration-dotted underline-offset-2"><?= htmlspecialchars($confLabel) ?></a>
+                                <span class="font-mono font-normal text-[11px] px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/60"><?= number_format($confCount) ?> local entries</span>
+                                <?php if ($confStatus === 'accepted'): ?>
+                                    <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60">Deletion approved &mdash; awaiting next cron run</span>
+                                <?php elseif ($confStatus === 'denied'): ?>
+                                    <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800/60">Deletion denied &mdash; entries kept</span>
+                                <?php else: ?>
+                                    <span class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-rose-200 dark:bg-rose-900/60 text-rose-900 dark:text-rose-200 border border-rose-300 dark:border-rose-800/60">Decision required</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <?php if ($confValues !== []): ?>
+                            <details class="text-[11px]">
+                                <summary class="cursor-pointer select-none text-rose-800 dark:text-rose-300 font-medium">
+                                    Entries that would be removed<?= count($confValues) > 25 ? ' (showing first 25 of ' . number_format(count($confValues)) . ')' : '' ?>
+                                </summary>
+                                <div class="mt-1.5 font-mono text-[11px] break-words leading-relaxed text-rose-800/90 dark:text-rose-300/90 max-h-32 overflow-y-auto">
+                                    <?= htmlspecialchars(implode(', ', array_slice($confValues, 0, 25))) ?>
+                                    <?php if ($confTruncated): ?>
+                                        <span class="block mt-1 font-sans italic">(list truncated for storage; only the captured entries would be removed)</span>
+                                    <?php endif; ?>
+                                </div>
+                            </details>
+                        <?php endif; ?>
+
+                        <div class="flex flex-wrap items-center gap-2 pt-1">
+                            <?php if ($confStatus === 'pending'): ?>
+                                <form method="POST" action="actions.php" class="inline" onsubmit="return confirm('Delete all <?= number_format($confCount) ?> <?= htmlspecialchars($confLabel) ?> entries for policy <?= htmlspecialchars($selectedPolicy) ?>? They are absent from Exchange Online, but you are approving a bulk removal of local data.');">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="resolve_sync_confirmation">
+                                    <input type="hidden" name="target_policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                    <input type="hidden" name="target_list" value="<?= htmlspecialchars($confList) ?>">
+                                    <input type="hidden" name="decision" value="denied">
+                                    <button type="submit" class="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-rose-300 dark:border-rose-700 text-rose-800 dark:text-rose-200 text-[11px] font-semibold hover:bg-rose-100 dark:hover:bg-rose-900/50 transition">
+                                        Deny &mdash; keep entries
+                                    </button>
+                                </form>
+                                <form method="POST" action="actions.php" class="inline" onsubmit="return confirm('Delete all <?= number_format($confCount) ?> <?= htmlspecialchars($confLabel) ?> entries for policy <?= htmlspecialchars($selectedPolicy) ?>? This cannot be undone from the web UI.');">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="resolve_sync_confirmation">
+                                    <input type="hidden" name="target_policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                    <input type="hidden" name="target_list" value="<?= htmlspecialchars($confList) ?>">
+                                    <input type="hidden" name="decision" value="accepted">
+                                    <button type="submit" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-semibold shadow-xs transition">
+                                        Accept &mdash; delete on next cron run
+                                    </button>
+                                </form>
+                            <?php else: ?>
+                                <span class="text-[11px] text-rose-800/80 dark:text-rose-300/80">
+                                    <?php if ($confStatus === 'accepted'): ?>
+                                        Decision recorded<?= $confDecidedBy !== '' ? ' by ' . htmlspecialchars($confDecidedBy) : '' ?>. The next cron run for this policy applies it.
+                                    <?php else: ?>
+                                        Deletion denied<?= $confDecidedBy !== '' ? ' by ' . htmlspecialchars($confDecidedBy) : '' ?>. These entries stay until a later pull removes them, and the confirmation clears once the remote list returns data.
+                                    <?php endif; ?>
+                                </span>
+                                <form method="POST" action="actions.php" class="inline">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="resolve_sync_confirmation">
+                                    <input type="hidden" name="target_policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                    <input type="hidden" name="target_list" value="<?= htmlspecialchars($confList) ?>">
+                                    <input type="hidden" name="decision" value="<?= $confStatus === 'accepted' ? 'denied' : 'accepted' ?>">
+                                    <button type="submit" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-rose-300 dark:border-rose-700 text-rose-800 dark:text-rose-200 text-[11px] font-semibold hover:bg-rose-100 dark:hover:bg-rose-900/50 transition">
+                                        <?= $confStatus === 'accepted' ? 'Revoke approval' : 'Approve after all' ?>
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                            <?php if ($confAskedAt !== ''): ?>
+                                <span class="text-[11px] text-rose-700/70 dark:text-rose-400/70 ml-auto">first seen <?= htmlspecialchars($confAskedAt) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
         <?php endif; ?>
 
         <!-- Policy Summary Cards -->
