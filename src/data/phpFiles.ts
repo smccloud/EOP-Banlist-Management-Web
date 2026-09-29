@@ -3465,7 +3465,10 @@ define(\'SYNC_SCRIPT_PATH\', __DIR__ . \'/sync-exchange.ps1\');
 }
 
 $error = null;
+$notice = null;
 $success = null;
+$dbTestResult = $_SESSION['wizard']['db_test_result'] ?? null;
+$ldapTestResult = $_SESSION['wizard']['ldap_test_result'] ?? null;
 
 // Allow direct step navigation if previous steps were done
 $currentStep = (int)($_GET['step'] ?? $_SESSION['wizard']['step'] ?? 1);
@@ -3483,8 +3486,100 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // Step 2 Test Action: Test Database Connection without populating schema
+    if ($action === 'test_db') {
+        $testStart = microtime(true);
+        $host = trim($_POST['db_host'] ?? '');
+        $port = (int)($_POST['db_port'] ?? 3306);
+        $name = trim($_POST['db_name'] ?? '');
+        $user = trim($_POST['db_user'] ?? '');
+        $pass = $_POST['db_pass'] ?? '';
+
+        // Save current form values to session so user doesn't lose what they entered
+        $_SESSION['wizard']['db']['host'] = $host;
+        $_SESSION['wizard']['db']['port'] = $port;
+        $_SESSION['wizard']['db']['name'] = $name;
+        $_SESSION['wizard']['db']['user'] = $user;
+        $_SESSION['wizard']['db']['pass'] = $pass;
+
+        if (empty($host) || empty($user)) {
+            $error = "MariaDB Server Host and Username are required to test the database connection.";
+            $dbTestResult = [
+                'success'        => false,
+                'status'         => 'MISSING INPUTS',
+                'message'        => $error,
+                'details'        => 'Please enter the MariaDB Server Host IP/hostname and Username before initiating connection test.',
+                'tested_at'      => date('Y-m-d H:i:s'),
+                'latency_ms'     => 0,
+                'host'           => $host ?: 'Not specified',
+                'port'           => $port,
+                'db_name'        => $name ?: 'Not specified',
+                'server_version' => 'N/A',
+                'db_exists'      => false,
+            ];
+            $_SESSION['wizard']['db_test_result'] = $dbTestResult;
+        } else {
+            try {
+                $dsn = "mysql:host={$host};port={$port};charset=utf8mb4";
+                $pdo = new PDO($dsn, $user, $pass, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_TIMEOUT => 4
+                ]);
+
+                $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
+                $serverVersion = $pdo->query("SELECT VERSION()")->fetchColumn() ?: 'MariaDB';
+
+                $dbExists = false;
+                if (!empty($name)) {
+                    $dbCheckStmt = $pdo->prepare("SHOW DATABASES LIKE :db");
+                    $dbCheckStmt->execute([':db' => $name]);
+                    $dbExists = ($dbCheckStmt->rowCount() > 0);
+                }
+
+                $success = "MariaDB Connection Successful! Connected to {$host}:{$port} ({$serverVersion}) in {$latencyMs} ms.";
+                $dbTestResult = [
+                    'success'        => true,
+                    'status'         => 'CONNECTED',
+                    'message'        => $success,
+                    'details'        => !empty($name)
+                        ? ($dbExists
+                            ? "Database '{$name}' exists on the server and is accessible. Ready to populate schema tables."
+                            : "Connection verified! Database '{$name}' does not exist yet; it will be created automatically when you click 'Populate Schema & Continue'.")
+                        : "Connection verified! Please specify a database name before populating schema tables.",
+                    'tested_at'      => date('Y-m-d H:i:s'),
+                    'latency_ms'     => $latencyMs,
+                    'host'           => $host,
+                    'port'           => $port,
+                    'db_name'        => $name,
+                    'server_version' => $serverVersion,
+                    'db_exists'      => $dbExists,
+                ];
+                $_SESSION['wizard']['db_test_result'] = $dbTestResult;
+
+            } catch (Exception $e) {
+                $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
+                $error = "Database Connection Failed: " . $e->getMessage();
+                $dbTestResult = [
+                    'success'        => false,
+                    'status'         => 'FAILED',
+                    'message'        => $error,
+                    'details'        => 'Could not establish connection to MariaDB server. Check network reachability, firewall rules, port binding (default 3306), MariaDB grant privileges for user \'' . htmlspecialchars($user) . '\', and password credentials.',
+                    'tested_at'      => date('Y-m-d H:i:s'),
+                    'latency_ms'     => $latencyMs,
+                    'host'           => $host,
+                    'port'           => $port,
+                    'db_name'        => $name,
+                    'server_version' => 'N/A',
+                    'db_exists'      => false,
+                ];
+                $_SESSION['wizard']['db_test_result'] = $dbTestResult;
+            }
+        }
+    }
+
     // Step 2: Test Database & Populate Schema
-    if ($action === 'step2_db') {
+    if ($action === 'step2_db' || $action === 'populate_db') {
         $host = trim($_POST['db_host'] ?? '127.0.0.1');
         $port = (int)($_POST['db_port'] ?? 3306);
         $name = trim($_POST['db_name'] ?? 'eop_antispam_db');
@@ -4026,8 +4121,6 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                 </div>
 
                 <form method="POST" class="space-y-4">
-                    <input type="hidden" name="action" value="step2_db">
-
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <div class="sm:col-span-2">
                             <label class="block text-xs font-medium text-slate-300 mb-1">MariaDB Server Host</label>
@@ -4071,11 +4164,78 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         </div>
                     </div>
 
+                    <?php if ($dbTestResult): ?>
+                        <div class="p-4 rounded-xl border <?php echo $dbTestResult['success'] ? 'bg-emerald-950/40 border-emerald-700/60' : 'bg-rose-950/40 border-rose-700/60'; ?> space-y-2 mt-4">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-bold <?php echo $dbTestResult['success'] ? 'text-emerald-300' : 'text-rose-300'; ?> flex items-center gap-1.5">
+                                    <span><?php echo $dbTestResult['success'] ? '✓ MariaDB Connection Test Passed' : '✕ MariaDB Connection Test Failed'; ?></span>
+                                </span>
+                                <div class="flex items-center gap-2 text-[11px] font-mono">
+                                    <span class="px-2 py-0.5 rounded <?php echo $dbTestResult['success'] ? 'bg-emerald-900/60 text-emerald-300 border border-emerald-700/60' : 'bg-rose-900/60 text-rose-300 border border-rose-700/60'; ?> font-bold">
+                                        <?php echo htmlspecialchars($dbTestResult['status']); ?>
+                                    </span>
+                                    <?php if (!empty($dbTestResult['latency_ms'])): ?>
+                                        <span class="px-2 py-0.5 rounded bg-slate-900/90 text-slate-300 border border-slate-700">
+                                            ⚡ <?php echo $dbTestResult['latency_ms']; ?> ms
+                                        </span>
+                                    <?php endif; ?>
+                                    <span class="text-slate-400 font-sans text-[10px]">
+                                        Tested at <?php echo htmlspecialchars($dbTestResult['tested_at'] ?? date('H:i:s')); ?>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="text-xs <?php echo $dbTestResult['success'] ? 'text-emerald-100' : 'text-rose-100'; ?>">
+                                <?php echo htmlspecialchars($dbTestResult['message']); ?>
+                            </div>
+
+                            <?php if (!empty($dbTestResult['details'])): ?>
+                                <div class="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] font-mono text-slate-300 leading-relaxed">
+                                    <?php echo htmlspecialchars($dbTestResult['details']); ?>
+                                </div>
+                            <?php endif; ?>
+
+                            <!-- Diagnostic Stats Grid -->
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] font-mono">
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">MARIADB HOST</span>
+                                    <span class="text-slate-200 font-semibold truncate block" title="<?php echo htmlspecialchars($dbTestResult['host'] . ':' . $dbTestResult['port']); ?>">
+                                        <?php echo htmlspecialchars($dbTestResult['host'] . ':' . $dbTestResult['port']); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">SERVER VERSION</span>
+                                    <span class="text-slate-200 font-semibold truncate block" title="<?php echo htmlspecialchars($dbTestResult['server_version'] ?? 'N/A'); ?>">
+                                        <?php echo htmlspecialchars($dbTestResult['server_version'] ?? 'N/A'); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">DATABASE STATUS</span>
+                                    <span class="<?php echo !empty($dbTestResult['db_exists']) ? 'text-emerald-400' : 'text-amber-400'; ?> font-semibold block">
+                                        <?php echo !empty($dbTestResult['db_exists']) ? 'EXISTS' : 'WILL CREATE'; ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">LATENCY</span>
+                                    <span class="<?php echo ($dbTestResult['latency_ms'] ?? 999) < 100 ? 'text-emerald-400' : 'text-amber-400'; ?> font-semibold block">
+                                        <?php echo !empty($dbTestResult['latency_ms']) ? $dbTestResult['latency_ms'] . ' ms' : 'N/A'; ?>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
                     <div class="flex items-center justify-between pt-4 border-t border-slate-700">
                         <a href="?step=1" class="text-xs text-slate-400 hover:text-white">&larr; Back to Step 1</a>
-                        <button type="submit" class="px-6 py-2.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
-                            Test &amp; Populate Schema &rarr;
-                        </button>
+                        <div class="flex items-center gap-2.5">
+                            <button type="submit" name="action" value="test_db" class="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer flex items-center gap-1.5">
+                                <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                <span>Test Connection</span>
+                            </button>
+                            <button type="submit" name="action" value="step2_db" class="px-6 py-2.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer flex items-center gap-1.5">
+                                <span>Populate Schema &amp; Continue &rarr;</span>
+                            </button>
+                        </div>
                     </div>
                 </form>
             </div>
