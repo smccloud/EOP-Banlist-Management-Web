@@ -1,13 +1,21 @@
 <?php
 // ==============================================================================
 // CLI Crontab Sync Runner for Debian
-// 
-// CRON POLICY ENFORCEMENT:
-// The cron job strictly PULLS changes from Exchange Online Protection (EOP)
-// into MariaDB. It does NOT push local MariaDB changes to EOP.
-// 
+//
+// SYNC DIRECTION:
+//   The default, and the safe default, is PULL: Exchange Online -> MariaDB.
+//   Pushing MariaDB changes to Exchange Online is opt-in and must be enabled
+//   explicitly, because an unattended job that writes to production anti-spam
+//   policies can lock mail out or stop blocking at 3am with nobody watching.
+//
+//   Enable with EOP_CRON_ALLOW_PUSH=true (see README). Even then, a push is
+//   refused if any of the four local lists is empty, because the push applies
+//   all four to Exchange and an empty list CLEARS it there. Override only with
+//   EOP_CRON_PUSH_ALLOW_EMPTY=true.
+//
 // Usage in crontab (e.g. every 15 minutes):
-// */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default Inbound Anti-Spam Policy"
+//   */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="Default Inbound Anti-Spam Policy"
+//   */15 * * * * www-data /usr/bin/php /var/www/eop-antispam/cron-sync.php --policy="..." --action=push
 // ==============================================================================
 
 declare(strict_types=1);
@@ -25,27 +33,57 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/functions.php';
 
+/**
+ * Read a boolean flag from the environment. config.php loads .env via putenv, so
+ * a value written there is visible here; the crontab can also export it.
+ */
+function eopReadFlag(string $key, bool $default = false): bool {
+    $raw = getenv($key);
+    if ($raw === false || trim($raw) === '') {
+        return $default;
+    }
+    return in_array(strtolower(trim($raw)), ['1', 'true', 'yes', 'on'], true);
+}
+
 $options = getopt('', ['policy::', 'action::', 'help']);
 
 if (isset($options['help'])) {
-    echo "Usage: php cron-sync.php [--policy=PolicyName] [--action=pull]\n";
-    echo "Notice: The cron job strictly PULLS from Exchange Online to MariaDB (never pushes).\n";
+    echo "Usage: php cron-sync.php [--policy=PolicyName] [--action=pull|push]\n";
+    echo "  pull  (default) Exchange Online -> MariaDB. Always allowed.\n";
+    echo "  push  MariaDB -> Exchange Online. Requires EOP_CRON_ALLOW_PUSH=true,\n";
+    echo "        and is refused if any of the four local lists is empty unless\n";
+    echo "        EOP_CRON_PUSH_ALLOW_EMPTY=true is also set.\n";
     exit(0);
 }
 
 $policy = $options['policy'] ?? Database::getDefaultPolicyName();
-$action = strtolower($options['action'] ?? 'pull');
+$action = strtolower(trim((string)($options['action'] ?? 'pull')));
 
-// Enforce pull-only in cron
-if ($action !== 'pull') {
-    fwrite(STDERR, "[CRON POLICY ERROR] The cron job is configured to ONLY pull changes from EOP, not push them.\n");
-    fwrite(STDERR, "To push changes, an authorized administrator must use the Web UI or run with explicit manual confirmation.\n");
+if (!in_array($action, ['pull', 'push'], true)) {
+    fwrite(STDERR, "[CRON ERROR] Unknown --action '{$action}'. Expected 'pull' or 'push'.\n");
     exit(1);
 }
 
-echo "[" . date('Y-m-d H:i:s') . "] Starting EOP Anti-Spam CRON PULL for policy: {$policy}\n";
-echo "Sync Direction: PULL ONLY (Exchange Online -> MariaDB)\n";
-echo "Notice: Local MariaDB changes will NOT be pushed to EOP.\n";
+$isPush = ($action === 'push');
+$allowPush = eopReadFlag('EOP_CRON_ALLOW_PUSH');
+$allowEmptyPush = eopReadFlag('EOP_CRON_PUSH_ALLOW_EMPTY');
+
+// Pushing from an unattended job modifies production anti-spam policies, so it
+// has to be turned on deliberately rather than being reachable by a crontab edit.
+if ($isPush && !$allowPush) {
+    fwrite(STDERR, "[CRON POLICY ERROR] Push is disabled. The cron job pulls only unless EOP_CRON_ALLOW_PUSH=true is set.\n");
+    fwrite(STDERR, "To push, either set EOP_CRON_ALLOW_PUSH=true in .env (see README), or have an authorized administrator use the Web UI.\n");
+    exit(1);
+}
+
+echo "[" . date('Y-m-d H:i:s') . "] Starting EOP Anti-Spam CRON {$action} for policy: {$policy}\n";
+if ($isPush) {
+    echo "Sync Direction: PUSH (MariaDB -> Exchange Online) - APPLIES TO PRODUCTION\n";
+} else {
+    echo "Sync Direction: PULL ONLY (Exchange Online -> MariaDB)\n";
+    echo "Notice: Local MariaDB changes will NOT be pushed to EOP.\n";
+}
+
 
 // Execute PowerShell sync script in Pull-only mode on Debian
 $psScript = __DIR__ . '/sync-exchange.ps1';
@@ -99,6 +137,73 @@ if (trim((string)($authConfig['pkcs12_bundle'] ?? '')) !== '' && (string)($authC
 putenv('EOP_PS_SCRIPT=' . $psScript);
 putenv('EOP_POLICY=' . $policy);
 
+// -----------------------------------------------------------------------------
+// PUSH: MariaDB -> Exchange Online (opt-in)
+// -----------------------------------------------------------------------------
+if ($isPush) {
+    // The push reads the local lists from MariaDB, so it needs the credentials.
+    eopExportSyncDatabaseEnvironment();
+
+    // Set-HostedContentFilterPolicy is applied with all four lists at once, so an
+    // empty local list does not mean "no change" - it CLEARS that list in
+    // Exchange. Refuse rather than discover that at 3am, unless the operator has
+    // explicitly said an empty list is intended.
+    $pushLists = ['allowed_senders', 'blocked_senders', 'allowed_domains', 'blocked_domains'];
+    $counts = [];
+    $empty = [];
+    foreach ($pushLists as $listType) {
+        $counts[$listType] = Database::countListItems($listType, $policy);
+        if ($counts[$listType] === 0) {
+            $empty[] = $listType;
+        }
+    }
+
+    if ($empty !== [] && !$allowEmptyPush) {
+        $detail = implode(', ', $empty);
+        fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] CRON POLICY ERROR: push refused for policy '{$policy}'.\n");
+        fwrite(STDERR, "These local lists are empty: {$detail}.\n");
+        fwrite(STDERR, "A push applies all four lists at once, so an empty list would CLEAR it in Exchange Online.\n");
+        fwrite(STDERR, "Populate the list(s), or set EOP_CRON_PUSH_ALLOW_EMPTY=true if clearing them is intended.\n");
+        Database::updatePolicySyncStatus($policy, 'failed', "Push refused: empty local list(s) {$detail}");
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Cron push refused: empty local list(s) {$detail}", 'CRON_DAEMON');
+        exit(1);
+    }
+
+    foreach ($counts as $listType => $count) {
+        printf("  local %-18s %d\n", $listType, $count);
+    }
+    if ($empty !== []) {
+        fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] WARNING: ' . count($empty) . " list(s) are empty and WILL BE CLEARED in Exchange Online (EOP_CRON_PUSH_ALLOW_EMPTY is set).\n");
+    }
+
+    $pushShell = sprintf(
+        '%s -NoProfile -NonInteractive -File %s -PolicyName %s -Action Push 2>&1',
+        escapeshellarg($pwsh),
+        escapeshellarg($psScript),
+        escapeshellarg($policy)
+    );
+
+    $pushOutput = [];
+    $pushExit = 0;
+    passthru($pushShell, $pushExit);
+
+    if ($pushExit === 0) {
+        $total = array_sum($counts);
+        Database::updatePolicySyncStatus($policy, 'synced', "Cron push applied {$total} entries across 4 lists");
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pushed MariaDB -> Exchange Online (Push): {$total} entries across 4 lists", 'CRON_DAEMON');
+        echo "[" . date('Y-m-d H:i:s') . "] Cron EOP push completed successfully.\n";
+        exit(0);
+    }
+
+    Database::updatePolicySyncStatus($policy, 'failed', "Cron push exited with code {$pushExit}");
+    Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab push failed with code {$pushExit}", 'CRON_DAEMON');
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] Cron push failed with code {$pushExit}\n");
+    exit(1);
+}
+
+// -----------------------------------------------------------------------------
+// PULL: Exchange Online -> MariaDB (default)
+// -----------------------------------------------------------------------------
 $pullOutput = tempnam(sys_get_temp_dir(), 'eoppull_');
 if ($pullOutput === false) {
     fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] CRON ERROR: could not create a temporary file for the pull response.\n");

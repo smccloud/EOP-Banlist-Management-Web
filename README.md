@@ -41,7 +41,7 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
   - [3. Storing Private Key in EOP Anti-Spam Manager](#3-storing-private-key-in-eop-anti-spam-manager)
   - [4. NGINX HTTPS SSL Web Server Certificates](#4-nginx-https-ssl-web-server-certificates)
 - [Exchange Online Protection Sync Engine](#exchange-online-protection-sync-engine)
-  - [Scheduled Cron Daemon (Pull-Only)](#scheduled-cron-daemon-pull-only)
+  - [Scheduled Cron Daemon (Pull-Only by default)](#scheduled-cron-daemon-pull-only-by-default)
   - [Manual Admin Push All (Exchange Online)](#manual-admin-push-all-exchange-online)
 - [Web Interface & UX Capabilities](#web-interface--ux-capabilities)
   - [Smart Sorter Classification Engine](#smart-sorter-classification-engine)
@@ -76,7 +76,7 @@ This solution provides:
 6. **Active Directory Security with Bind Password Authorization**: Restricts system login strictly to members of an authorized **Active Directory Group Distinguished Name (Group DN)**. Supports service account **Bind DN and Bind Password** authorization using standard **plain LDAP (Port 389)**. **LDAPS is NOT required**, removing certificate hassles while optionally supporting LDAPS (Port 636) and StartTLS.
 7. **Emergency Non-LDAP Fallback Account**: Provides an emergency local administrative login with enforced password complexity if the Active Directory domain controller is offline or unreachable.
 8. **Exchange Online Sync Safeguards**:
-   - **Scheduled Cron is strictly Pull-Only**: Never blindly overwrites Microsoft 365 in the background; only pulls remote changes into MariaDB.
+   - **Scheduled Cron pulls by default**: Never blindly overwrites Microsoft 365 in the background; only pulls remote changes into MariaDB. An unattended *push* is available but is opt-in (`EOP_CRON_ALLOW_PUSH`) and refuses to run if any of the four local lists is empty — see [Optional: Allow the Cron Job to Push](#optional-allow-the-cron-job-to-push).
    - **Manual Admin Push All**: Pushing MariaDB lists to Microsoft 365 requires an intentional administrator action with pre-push confirmation modals and post-push summaries.
 9. **Initial Run Setup Routine (`setup.php`)**: A 5-step deployment wizard that validates database and directory connectivity, builds the schema, and permanently locks itself against re-execution.
 
@@ -515,9 +515,9 @@ The application queries Active Directory connection parameters directly from the
 
 ## Exchange Online Protection Sync Engine
 
-### Scheduled Cron Daemon (Pull-Only)
+### Scheduled Cron Daemon (Pull-Only by default)
 
-To prevent unintended overwrites of Microsoft 365 policies, the background cron daemon (`cron-sync.php --action=pull`) is **strictly pull-only**:
+To prevent unintended overwrites of Microsoft 365 policies, the background cron daemon (`cron-sync.php --action=pull`) is **pull-only unless you explicitly opt in**:
 - It targets the **default policy configured in the Setup Wizard** (stored in `.env` as `EOP_POLICY_NAME` and in `config.php` as `DEFAULT_POLICY_NAME`, with the resolved GUID alongside it in `EOP_POLICY_GUID` / `DEFAULT_POLICY_GUID`). `-Identity` accepts either the name or the GUID.
 - It pulls remote entries from Microsoft 365 using `Get-HostedContentFilterPolicy`.
 - Discovered entries are reconciled into the corresponding MariaDB tables without modifying Exchange Online.
@@ -963,7 +963,7 @@ sudo pwsh -Command "Install-Module -Name ExchangeOnlineManagement -Scope AllUser
 
 ### Step 6: Crontab Background Pull-Only Sync
 
-Configure the Pull-Only cron schedule under the `www-data` user to automatically pull remote changes from Microsoft 365 every 15 minutes.
+Configure the cron schedule under the `www-data` user to automatically pull remote changes from Microsoft 365 every 15 minutes. Pulling is the default; a scheduled push is opt-in and documented below.
 
 > **Policy Configuration Note**: Use the **default policy set in the Setup Wizard** (configured in Step 4 of the wizard and stored as `EOP_POLICY_NAME` in `.env` and `DEFAULT_POLICY_NAME` in `config.php`). If you omit `--policy`, `cron-sync.php` automatically defaults to this policy.
 
@@ -983,6 +983,51 @@ Add the crontab entry for your default policy:
 
 *(If managing multiple distinct policies in your tenant, you can configure additional crontab lines for each secondary policy as desired.)*
 
+#### Optional: Allow the Cron Job to Push
+
+> ⚠️ **Read this before enabling it.** A cron push runs unattended and writes to **production** Exchange Online anti-spam policies. `Set-HostedContentFilterPolicy` is applied with **all four lists at once**, so pushing an empty local list does not mean "no change" — it **clears** that list in Exchange. A misconfigured or empty list can therefore stop blocking senders, or allow them, with nobody watching. It is opt-in and off by default for that reason. Consider keeping cron pull-only and pushing manually from the web UI.
+
+Set `EOP_CRON_ALLOW_PUSH` in `.env` (the app loads `.env` into the environment, so no crontab edit is needed to *read* it), or export it in the crontab line itself:
+
+```bash
+# /var/www/eop-antispam/.env
+# Allow the scheduled job to push MariaDB -> Exchange Online. Off by default.
+EOP_CRON_ALLOW_PUSH="false"
+```
+
+| Variable | Default | Effect |
+|---|---|---|
+| `EOP_CRON_ALLOW_PUSH` | `false` | Must be `true`/`1`/`yes`/`on` for `--action=push` to run at all. Case- and whitespace-insensitive. |
+| `EOP_CRON_PUSH_ALLOW_EMPTY` | `false` | Normally a push is **refused** if any of the four local lists is empty. Set to `true` only when clearing a list in Exchange is genuinely intended. |
+
+With `EOP_CRON_ALLOW_PUSH="true"`, add a push line:
+
+```cron
+# Push MariaDB -> Exchange Online. Requires EOP_CRON_ALLOW_PUSH=true.
+# Refuses to run if any of the four local lists is empty.
+*/15 * * * * /usr/bin/php /var/www/eop-antispam/cron-sync.php --action=push --policy="Default" >> /var/log/eop-sync.log 2>&1
+```
+
+Or enable it for one run only, without touching `.env`:
+
+```bash
+EOP_CRON_ALLOW_PUSH=true /usr/bin/php /var/www/eop-antispam/cron-sync.php --action=push --policy="Default"
+```
+
+**How a gated push behaves**
+
+| Condition | Result |
+|---|---|
+| `--action=push`, `EOP_CRON_ALLOW_PUSH` unset/false | Refused, exit 1, with instructions |
+| `--action=push`, flag set, all four lists populated | Push runs; per-list counts printed first |
+| `--action=push`, flag set, one or more lists **empty** | **Refused**, exit 1, naming the empty lists. Sets `sync_status = failed` and writes an audit entry |
+| `--action=push`, flag set, a list empty **and** `EOP_CRON_PUSH_ALLOW_EMPTY=true` | Push runs, with a loud warning that those lists will be cleared |
+| `--action=pull` (or omitted) | Always runs. Never gated by either flag |
+
+The MariaDB credentials the push needs are exported to the PowerShell child process through the environment (`EOP_DB_*`), not as command-line arguments, so the database password does not appear in `ps aux`.
+
+> **Tip:** before enabling a scheduled push, run it once by hand and read the output. The refusal messages name the exact list that tripped the safety floor, which is usually the thing you wanted to know.
+
 ---
 
 ## Project File Structure & Inventory
@@ -993,14 +1038,14 @@ eop-antispam-php-mariadb/
 ├── database.php          # PDO database wrapper & individual table CRUD operations
 ├── ldap.php              # Active Directory LDAP Group DN & Bind Password auth engine
 ├── functions.php         # CSRF verification, input sanitization, and helper utilities
-├── schema.sql            # MariaDB database table definitions & 9-table schema
+├── schema.sql            # MariaDB database table definitions & 11-table schema
 ├── index.php             # Main dashboard (Dark mode, tables, cards, modal UI, split smart sort)
 ├── setup.php             # 5-step initial run setup wizard with permanent lock
 ├── login.php             # Active Directory LDAP & Fallback auth portal (Dark mode)
 ├── logout.php            # Session termination & security cleanup
 ├── actions.php           # REST-style handler for add, delete, import, export, and sync
 ├── sync-exchange.ps1     # Linux PowerShell sync automation script (Pull & Push modes)
-├── cron-sync.php         # Scheduled Pull-Only background CLI sync daemon
+├── cron-sync.php         # Scheduled background CLI sync daemon (pull-only; opt-in push)
 ├── nginx.conf            # Hardened NGINX Server Block configuration
 ├── .env.example          # Environment variable template
 └── README.md             # Complete technical and deployment documentation
@@ -1051,7 +1096,11 @@ Unlike single-table updates, "Push All Changes to EOP" stages and commits all pe
 The `ldap.php` authentication class utilizes the LDAP matching rule OID `1.2.840.113556.1.4.1941` (`LDAP_MATCHING_RULE_IN_CHAIN`). If an administrator belongs to a group nested inside `authorized_group_dn`, Active Directory automatically resolves membership without requiring manual individual group assignments.
 
 #### Q: Why is the scheduled Cron job "Pull-Only"?
-To prevent accidental policy overwrites or race conditions in Microsoft 365, automated background synchronization only pulls updates into MariaDB. Pushing MariaDB lists to Microsoft 365 is restricted to intentional manual administrator actions via the web portal or explicitly triggered administrator scripts.
+By default, yes: automated background synchronization only pulls updates into MariaDB, to prevent accidental policy overwrites or race conditions in Microsoft 365.
+
+An unattended push *is* supported, but it is deliberately hard to reach: it requires `EOP_CRON_ALLOW_PUSH=true` in `.env` (not merely a crontab edit), and it is refused outright if any of the four local lists is empty, because `Set-HostedContentFilterPolicy` applies all four at once and an empty list would clear it in Exchange. See [Optional: Allow the Cron Job to Push](#optional-allow-the-cron-job-to-push).
+
+If you do not need to propagate local changes on a schedule, leave the flag unset and push manually from the web portal.
 
 #### Q: Remote MariaDB returns `Host 'xxx' is not allowed to connect`
 1. On your remote MariaDB server, check `/etc/mysql/mariadb.conf.d/50-server.cnf` and verify `bind-address = 0.0.0.0` (or your internal LAN subnet IP).
@@ -1071,7 +1120,7 @@ Yes. Configure your upstream reverse proxy to forward requests to NGINX with `X-
 - Implementation of the dedicated 9-table remote MariaDB architecture for strict list isolation.
 - Active Directory LDAP authentication engine with service account bind password authorization and nested group resolution.
 - Split Smart Sorter classification engine with real-time email vs. domain routing and RFC deduplication.
-- Exchange Online Protection Certificate-Based Authentication (CBA) integration and pull-only cron sync engine.
+- Exchange Online Protection Certificate-Based Authentication (CBA) integration, a pull-only cron sync engine, and an opt-in scheduled push.
 - Complete NGINX FastCGI server block integration and production Debian Linux manual deployment architecture.
 
 ---
