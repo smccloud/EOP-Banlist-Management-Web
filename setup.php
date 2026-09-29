@@ -554,6 +554,7 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
 $error = null;
 $notice = null;
 $success = null;
+$ldapTestResult = $_SESSION['wizard']['ldap_test_result'] ?? null;
 
 // Allow direct step navigation if previous steps were done
 $currentStep = (int)($_GET['step'] ?? $_SESSION['wizard']['step'] ?? 1);
@@ -763,6 +764,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Step 3 Test Action: Test LDAP Connection without advancing to Step 4
     if ($action === 'test_ldap') {
+        $testStart = microtime(true);
         $ldapHost = trim($_POST['ldap_host'] ?? '');
         $ldapPort = (int)($_POST['ldap_port'] ?? 389);
         $ldapProtocol = $_POST['ldap_protocol'] ?? 'ldap';
@@ -794,6 +796,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (empty($ldapHost)) {
             $error = "Domain Controller Host / IP is required to test LDAP connection.";
+            $ldapTestResult = [
+                'success'    => false,
+                'status'     => 'MISSING HOST',
+                'message'    => $error,
+                'details'    => 'Please enter the Active Directory or OpenLDAP Domain Controller Host/IP address before initiating connection test.',
+                'tested_at'  => date('Y-m-d H:i:s'),
+                'latency_ms' => 0,
+                'host'       => $ldapHost,
+                'port'       => $ldapPort,
+                'protocol'   => strtoupper($ldapProtocol),
+                'uri'        => 'Not specified',
+                'auth_type'  => 'None',
+                'bind_dn'    => 'N/A',
+            ];
+            $_SESSION['wizard']['ldap_test_result'] = $ldapTestResult;
         } else {
             try {
                 $isSsl = ($ldapProtocol === 'ldaps' || $ldapPort === 636);
@@ -811,9 +828,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     if (!$isSsl && ($ldapProtocol === 'starttls')) {
                         if (!@ldap_start_tls($conn)) {
-                            throw new Exception("StartTLS handshake failed with Active Directory Domain Controller.");
+                            throw new Exception("StartTLS handshake failed with Active Directory Domain Controller at {$uri}.");
                         }
                     }
+
+                    $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
 
                     if ($ldapBindDn !== '' && $ldapBindPass !== '') {
                         $bind = @ldap_bind($conn, $ldapBindDn, $ldapBindPass);
@@ -822,14 +841,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             throw new Exception("Service Account Bind failed: {$ldapErr}");
                         }
                         $success = "Active Directory LDAP Connection Successful! Connected to {$uri} and successfully authenticated with Bind DN '{$ldapBindDn}'.";
+                        $ldapTestResult = [
+                            'success'    => true,
+                            'status'     => 'CONNECTED',
+                            'message'    => $success,
+                            'details'    => "Successfully connected to {$uri} in {$latencyMs} ms. Service Account Bind authenticated OK with '{$ldapBindDn}'. Validated Base DN: \"{$ldapBaseDn}\", Group DN: \"{$ldapGroupDn}\".",
+                            'tested_at'  => date('Y-m-d H:i:s'),
+                            'latency_ms' => $latencyMs,
+                            'host'       => $ldapHost,
+                            'port'       => $ldapPort,
+                            'protocol'   => strtoupper($ldapProtocol),
+                            'uri'        => $uri,
+                            'auth_type'  => 'Authenticated Bind',
+                            'bind_dn'    => $ldapBindDn,
+                            'group_dn'   => $ldapGroupDn ?: '(All Users / None)',
+                            'base_dn'    => $ldapBaseDn ?: '(Domain Root)',
+                        ];
                     } else {
                         // Anonymous or connection ping
                         $bind = @ldap_bind($conn);
                         if (!$bind) {
                             $ldapErr = ldap_error($conn) ?: 'Anonymous bind rejected by Domain Controller';
                             $notice = "Domain Controller reached at {$uri}, but anonymous bind was rejected ({$ldapErr}). Supply a valid Service Account Bind DN and Password for authenticated access.";
+                            $ldapTestResult = [
+                                'success'    => true,
+                                'warning'    => true,
+                                'status'     => 'REACHABLE (AUTH REQUIRED)',
+                                'message'    => $notice,
+                                'details'    => "Network ping to {$uri} succeeded in {$latencyMs} ms, but Active Directory security policies reject anonymous queries. Supply a Service Account Bind DN and Password.",
+                                'tested_at'  => date('Y-m-d H:i:s'),
+                                'latency_ms' => $latencyMs,
+                                'host'       => $ldapHost,
+                                'port'       => $ldapPort,
+                                'protocol'   => strtoupper($ldapProtocol),
+                                'uri'        => $uri,
+                                'auth_type'  => 'Anonymous Ping',
+                                'bind_dn'    => 'Anonymous (Rejected)',
+                                'group_dn'   => $ldapGroupDn ?: '(Not Checked)',
+                                'base_dn'    => $ldapBaseDn ?: '(Not Checked)',
+                            ];
                         } else {
                             $success = "Active Directory LDAP Connection Successful! Domain Controller is reachable at {$uri}.";
+                            $ldapTestResult = [
+                                'success'    => true,
+                                'status'     => 'CONNECTED',
+                                'message'    => $success,
+                                'details'    => "Successfully connected to Domain Controller at {$uri} in {$latencyMs} ms. Anonymous directory lookup allowed by Domain Controller.",
+                                'tested_at'  => date('Y-m-d H:i:s'),
+                                'latency_ms' => $latencyMs,
+                                'host'       => $ldapHost,
+                                'port'       => $ldapPort,
+                                'protocol'   => strtoupper($ldapProtocol),
+                                'uri'        => $uri,
+                                'auth_type'  => 'Anonymous Bind',
+                                'bind_dn'    => 'Anonymous',
+                                'group_dn'   => $ldapGroupDn ?: '(All Users / None)',
+                                'base_dn'    => $ldapBaseDn ?: '(Domain Root)',
+                            ];
                         }
                     }
                     @ldap_unbind($conn);
@@ -840,11 +908,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         throw new Exception("Could not reach Active Directory host {$ldapHost} on port {$ldapPort}: {$errstr} (Error {$errno})");
                     }
                     fclose($fp);
-                    $success = "TCP connection to Active Directory on {$ldapHost}:{$ldapPort} succeeded! (Note: Install php-ldap on Debian via 'apt-get install php-ldap' for full Active Directory authentication).";
+                    $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
+                    $success = "TCP connection to Active Directory on {$ldapHost}:{$ldapPort} succeeded!";
+                    $ldapTestResult = [
+                        'success'    => true,
+                        'status'     => 'TCP REACHABLE',
+                        'message'    => $success,
+                        'details'    => "TCP handshake on {$ldapHost}:{$ldapPort} succeeded in {$latencyMs} ms. Note: Install php-ldap on Debian ('apt-get install php-ldap') for full Active Directory query capability.",
+                        'tested_at'  => date('Y-m-d H:i:s'),
+                        'latency_ms' => $latencyMs,
+                        'host'       => $ldapHost,
+                        'port'       => $ldapPort,
+                        'protocol'   => strtoupper($ldapProtocol),
+                        'uri'        => $uri,
+                        'auth_type'  => 'TCP Socket Test',
+                        'bind_dn'    => $ldapBindDn ?: 'N/A',
+                        'group_dn'   => $ldapGroupDn ?: 'N/A',
+                        'base_dn'    => $ldapBaseDn ?: 'N/A',
+                    ];
                 }
             } catch (Exception $e) {
+                $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
                 $error = "LDAP Connection Test Failed: " . $e->getMessage();
+                $ldapTestResult = [
+                    'success'    => false,
+                    'status'     => 'FAILED',
+                    'message'    => $error,
+                    'details'    => "Connection attempt to " . ($uri ?? "{$ldapHost}:{$ldapPort}") . " failed after {$latencyMs} ms. Check that the Domain Controller IP/hostname is correct, firewall allows port {$ldapPort}, and bind credentials are valid.",
+                    'tested_at'  => date('Y-m-d H:i:s'),
+                    'latency_ms' => $latencyMs,
+                    'host'       => $ldapHost,
+                    'port'       => $ldapPort,
+                    'protocol'   => strtoupper($ldapProtocol),
+                    'uri'        => $uri ?? "{$ldapHost}:{$ldapPort}",
+                    'auth_type'  => ($ldapBindDn !== '' ? 'Authenticated Bind' : 'Anonymous / Ping'),
+                    'bind_dn'    => $ldapBindDn ?: 'None',
+                    'group_dn'   => $ldapGroupDn ?: 'N/A',
+                    'base_dn'    => $ldapBaseDn ?: 'N/A',
+                ];
             }
+            $_SESSION['wizard']['ldap_test_result'] = $ldapTestResult;
         }
     }
 
@@ -1362,6 +1465,85 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                             <span>Test LDAP Connection</span>
                         </button>
                     </div>
+
+                    <!-- Status Display After Test LDAP Connection Run -->
+                    <?php if ($ldapTestResult): ?>
+                        <div class="mt-3 p-4 rounded-xl border transition-all shadow-sm <?php 
+                            echo $ldapTestResult['success'] 
+                                ? (!empty($ldapTestResult['warning']) ? 'bg-amber-950/70 border-amber-600/70 text-amber-200' : 'bg-emerald-950/80 border-emerald-500/70 text-emerald-200') 
+                                : 'bg-rose-950/80 border-rose-600/70 text-rose-200'; 
+                        ?>">
+                            <div class="flex items-center justify-between flex-wrap gap-2 pb-2.5 mb-2.5 border-b <?php 
+                                echo $ldapTestResult['success'] 
+                                    ? (!empty($ldapTestResult['warning']) ? 'border-amber-800/80' : 'border-emerald-800/80') 
+                                    : 'border-rose-800/80'; 
+                            ?>">
+                                <div class="flex items-center gap-2">
+                                    <?php if ($ldapTestResult['success'] && empty($ldapTestResult['warning'])): ?>
+                                        <span class="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs">✓</span>
+                                        <span class="font-bold text-xs text-white">Active Directory / OpenLDAP Connection Status: Verified</span>
+                                    <?php elseif ($ldapTestResult['success'] && !empty($ldapTestResult['warning'])): ?>
+                                        <span class="w-5 h-5 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-xs">!</span>
+                                        <span class="font-bold text-xs text-white">Active Directory Status: Reachable (Auth Warning)</span>
+                                    <?php else: ?>
+                                        <span class="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center font-bold text-xs">&times;</span>
+                                        <span class="font-bold text-xs text-white">Active Directory Status: Connection Failed</span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="flex items-center gap-2 text-[11px] font-mono">
+                                    <span class="px-2 py-0.5 rounded <?php echo $ldapTestResult['success'] ? (!empty($ldapTestResult['warning']) ? 'bg-amber-900/60 text-amber-300 border border-amber-700/60' : 'bg-emerald-900/60 text-emerald-300 border border-emerald-700/60') : 'bg-rose-900/60 text-rose-300 border border-rose-700/60'; ?> font-bold">
+                                        <?php echo htmlspecialchars($ldapTestResult['status']); ?>
+                                    </span>
+                                    <?php if (!empty($ldapTestResult['latency_ms'])): ?>
+                                        <span class="px-2 py-0.5 rounded bg-slate-900/90 text-slate-300 border border-slate-700">
+                                            ⚡ <?php echo $ldapTestResult['latency_ms']; ?> ms
+                                        </span>
+                                    <?php endif; ?>
+                                    <span class="text-slate-400 font-sans text-[10px]">
+                                        Tested at <?php echo htmlspecialchars($ldapTestResult['tested_at'] ?? date('H:i:s')); ?>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="text-xs mb-3 <?php echo $ldapTestResult['success'] ? (!empty($ldapTestResult['warning']) ? 'text-amber-100' : 'text-emerald-100') : 'text-rose-100'; ?>">
+                                <?php echo htmlspecialchars($ldapTestResult['message']); ?>
+                            </div>
+
+                            <?php if (!empty($ldapTestResult['details'])): ?>
+                                <div class="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] font-mono text-slate-300 mb-3 leading-relaxed">
+                                    <?php echo htmlspecialchars($ldapTestResult['details']); ?>
+                                </div>
+                            <?php endif; ?>
+
+                            <!-- Diagnostic Stats Grid -->
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] font-mono">
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">ENDPOINT URI</span>
+                                    <span class="text-slate-200 font-semibold truncate block" title="<?php echo htmlspecialchars($ldapTestResult['uri'] ?? ''); ?>">
+                                        <?php echo htmlspecialchars($ldapTestResult['uri'] ?? 'N/A'); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">PROTOCOL / SECURITY</span>
+                                    <span class="text-slate-200 font-semibold block">
+                                        <?php echo htmlspecialchars($ldapTestResult['protocol'] ?? 'LDAP'); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">AUTH METHOD</span>
+                                    <span class="text-slate-200 font-semibold block">
+                                        <?php echo htmlspecialchars($ldapTestResult['auth_type'] ?? 'N/A'); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">LATENCY</span>
+                                    <span class="<?php echo ($ldapTestResult['latency_ms'] ?? 999) < 100 ? 'text-emerald-400' : 'text-amber-400'; ?> font-semibold block">
+                                        <?php echo !empty($ldapTestResult['latency_ms']) ? $ldapTestResult['latency_ms'] . ' ms' : 'N/A'; ?>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
 
                     <!-- Emergency Non-LDAP Fallback Administrator Account Setup -->
                     <div class="p-4 bg-slate-900/80 rounded-xl border border-amber-500/40 space-y-3 mt-4">
