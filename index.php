@@ -215,28 +215,93 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
     <!-- Main Container -->
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 grow w-full">
 
-        <!-- Flash Alert (Auto-dismisses in 5s) -->
+        <!-- Flash Alert (auto-dismisses, with a visible countdown) -->
+        <?php
+        // 5s was too short to read a long message, let alone act on it - a
+        // confirm-then-navigate flow could lose the prompt mid-read. 20s with a
+        // live countdown and a progress bar; the close button still dismisses
+        // immediately, and hovering pauses the countdown.
+        $flashAutoDismissMs = 20000;
+        ?>
         <?php if ($flash): ?>
-            <div id="flashAlertBanner" class="mb-5 p-4 rounded-lg flex items-center justify-between border transition-all duration-300 <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : ($flash['type'] === 'warning' ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60')) ?>">
-                <div class="flex items-center space-x-2">
+            <div id="flashAlertBanner" data-autodismiss-ms="<?= $flashAutoDismissMs ?>" class="mb-5 p-4 rounded-lg flex items-center justify-between gap-3 border transition-all duration-300 relative overflow-hidden <?= $flash['type'] === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/60' : ($flash['type'] === 'error' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-800/60' : ($flash['type'] === 'warning' ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/60' : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60')) ?>">
+                <div class="flex items-center space-x-2 min-w-0">
                     <i class="fa-solid <?= $flash['type'] === 'success' ? 'fa-circle-check text-emerald-600 dark:text-emerald-400' : ($flash['type'] === 'warning' ? 'fa-triangle-exclamation text-amber-600 dark:text-amber-400' : 'fa-circle-exclamation text-rose-600 dark:text-rose-400') ?>"></i>
                     <span class="text-sm font-medium"><?= htmlspecialchars($flash['message']) ?></span>
                 </div>
-                <div class="flex items-center space-x-2">
-                    <span class="text-[11px] text-slate-400 font-mono hidden sm:inline">auto-dismissing</span>
-                    <button onclick="this.closest('#flashAlertBanner').remove()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm cursor-pointer p-1"><i class="fa-solid fa-xmark"></i></button>
+                <div class="flex items-center gap-2 shrink-0">
+                    <span class="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums whitespace-nowrap" title="Auto-dismisses in 20 seconds. Hover to pause.">
+                        <span id="flashCountdown">20</span>s
+                    </span>
+                    <button onclick="this.closest('#flashAlertBanner').remove()" title="Dismiss now" aria-label="Dismiss notification" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-sm cursor-pointer p-1"><i class="fa-solid fa-xmark"></i></button>
                 </div>
+                <span id="flashProgressTrack" class="absolute left-0 bottom-0 h-0.5 w-full bg-black/5 dark:bg-white/5" aria-hidden="true">
+                    <span id="flashProgressBar" class="block h-full w-full origin-left bg-current opacity-30"></span>
+                </span>
             </div>
             <script>
-                setTimeout(function() {
+                (function () {
                     const el = document.getElementById('flashAlertBanner');
-                    if (el) {
+                    if (!el) return;
+
+                    const total = parseInt(el.dataset.autodismissMs, 10) || 20000;
+                    const label = document.getElementById('flashCountdown');
+                    const bar = document.getElementById('flashProgressBar');
+
+                    // driven by an absolute deadline rather than a decrementing
+                    // counter, so a backgrounded or throttled tab cannot drift
+                    let remaining = total;
+                    let last = performance.now();
+                    let paused = false;
+
+                    const dismiss = function () {
                         el.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
                         el.style.opacity = '0';
                         el.style.transform = 'translateY(-6px)';
-                        setTimeout(() => el.remove(), 400);
-                    }
-                }, 5000);
+                        setTimeout(function () { el.remove(); }, 400);
+                    };
+
+                    // Only touch the DOM when a value actually changes: the rAF
+                    // loop runs ~60x/s and the countdown only changes once a second.
+                    let lastSecond = null;
+                    let lastScale = null;
+                    const render = function (force) {
+                        const scale = Math.max(0, remaining / total);
+                        const second = Math.max(0, Math.ceil(remaining / 1000));
+                        if (label && (force || second !== lastSecond)) {
+                            label.textContent = String(second);
+                            lastSecond = second;
+                        }
+                        if (bar && (force || scale !== lastScale)) {
+                            bar.style.transform = 'scaleX(' + scale + ')';
+                            lastScale = scale;
+                        }
+                    };
+
+                    // Hovering pauses so a message cannot vanish mid-read.
+                    el.addEventListener('mouseenter', function () { paused = true; render(true); });
+                    el.addEventListener('mouseleave', function () {
+                        if (remaining <= 0) return;
+                        paused = false;
+                        last = performance.now();
+                        render(true);
+                    });
+
+                    render(true);
+
+                    const tick = function (now) {
+                        const delta = now - last;
+                        last = now;
+                        if (!paused) remaining -= delta;
+                        render(false);
+                        if (remaining <= 0) {
+                            dismiss();
+                            return;
+                        }
+                        requestAnimationFrame(tick);
+                    };
+                    requestAnimationFrame(tick);
+                })();
             </script>
         <?php endif; ?>
 

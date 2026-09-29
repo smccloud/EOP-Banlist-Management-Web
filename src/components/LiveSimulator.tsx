@@ -70,6 +70,9 @@ export interface PushSummaryData {
   policiesImpacted: string[];
 }
 
+/** Seconds the global notification banner stays up before auto-dismissing. */
+const BANNER_AUTO_DISMISS_SECONDS = 20;
+
 interface LiveSimulatorProps {
   config: AppConfig;
   initialTab?: ListType | 'sync' | 'audit' | 'config_center' | 'ldap_db';
@@ -139,14 +142,30 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [bannerMessage, setBannerMessage] = useState<{ type: 'success' | 'warning' | 'error'; text: string } | null>(null);
   const [showPendingStrip, setShowPendingStrip] = useState(false);
 
-  // Auto-dismiss the Global Notification Banner appearing between toolbar buttons and list after 5 seconds
+  // Auto-dismiss the Global Notification Banner. 5s was too short to read a
+  // long message, let alone act on it, so the banner now shows a visible
+  // countdown and pauses while hovered. The close button dismisses immediately.
+  const [bannerSecondsLeft, setBannerSecondsLeft] = useState(0);
+  const [bannerPaused, setBannerPaused] = useState(false);
   useEffect(() => {
-    if (!bannerMessage) return;
-    const timer = setTimeout(() => {
-      setBannerMessage(null);
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [bannerMessage]);
+    if (!bannerMessage) {
+      setBannerSecondsLeft(0);
+      setBannerPaused(false);
+      return;
+    }
+    setBannerSecondsLeft(BANNER_AUTO_DISMISS_SECONDS);
+    if (bannerPaused) return;
+    const timer = setInterval(() => {
+      setBannerSecondsLeft((prev) => {
+        if (prev <= 1) {
+          setBannerMessage(null);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [bannerMessage, bannerPaused]);
 
   // State for Table 6: eop_auth_config in MariaDB (Private Key & Encrypted Passphrase)
   const [eopAuthRows, setEopAuthRows] = useState<EopAuthConfig[]>([
@@ -439,18 +458,31 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
     onPendingChangesCountChange?.(pendingChanges.length);
   }, [pendingChanges, onPendingChangesCountChange]);
 
-  // Auto-dismiss the Staged Pending Changes Notice Strip appearing between buttons and list after 6 seconds
+  // Auto-dismiss the Staged Pending Changes Notice Strip. This one warns about
+  // UNSAVED work, so 6s was far too short; it now matches the banner's duration
+  // and shows a countdown that pauses on hover.
+  const [pendingStripSecondsLeft, setPendingStripSecondsLeft] = useState(0);
+  const [pendingStripPaused, setPendingStripPaused] = useState(false);
   useEffect(() => {
     if (pendingChanges.length > 0) {
       setShowPendingStrip(true);
-      const timer = setTimeout(() => {
-        setShowPendingStrip(false);
-      }, 6000);
-      return () => clearTimeout(timer);
+      setPendingStripSecondsLeft(BANNER_AUTO_DISMISS_SECONDS);
+      if (pendingStripPaused) return;
+      const timer = setInterval(() => {
+        setPendingStripSecondsLeft((prev) => {
+          if (prev <= 1) {
+            setShowPendingStrip(false);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
     } else {
       setShowPendingStrip(false);
+      setPendingStripSecondsLeft(0);
     }
-  }, [pendingChanges.length]);
+  }, [pendingChanges.length, pendingStripPaused]);
 
   // Total count of staged entries for active policy
   const totalStagedItems = useMemo(() => {
@@ -2893,16 +2925,20 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
         ) : (
           /* List Table View */
           <div>
-            {/* Global Notification Banner (Auto-dismisses after 5s) */}
+            {/* Global Notification Banner (auto-dismisses after 20s, with a countdown) */}
             {bannerMessage && (
-              <div className={`mx-4 sm:mx-6 mt-4 p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 shadow-xs transition-all duration-300 animate-fadeIn ${
-                bannerMessage.type === 'success'
-                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
-                  : bannerMessage.type === 'warning'
-                  ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200'
-                  : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'
-              }`}>
-                <div className="flex items-center gap-2">
+              <div
+                className={`mx-4 sm:mx-6 mt-4 p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 shadow-xs transition-all duration-300 animate-fadeIn relative overflow-hidden ${
+                  bannerMessage.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                    : bannerMessage.type === 'warning'
+                    ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200'
+                    : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'
+                }`}
+                onMouseEnter={() => setBannerPaused(true)}
+                onMouseLeave={() => setBannerPaused(false)}
+              >
+                <div className="flex items-center gap-2 min-w-0">
                   {bannerMessage.type === 'success' ? (
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                   ) : (
@@ -2911,8 +2947,11 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   <span className="font-medium">{bannerMessage.text}</span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono hidden sm:inline">
-                    auto-dismissing
+                  <span
+                    className="text-[10px] text-slate-500 dark:text-slate-400 font-mono tabular-nums"
+                    title={`Auto-dismisses in ${BANNER_AUTO_DISMISS_SECONDS} seconds${bannerPaused ? ' (paused)' : ''}. Hover to pause.`}
+                  >
+                    {bannerPaused ? 'paused' : `${bannerSecondsLeft}s`}
                   </span>
                   <button
                     type="button"
@@ -2924,12 +2963,22 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                     <span>Dismiss</span>
                   </button>
                 </div>
+                <span className="absolute left-0 bottom-0 h-0.5 w-full bg-black/5 dark:bg-white/5" aria-hidden="true">
+                  <span
+                    className="block h-full w-full origin-left bg-current opacity-30 transition-transform duration-1000 ease-linear"
+                    style={{ transform: `scaleX(${Math.max(0, bannerSecondsLeft) / BANNER_AUTO_DISMISS_SECONDS})` }}
+                  />
+                </span>
               </div>
             )}
 
-            {/* Pending Staged Changes Notification Strip across ALL 4 tables (Auto-dismisses after 6s) */}
+            {/* Pending Staged Changes Notification Strip across ALL 4 tables (auto-dismisses after 20s, with a countdown) */}
             {showPendingStrip && pendingChanges.length > 0 && (
-              <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-blue-900 dark:text-blue-200 shadow-xs transition-all duration-300 animate-fadeIn">
+              <div
+                className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs text-blue-900 dark:text-blue-200 shadow-xs transition-all duration-300 animate-fadeIn relative overflow-hidden"
+                onMouseEnter={() => setPendingStripPaused(true)}
+                onMouseLeave={() => setPendingStripPaused(false)}
+              >
                 <div className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400 shrink-0 animate-pulse"></span>
                   <div>
@@ -2960,7 +3009,19 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
+                  <span
+                    className="text-[10px] text-blue-700/70 dark:text-blue-300/70 font-mono tabular-nums"
+                    title={`Auto-dismisses in ${BANNER_AUTO_DISMISS_SECONDS} seconds${pendingStripPaused ? ' (paused)' : ''}. Hover to pause.`}
+                  >
+                    {pendingStripPaused ? 'paused' : `${pendingStripSecondsLeft}s`}
+                  </span>
                 </div>
+                <span className="absolute left-0 bottom-0 h-0.5 w-full bg-black/5 dark:bg-white/5" aria-hidden="true">
+                  <span
+                    className="block h-full w-full origin-left bg-current opacity-30 transition-transform duration-1000 ease-linear"
+                    style={{ transform: `scaleX(${Math.max(0, pendingStripSecondsLeft) / BANNER_AUTO_DISMISS_SECONDS})` }}
+                  />
+                </span>
               </div>
             )}
 
