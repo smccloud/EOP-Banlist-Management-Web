@@ -48,7 +48,7 @@ if ([string]::IsNullOrWhiteSpace($DbPass))  { $DbPass = [string]$env:EOP_DB_PASS
 # it against the repository when diagnosing a failure. A stale copy on the server
 # has silently disabled the fail-closed push guards before, and the symptom looked
 # like a data problem rather than a deployment problem.
-$ScriptBuild = '2026-09-29-failclosed-1'
+$ScriptBuild = '2026-09-29-dbclientpath-1'
 
 Write-Host "=========================================================="
 Write-Host "EOP Anti-Spam Sync: Policy='$PolicyName' | Action=$Action"
@@ -322,8 +322,26 @@ if ($Action -eq "Pull") {
             [string]$ExpectedCountVar = ''
         )
 
+        # Resolve the client without trusting the caller's PATH. PHP-FPM clears
+        # the environment, so a web-spawned pwsh has no PATH and Get-Command
+        # finds nothing even though the client is installed - the pull path never
+        # noticed because it does not touch MariaDB. Cron worked because it
+        # inherits a login PATH, which is exactly why the same push succeeded from
+        # the CLI and failed from the web UI. Probe the standard locations before
+        # falling back to PATH so the two paths cannot disagree again.
         $dbCli = Get-Command mariadb -ErrorAction SilentlyContinue
         if (-not $dbCli) { $dbCli = Get-Command mysql -ErrorAction SilentlyContinue }
+        if (-not $dbCli) {
+            foreach ($candidate in @(
+                '/usr/bin/mariadb', '/usr/local/bin/mariadb', '/usr/sbin/mariadb', '/bin/mariadb',
+                '/usr/bin/mysql',   '/usr/local/bin/mysql',   '/usr/sbin/mysql',   '/bin/mysql'
+            )) {
+                if (Test-Path -LiteralPath $candidate) {
+                    $dbCli = Get-Command $candidate -ErrorAction SilentlyContinue
+                    if ($dbCli) { break }
+                }
+            }
+        }
         if (-not $dbCli) {
             Write-Error "Push aborted for '${TableName}': neither the 'mariadb' nor the 'mysql' client is installed, so the local list cannot be read. Install the MariaDB client package, or push from the web UI."
             exit 1
