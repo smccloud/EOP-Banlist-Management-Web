@@ -97,7 +97,7 @@ function Connect-EopExchangeOnline {
             }
             Write-Host "Certificate loaded successfully: Subject='$($cert.Subject)', Thumbprint='$($cert.Thumbprint)'" -ForegroundColor Cyan
         } catch {
-            Write-Warning "Could not instantiate X509Certificate2 from $PfxFile: $($_.Exception.Message)"
+            Write-Warning "Could not instantiate X509Certificate2 from '${PfxFile}': $($_.Exception.Message)"
         }
 
         # 2. Register in CurrentUser X509 store via cross-platform .NET API
