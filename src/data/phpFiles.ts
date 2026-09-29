@@ -3131,17 +3131,10 @@ if (!isset($_SESSION['wizard'])) {
 }
 
 /**
- * Write or update the Debian .env file with verified database and system settings
+ * Read and parse existing environment variables from the Debian .env file
  */
-function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = null): bool {
+function readExistingEnv(): array {
     $envPath = __DIR__ . '/.env';
-    if ($ldap === null && !empty($_SESSION['wizard']['ldap'])) {
-        $ldap = $_SESSION['wizard']['ldap'];
-    }
-    if ($eop === null && !empty($_SESSION['wizard']['eop'])) {
-        $eop = $_SESSION['wizard']['eop'];
-    }
-
     $existing = [];
 
     if (file_exists($envPath) && is_readable($envPath)) {
@@ -3162,6 +3155,23 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
             }
         }
     }
+
+    return $existing;
+}
+
+/**
+ * Write or update the Debian .env file with verified database and system settings
+ */
+function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = null): bool {
+    $envPath = __DIR__ . '/.env';
+    if ($ldap === null && !empty($_SESSION['wizard']['ldap'])) {
+        $ldap = $_SESSION['wizard']['ldap'];
+    }
+    if ($eop === null && !empty($_SESSION['wizard']['eop'])) {
+        $eop = $_SESSION['wizard']['eop'];
+    }
+
+    $existing = readExistingEnv();
 
     $dbHost = $db['host'] ?? ($existing['DB_HOST'] ?? '127.0.0.1');
     $dbPort = (int)($db['port'] ?? ($existing['DB_PORT'] ?? 3306));
