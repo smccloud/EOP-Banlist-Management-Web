@@ -688,7 +688,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     `encryption_tag` VARCHAR(64) NULL,
                     `organization` VARCHAR(255) NULL DEFAULT 'corp.example.com',
                     `key_type` ENUM('RSA_PEM', 'PKCS8_PEM', 'PKCS12_PFX') NOT NULL DEFAULT 'RSA_PEM',
-                    `is_active` TINY(1) NOT NULL DEFAULT 1,
+                    `is_active` TINYINT(1) NOT NULL DEFAULT 1,
                     `uploaded_by` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
                     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP

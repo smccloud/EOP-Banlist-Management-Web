@@ -31,6 +31,8 @@ export interface AppConfig {
   certificateThumbprint: string;
   keyPassword?: string;
   privateKeyPem?: string;
+  pkcs12Bundle?: string;
+  pkcs12Filename?: string;
   keyFilename?: string;
   organization?: string;
 
@@ -48,6 +50,7 @@ export interface EopAuthConfig {
   certificate_thumbprint: string;
   key_filename: string;
   private_key_pem: string;
+  pkcs12_bundle?: string | null;
   encrypted_password: string; // Stored as AES-256-GCM encrypted in database
   encryption_iv: string;
   encryption_tag: string;
