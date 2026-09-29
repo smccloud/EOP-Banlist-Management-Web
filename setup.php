@@ -761,6 +761,93 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    // Step 3 Test Action: Test LDAP Connection without advancing to Step 4
+    if ($action === 'test_ldap') {
+        $ldapHost = trim($_POST['ldap_host'] ?? '');
+        $ldapPort = (int)($_POST['ldap_port'] ?? 389);
+        $ldapProtocol = $_POST['ldap_protocol'] ?? 'ldap';
+        $ldapBaseDn = trim($_POST['ldap_base_dn'] ?? '');
+        $ldapGroupDn = trim($_POST['ldap_group_dn'] ?? '');
+        $ldapBindDn = trim($_POST['ldap_bind_dn'] ?? '');
+        $ldapBindPass = $_POST['ldap_bind_pass'] ?? '';
+        $ldapDomain = trim($_POST['ldap_domain'] ?? 'CORP');
+
+        // Fallback Non-LDAP Administrator settings
+        $fallbackEnabled = !empty($_POST['fallback_admin_enabled']);
+        $fallbackUser = trim($_POST['fallback_admin_username'] ?? 'eopadmin');
+        $fallbackPass = $_POST['fallback_admin_password'] ?? '';
+
+        // Save current form values to session so user doesn't lose what they entered
+        $_SESSION['wizard']['ldap'] = [
+            'host'                   => $ldapHost,
+            'port'                   => $ldapPort,
+            'protocol'               => $ldapProtocol,
+            'base_dn'                => $ldapBaseDn,
+            'group_dn'               => $ldapGroupDn,
+            'bind_dn'                => $ldapBindDn,
+            'bind_pass'              => $ldapBindPass,
+            'domain'                 => $ldapDomain,
+            'fallback_admin_enabled' => $fallbackEnabled,
+            'fallback_admin_username'=> $fallbackUser,
+            'fallback_admin_password'=> $fallbackPass,
+        ];
+
+        if (empty($ldapHost)) {
+            $error = "Domain Controller Host / IP is required to test LDAP connection.";
+        } else {
+            try {
+                $isSsl = ($ldapProtocol === 'ldaps' || $ldapPort === 636);
+                $protoPrefix = $isSsl ? 'ldaps://' : 'ldap://';
+                $uri = $protoPrefix . $ldapHost . ':' . $ldapPort;
+
+                if (function_exists('ldap_connect')) {
+                    $conn = @ldap_connect($uri);
+                    if (!$conn) {
+                        throw new Exception("Could not initialize connection to Active Directory at {$uri}");
+                    }
+                    ldap_set_option($conn, LDAP_OPT_PROTOCOL_VERSION, 3);
+                    ldap_set_option($conn, LDAP_OPT_REFERRALS, 0);
+                    ldap_set_option($conn, LDAP_OPT_NETWORK_TIMEOUT, 4);
+
+                    if (!$isSsl && ($ldapProtocol === 'starttls')) {
+                        if (!@ldap_start_tls($conn)) {
+                            throw new Exception("StartTLS handshake failed with Active Directory Domain Controller.");
+                        }
+                    }
+
+                    if ($ldapBindDn !== '' && $ldapBindPass !== '') {
+                        $bind = @ldap_bind($conn, $ldapBindDn, $ldapBindPass);
+                        if (!$bind) {
+                            $ldapErr = ldap_error($conn) ?: 'Invalid service account bind credentials';
+                            throw new Exception("Service Account Bind failed: {$ldapErr}");
+                        }
+                        $success = "Active Directory LDAP Connection Successful! Connected to {$uri} and successfully authenticated with Bind DN '{$ldapBindDn}'.";
+                    } else {
+                        // Anonymous or connection ping
+                        $bind = @ldap_bind($conn);
+                        if (!$bind) {
+                            $ldapErr = ldap_error($conn) ?: 'Anonymous bind rejected by Domain Controller';
+                            $notice = "Domain Controller reached at {$uri}, but anonymous bind was rejected ({$ldapErr}). Supply a valid Service Account Bind DN and Password for authenticated access.";
+                        } else {
+                            $success = "Active Directory LDAP Connection Successful! Domain Controller is reachable at {$uri}.";
+                        }
+                    }
+                    @ldap_unbind($conn);
+                } else {
+                    // Fall back to socket test if php-ldap is not compiled in CLI/web server
+                    $fp = @fsockopen($ldapHost, $ldapPort, $errno, $errstr, 4);
+                    if (!$fp) {
+                        throw new Exception("Could not reach Active Directory host {$ldapHost} on port {$ldapPort}: {$errstr} (Error {$errno})");
+                    }
+                    fclose($fp);
+                    $success = "TCP connection to Active Directory on {$ldapHost}:{$ldapPort} succeeded! (Note: Install php-ldap on Debian via 'apt-get install php-ldap' for full Active Directory authentication).";
+                }
+            } catch (Exception $e) {
+                $error = "LDAP Connection Test Failed: " . $e->getMessage();
+            }
+        }
+    }
+
     // Step 3: Prompt & Save LDAP Information + Emergency Non-LDAP Fallback Admin
     if ($action === 'step3_ldap') {
         $ldapHost = trim($_POST['ldap_host'] ?? '');
@@ -1261,6 +1348,21 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         </div>
                     </div>
 
+                    <!-- Dedicated Test LDAP Connection Action Box -->
+                    <div class="flex items-center justify-between p-4 bg-slate-900/90 rounded-xl border border-blue-500/40 mt-2">
+                        <div>
+                            <div class="text-xs font-bold text-white flex items-center gap-1.5">
+                                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                <span>Active Directory / OpenLDAP Connection Test</span>
+                            </div>
+                            <div class="text-[11px] text-slate-400 mt-0.5">Verify domain controller reachability and credentials before advancing to EOP.</div>
+                        </div>
+                        <button type="submit" name="action" value="test_ldap" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center gap-1.5 transition cursor-pointer">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            <span>Test LDAP Connection</span>
+                        </button>
+                    </div>
+
                     <!-- Emergency Non-LDAP Fallback Administrator Account Setup -->
                     <div class="p-4 bg-slate-900/80 rounded-xl border border-amber-500/40 space-y-3 mt-4">
                         <div class="flex items-center justify-between">
@@ -1271,7 +1373,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                                 <p class="text-[11px] text-slate-400">Allows administrator login directly through MariaDB if the Active Directory Domain Controller connection fails or is offline.</p>
                             </div>
                             <label class="flex items-center space-x-2 text-xs text-slate-300 font-semibold cursor-pointer">
-                                <input type="checkbox" name="fallback_admin_enabled" value="1" <?php echo (!isset($_SESSION['wizard']['ldap']['fallback_admin_enabled']) || !empty($_SESSION['wizard']['ldap']['fallback_admin_enabled'])) ? 'checked' : ''; ?> class="w-4 h-4 text-amber-500 rounded border-slate-700">
+                                <input type="checkbox" name="fallback_admin_enabled" id="fallbackAdminEnabledCheckbox" value="1" <?php echo (!isset($_SESSION['wizard']['ldap']['fallback_admin_enabled']) || !empty($_SESSION['wizard']['ldap']['fallback_admin_enabled'])) ? 'checked' : ''; ?> class="w-4 h-4 text-amber-500 rounded border-slate-700">
                                 <span>Enable Fallback Account</span>
                             </label>
                         </div>
@@ -1282,30 +1384,79 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                                 <input type="text" name="fallback_admin_username" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_username'] ?? 'eopadmin'); ?>" placeholder="eopadmin" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
                             </div>
                             <div>
-                                <label class="block text-xs font-medium text-slate-300 mb-1">Fallback Password</label>
-                                <input type="password" name="fallback_admin_password" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_password'] ?? 'Emergency#Admin2026!'); ?>" placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
+                                <div class="flex items-center justify-between mb-1">
+                                    <label class="block text-xs font-medium text-slate-300">Fallback Password</label>
+                                    <button type="button" onclick="toggleFallbackPasswordVisibility()" class="text-[10px] text-slate-400 hover:text-slate-200 cursor-pointer">
+                                        <span id="toggleFallbackPassText">Show</span>
+                                    </button>
+                                </div>
+                                <input type="password" id="fallbackAdminPassInput" name="fallback_admin_password" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_password'] ?? 'Emergency#Admin2026!'); ?>" placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500 transition-colors">
                             </div>
                         </div>
 
-                        <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] space-y-1">
-                            <div class="font-semibold text-amber-300">Password Policy Requirement:</div>
+                        <!-- Live Interactive Password Policy Requirement Box -->
+                        <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-[11px]" id="passwordPolicyBox">
+                            <div class="flex items-center justify-between font-semibold">
+                                <div class="text-amber-300 flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                    <span>Password Policy Requirement:</span>
+                                </div>
+                                <span id="pwdPolicyBadge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950/80 text-rose-300 border border-rose-800 transition-colors">
+                                    CRITERIA UNMET
+                                </span>
+                            </div>
+
+                            <!-- Length criteria: 12+ characters -->
+                            <div id="pwdLenItem" class="flex items-center justify-between p-2 rounded-lg border border-slate-800 bg-slate-900 text-slate-400 transition-colors">
+                                <div class="flex items-center gap-2">
+                                    <span id="pwdLenIcon" class="w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold text-slate-500">&times;</span>
+                                    <span class="font-semibold">Minimum Length: 12+ Characters</span>
+                                </div>
+                                <span id="pwdLenCount" class="font-mono font-bold">0 characters</span>
+                            </div>
+
                             <div class="text-slate-400 leading-tight">
                                 Must be at least <strong>12+ characters</strong> with at least <strong>three</strong> of the following:
                             </div>
-                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1 text-[10px] font-mono text-slate-300 pt-1">
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Uppercase (A-Z)</div>
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Lowercase (a-z)</div>
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Numbers (0-9)</div>
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Symbols (!@#$...)</div>
+
+                            <!-- 4 Categories Checklist -->
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px] font-mono">
+                                <div id="pwdUpperItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdUpperIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Uppercase (A-Z)</span>
+                                </div>
+                                <div id="pwdLowerItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdLowerIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Lowercase (a-z)</span>
+                                </div>
+                                <div id="pwdNumberItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdNumberIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Numbers (0-9)</span>
+                                </div>
+                                <div id="pwdSymbolItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdSymbolIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Symbols (!@#$...)</span>
+                                </div>
+                            </div>
+
+                            <div class="flex items-center justify-between text-[10px] pt-1 text-slate-400">
+                                <span>Complexity Score:</span>
+                                <span id="pwdScoreText" class="font-semibold text-slate-300">0 of 4 categories satisfied</span>
                             </div>
                         </div>
                     </div>
 
                     <div class="flex items-center justify-between pt-4 border-t border-slate-700">
                         <a href="?step=2" class="text-xs text-slate-400 hover:text-white">&larr; Back to Database</a>
-                        <button type="submit" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
-                            Save &amp; Continue to Exchange EOP &rarr;
-                        </button>
+                        <div class="flex items-center gap-2.5">
+                            <button type="submit" name="action" value="test_ldap" class="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer flex items-center gap-1.5">
+                                <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                <span>Test LDAP Connection</span>
+                            </button>
+                            <button type="submit" name="action" value="step3_ldap" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer">
+                                Save &amp; Continue to Exchange EOP &rarr;
+                            </button>
+                        </div>
                     </div>
                 </form>
             </div>
@@ -1470,5 +1621,114 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
         <?php endif; ?>
 
     </div>
+
+    <script>
+    function updatePasswordPolicy() {
+        var input = document.getElementById('fallbackAdminPassInput');
+        if (!input) return;
+        var pwd = input.value || '';
+
+        var minLength = pwd.length >= 12;
+        var hasUpper = /[A-Z]/.test(pwd);
+        var hasLower = /[a-z]/.test(pwd);
+        var hasNumber = /[0-9]/.test(pwd);
+        var hasSymbol = /[^A-Za-z0-9]/.test(pwd);
+        var passedCategories = (hasUpper ? 1 : 0) + (hasLower ? 1 : 0) + (hasNumber ? 1 : 0) + (hasSymbol ? 1 : 0);
+        var isValid = minLength && (passedCategories >= 3);
+
+        // Helper to update green category badge
+        function setCategoryState(boxId, iconId, isPass) {
+            var box = document.getElementById(boxId);
+            var icon = document.getElementById(iconId);
+            if (!box || !icon) return;
+            if (isPass) {
+                box.className = 'flex items-center gap-1.5 p-2 rounded border border-emerald-600 bg-emerald-950/70 text-emerald-300 transition-colors';
+                icon.textContent = '✓';
+                icon.className = 'w-3.5 h-3.5 flex items-center justify-center font-bold text-emerald-400';
+            } else {
+                box.className = 'flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors';
+                icon.textContent = '×';
+                icon.className = 'w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500';
+            }
+        }
+
+        // Update length item
+        var lenBox = document.getElementById('pwdLenItem');
+        var lenIcon = document.getElementById('pwdLenIcon');
+        var lenCount = document.getElementById('pwdLenCount');
+        if (lenCount) lenCount.textContent = pwd.length + ' character' + (pwd.length === 1 ? '' : 's');
+        if (lenBox && lenIcon) {
+            if (minLength) {
+                lenBox.className = 'flex items-center justify-between p-2 rounded-lg border border-emerald-600 bg-emerald-950/70 text-emerald-300 transition-colors';
+                lenIcon.textContent = '✓';
+                lenIcon.className = 'w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold text-emerald-400';
+            } else {
+                lenBox.className = 'flex items-center justify-between p-2 rounded-lg border border-slate-800 bg-slate-900 text-slate-400 transition-colors';
+                lenIcon.textContent = '×';
+                lenIcon.className = 'w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold text-slate-500';
+            }
+        }
+
+        setCategoryState('pwdUpperItem', 'pwdUpperIcon', hasUpper);
+        setCategoryState('pwdLowerItem', 'pwdLowerIcon', hasLower);
+        setCategoryState('pwdNumberItem', 'pwdNumberIcon', hasNumber);
+        setCategoryState('pwdSymbolItem', 'pwdSymbolIcon', hasSymbol);
+
+        // Score summary
+        var scoreText = document.getElementById('pwdScoreText');
+        if (scoreText) {
+            if (passedCategories >= 3) {
+                scoreText.innerHTML = '<strong>' + passedCategories + ' of 4</strong> categories satisfied (<span class="text-emerald-400 font-semibold">Meets policy threshold</span>)';
+            } else {
+                scoreText.innerHTML = '<strong>' + passedCategories + ' of 4</strong> categories satisfied (<span class="text-amber-400 font-semibold">' + (3 - passedCategories) + ' more needed</span>)';
+            }
+        }
+
+        // Overall badge and input field styles
+        var badge = document.getElementById('pwdPolicyBadge');
+        if (badge) {
+            if (isValid) {
+                badge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900/80 text-emerald-300 border border-emerald-600 transition-colors';
+                badge.textContent = '✓ REQUIREMENTS SATISFIED (PASSED)';
+                input.classList.remove('border-slate-700', 'focus:border-amber-500');
+                input.classList.add('border-emerald-500', 'focus:border-emerald-400');
+            } else {
+                badge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950/80 text-rose-300 border border-rose-800 transition-colors';
+                badge.textContent = 'CRITERIA UNMET';
+                input.classList.remove('border-emerald-500', 'focus:border-emerald-400');
+                input.classList.add('border-slate-700', 'focus:border-amber-500');
+            }
+        }
+    }
+
+    function toggleFallbackPasswordVisibility() {
+        var input = document.getElementById('fallbackAdminPassInput');
+        var textSpan = document.getElementById('toggleFallbackPassText');
+        if (!input || !textSpan) return;
+        if (input.type === 'password') {
+            input.type = 'text';
+            textSpan.textContent = 'Hide';
+        } else {
+            input.type = 'password';
+            textSpan.textContent = 'Show';
+        }
+    }
+
+    // Attach listeners on load
+    document.addEventListener('DOMContentLoaded', function() {
+        var passInput = document.getElementById('fallbackAdminPassInput');
+        if (passInput) {
+            passInput.addEventListener('input', updatePasswordPolicy);
+            passInput.addEventListener('keyup', updatePasswordPolicy);
+            passInput.addEventListener('change', updatePasswordPolicy);
+            updatePasswordPolicy();
+        }
+    });
+
+    // Also call immediately in case DOM is already ready
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(updatePasswordPolicy, 50);
+    }
+    </script>
 </body>
 </html>
