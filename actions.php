@@ -261,21 +261,53 @@ if ($action === 'export_csv') {
 if ($action === 'trigger_sync') {
     $direction = strtolower(trim($_POST['direction'] ?? 'pull'));
     $actionParam = ($direction === 'push') ? 'Push' : 'Pull';
+    $redirect = "Location: index.php?policy=" . urlencode($policyName) . "&tab=sync_center";
 
-    // Execute PowerShell script on Debian server
-    $cmd = sprintf(
-        'pwsh -File %s -PolicyName %s -Action %s 2>&1',
+    // sync-exchange.ps1 reads its app-only auth values and the PKCS#12 bundle from
+    // the environment, not from parameters. This path never exported them, so every
+    // web-initiated sync failed with "Missing authentication values" - the cron path
+    // worked because cron-sync.php does export them.
+    $env = eopPrepareSyncEnvironment(Database::getEopAuthConfig());
+    if (!$env['ok']) {
+        Database::updatePolicySyncStatus($policyName, 'failed', $env['error']);
+        setFlash('error', "Exchange Online sync could not start: " . $env['error']);
+        header($redirect);
+        exit;
+    }
+
+    // A push reads the local lists from MariaDB, so it needs the credentials too.
+    if ($actionParam === 'Push') {
+        eopExportSyncDatabaseEnvironment();
+    }
+
+    $shellParts = [
         escapeshellarg(SYNC_SCRIPT_PATH),
-        escapeshellarg($policyName),
-        escapeshellarg($actionParam)
-    );
+        '-PolicyName ' . escapeshellarg($policyName),
+        '-Action ' . escapeshellarg($actionParam),
+    ];
+    if ($actionParam === 'Pull') {
+        // The Pull path stages its JSON through a temp file named by the environment.
+        $pullOutput = tempnam(sys_get_temp_dir(), 'eoppull_');
+        if ($pullOutput === false) {
+            setFlash('error', 'Could not create a temporary file for the Exchange Online pull response.');
+            header($redirect);
+            exit;
+        }
+        register_shutdown_function(static function () use ($pullOutput): void {
+            if (is_file($pullOutput)) {
+                @unlink($pullOutput);
+            }
+        });
+        putenv('EOP_PULL_OUTPUT=' . $pullOutput);
+    }
+
+    $cmd = 'pwsh -NoProfile -NonInteractive -File ' . implode(' ', $shellParts) . ' 2>&1';
 
     $output = [];
     $returnVar = 0;
     exec($cmd, $output, $returnVar);
 
-    $logMsg = implode("
-", $output);
+    $logMsg = implode("\n", $output);
     if ($returnVar === 0) {
         if ($actionParam === 'Pull') {
             Database::updatePolicySyncStatus($policyName, 'synced', 'Pulled changes from Exchange Online into MariaDB');

@@ -24,12 +24,25 @@ param (
     [ValidateSet("Pull", "Push")]
     [string]$Action = "Pull",
     # Only required for the manual Push path. The Pull path never connects to MariaDB.
+    # Each falls back to the environment so the database password never has to
+    # appear in the process table; cron-sync.php and the web UI both export these.
+    # DbPort defaults to 0 rather than 3306 so that "unset" is distinguishable from
+    # "explicitly 3306" and the environment can still supply it.
     [string]$DbHost = "",
-    [int]$DbPort = 3306,
+    [int]$DbPort = 0,
     [string]$DbName = "",
     [string]$DbUser = "",
     [string]$DbPass = ""
 )
+
+if ([string]::IsNullOrWhiteSpace($DbHost)) { $DbHost = [string]$env:EOP_DB_HOST }
+if ($DbPort -le 0) {
+    $envPort = [int]$env:EOP_DB_PORT
+    $DbPort = if ($envPort -gt 0) { $envPort } else { 3306 }
+}
+if ([string]::IsNullOrWhiteSpace($DbName))  { $DbName = [string]$env:EOP_DB_NAME }
+if ([string]::IsNullOrWhiteSpace($DbUser))  { $DbUser = [string]$env:EOP_DB_USER }
+if ([string]::IsNullOrWhiteSpace($DbPass))  { $DbPass = [string]$env:EOP_DB_PASS }
 
 Write-Host "=========================================================="
 Write-Host "EOP Anti-Spam Sync: Policy='$PolicyName' | Action=$Action"

@@ -23,6 +23,7 @@ if (!file_exists(__DIR__ . '/config.php')) {
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
+require_once __DIR__ . '/functions.php';
 
 $options = getopt('', ['policy::', 'action::', 'help']);
 
@@ -75,64 +76,20 @@ if (getenv('XDG_CACHE_HOME') === false) {
 // Exchange Online App-Only authentication values are read from the active
 // eop_auth_config record rather than hardcoded in the PowerShell script, so that
 // rotating the certificate or App Registration in the Web UI takes effect here
-// without a code change.
+// without a code change. The web UI's manual sync uses the same helper, so the
+// two paths cannot drift apart again.
 $authConfig = Database::getEopAuthConfig();
+$syncEnv = eopPrepareSyncEnvironment($authConfig, getenv('EOP_CERT_PFX_PATH') ?: '/etc/eop-antispam/eop-cert.pfx');
 
-$requiredAuthFields = ['tenant_id', 'client_id', 'certificate_thumbprint'];
-$missingAuthFields = [];
-foreach ($requiredAuthFields as $field) {
-    if (empty($authConfig[$field])) {
-        $missingAuthFields[] = $field;
-    }
-}
-
-if ($missingAuthFields) {
-    $detail = implode(', ', $missingAuthFields);
-    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: active eop_auth_config record is missing {$detail}.\n");
-    fwrite(STDERR, "Upload the certificate details in the Web UI (Authentication tab) before running the sync.\n");
-    Database::updatePolicySyncStatus($policy, 'failed', "eop_auth_config missing {$detail}");
+if (!$syncEnv['ok']) {
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] CRON ERROR: ' . $syncEnv['error'] . "\n");
+    Database::updatePolicySyncStatus($policy, 'failed', $syncEnv['error']);
     exit(1);
 }
 
-putenv('EOP_TENANT_ID=' . $authConfig['tenant_id']);
-putenv('EOP_CLIENT_ID=' . $authConfig['client_id']);
-putenv('EOP_CERT_THUMBPRINT=' . $authConfig['certificate_thumbprint']);
-putenv('EOP_ORGANIZATION=' . ($authConfig['organization'] ?? ''));
+$pfxPath = $syncEnv['pfx_path'];
 
-// Certificate material. Certificate authentication on Linux needs a PKCS#12
-// bundle holding the certificate together with its key. The bundle is taken from
-// the encrypted pkcs12_bundle column when one is stored, otherwise from a
-// provisioned path on disk.
-$pfxPath = getenv('EOP_CERT_PFX_PATH') ?: '/etc/eop-antispam/eop-cert.pfx';
-$tempPfx = null;
-$pfxFromDatabase = false;
-
-$storedBundle = trim((string)($authConfig['pkcs12_bundle'] ?? ''));
-if ($storedBundle !== '') {
-    $blob = base64_decode((string)preg_replace('/\s+/', '', $storedBundle), true);
-    if ($blob === false || !str_starts_with($blob, "\x30")) {
-        fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: the stored PKCS#12 bundle in eop_auth_config is not a DER bundle.\n");
-        Database::updatePolicySyncStatus($policy, 'failed', 'Stored PKCS#12 bundle is malformed');
-        exit(1);
-    }
-
-    $tempPfx = tempnam(sys_get_temp_dir(), 'eopcert_');
-    file_put_contents($tempPfx, $blob);
-    chmod($tempPfx, 0600);
-    $pfxPath = $tempPfx;
-    $pfxFromDatabase = true;
-}
-
-if (!is_readable($pfxPath)) {
-    fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: no readable PKCS#12 certificate bundle at {$pfxPath}.\n");
-    fwrite(STDERR, "Certificate authentication needs a .pfx containing the certificate and its private key. Upload one in the Web UI or set EOP_CERT_PFX_PATH.\n");
-    Database::updatePolicySyncStatus($policy, 'failed', "PKCS#12 certificate not readable at {$pfxPath}");
-    exit(1);
-}
-
-$pfxPassword = (string)($authConfig['encrypted_password'] ?? '');
-
-if ($pfxFromDatabase && $pfxPassword === '') {
+if (trim((string)($authConfig['pkcs12_bundle'] ?? '')) !== '' && (string)($authConfig['encrypted_password'] ?? '') === '') {
     fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] NOTICE: no stored passphrase for the PKCS#12 bundle, attempting an empty passphrase.\n");
 }
 
@@ -143,18 +100,18 @@ putenv('EOP_PS_SCRIPT=' . $psScript);
 putenv('EOP_POLICY=' . $policy);
 
 $pullOutput = tempnam(sys_get_temp_dir(), 'eoppull_');
+if ($pullOutput === false) {
+    fwrite(STDERR, '[' . date('Y-m-d H:i:s') . "] CRON ERROR: could not create a temporary file for the pull response.\n");
+    exit(1);
+}
 
-putenv('EOP_CERT_PFX_PATH=' . $pfxPath);
-putenv('EOP_CERT_PFX_PASSWORD=' . $pfxPassword);
 putenv('EOP_PULL_OUTPUT=' . $pullOutput);
 
-// The decrypted passphrase and any reconstructed bundle are removed on every
-// exit path, including fatal errors.
-register_shutdown_function(static function () use ($pullOutput, $tempPfx): void {
-    foreach ([$pullOutput, $tempPfx] as $tempPath) {
-        if ($tempPath && is_file($tempPath)) {
-            @unlink($tempPath);
-        }
+// The pull transcript is removed on every exit path, including fatal errors. The
+// temporary PKCS#12 bundle is cleaned up by eopPrepareSyncEnvironment().
+register_shutdown_function(static function () use ($pullOutput): void {
+    if (is_file($pullOutput)) {
+        @unlink($pullOutput);
     }
 });
 
