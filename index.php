@@ -31,6 +31,15 @@ $user = requireAuth();
 $csrfToken = getCsrfToken();
 $flash = getFlash();
 
+// This page renders live MariaDB state, so it must never be served from a cache.
+// Without an explicit Cache-Control a browser or intermediary is free to apply
+// heuristic freshness and re-serve a stale list, which looks exactly like "the
+// entries are not refreshing". header() only works before output, and nothing has
+// been emitted yet at this point.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+
 // Post-push summary popup data
 $pushSummary = $_SESSION['push_summary'] ?? null;
 unset($_SESSION['push_summary']);
