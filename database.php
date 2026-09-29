@@ -441,7 +441,11 @@ class Database {
         }
 
         if ($removed) {
-            self::logAudit('DELETE', $listType, $policyName, count($removed) . ' items', 'Removed by cron pull (absent from Exchange Online): ' . implode(', ', array_slice($removed, 0, 25)), $actor);
+            // 'REMOVE', not 'DELETE': eop_audit_log.action is an ENUM of
+            // ADD/REMOVE/UPDATE/SYNC/LOGIN/LOGOUT. Passing 'DELETE' made this
+            // INSERT fail under strict mode, and logAudit swallows the error, so
+            // every deletion the pull performed was invisible in the audit trail.
+            self::logAudit('REMOVE', $listType, $policyName, count($removed) . ' items', 'Removed by cron pull (absent from Exchange Online): ' . implode(', ', array_slice($removed, 0, 25)), $actor);
         }
 
         return [
@@ -663,8 +667,10 @@ class Database {
         }
 
         if ($removed) {
+            // 'REMOVE' is a member of the eop_audit_log action ENUM; 'DELETE' is
+            // not, and the failed INSERT was swallowed by logAudit.
             self::logAudit(
-                'DELETE',
+                'REMOVE',
                 $listType,
                 $policyName,
                 count($removed) . ' items',

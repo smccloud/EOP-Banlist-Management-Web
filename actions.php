@@ -278,6 +278,20 @@ if ($action === 'trigger_sync') {
     // A push reads the local lists from MariaDB, so it needs the credentials too.
     if ($actionParam === 'Push') {
         eopExportSyncDatabaseEnvironment();
+
+        // Hand the PDO row counts to the PowerShell side, which reads the same
+        // lists through the MariaDB CLI. If the two disagree the push is refused
+        // rather than applied, so a failed or missing client cannot replace the
+        // Exchange policy with garbage.
+        $expectEnvMap = [
+            'allowed_senders' => 'EOP_EXPECT_ALLOWED_SENDERS',
+            'blocked_senders' => 'EOP_EXPECT_BLOCKED_SENDERS',
+            'allowed_domains' => 'EOP_EXPECT_ALLOWED_DOMAINS',
+            'blocked_domains' => 'EOP_EXPECT_BLOCKED_DOMAINS',
+        ];
+        foreach ($expectEnvMap as $listType => $varName) {
+            putenv($varName . '=' . Database::countListItems($listType, $policyName));
+        }
     }
 
     $shellParts = [

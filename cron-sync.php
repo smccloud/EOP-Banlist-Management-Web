@@ -172,6 +172,21 @@ if ($isPush) {
     foreach ($counts as $listType => $count) {
         printf("  local %-18s %d\n", $listType, $count);
     }
+
+    // Hand the PDO row counts to the PowerShell side. It reads the same lists
+    // through the MariaDB CLI, and if the two disagree then the local data is not
+    // being read consistently - the push is refused rather than applied. This is
+    // the guard that stops a failed or missing client from silently replacing the
+    // Exchange policy with garbage.
+    $expectEnvMap = [
+        'allowed_senders' => 'EOP_EXPECT_ALLOWED_SENDERS',
+        'blocked_senders' => 'EOP_EXPECT_BLOCKED_SENDERS',
+        'allowed_domains' => 'EOP_EXPECT_ALLOWED_DOMAINS',
+        'blocked_domains' => 'EOP_EXPECT_BLOCKED_DOMAINS',
+    ];
+    foreach ($expectEnvMap as $listType => $varName) {
+        putenv($varName . '=' . (int)($counts[$listType] ?? 0));
+    }
     if ($empty !== []) {
         fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] WARNING: ' . count($empty) . " list(s) are empty and WILL BE CLEARED in Exchange Online (EOP_CRON_PUSH_ALLOW_EMPTY is set).\n");
     }

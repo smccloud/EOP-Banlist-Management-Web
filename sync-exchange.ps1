@@ -285,22 +285,87 @@ if ($Action -eq "Pull") {
         exit 1
     }
 
+    # Reads one list from MariaDB for the push.
+    #
+    # This fails CLOSED. The previous version merged stderr into stdout with 2>&1
+    # and treated any non-empty output as data, so a missing client or a failed
+    # query had its error text pushed to Exchange Online as policy entries - and
+    # because Set-HostedContentFilterPolicy applies all four lists in one call,
+    # that would silently replace real blocklists. It also used -split on what
+    # may be an array, which coerces the array to a single string and yields one
+    # multi-line "entry".
+    #
+    # $ExpectedCountVar names an environment variable holding the row count PHP
+    # already determined over PDO. If the CLI disagrees, the two are reading
+    # different data and the push is refused rather than applied.
     function Query-MariaDbList {
-        param ([string]$TableName, [string]$ColumnName, [string]$Policy)
+        param (
+            [string]$TableName,
+            [string]$ColumnName,
+            [string]$Policy,
+            [string]$ExpectedCountVar = ''
+        )
+
+        $dbCli = Get-Command mariadb -ErrorAction SilentlyContinue
+        if (-not $dbCli) { $dbCli = Get-Command mysql -ErrorAction SilentlyContinue }
+        if (-not $dbCli) {
+            Write-Error "Push aborted for '${TableName}': neither the 'mariadb' nor the 'mysql' client is installed, so the local list cannot be read. Install the MariaDB client package, or push from the web UI."
+            exit 1
+        }
+
         $policyClean = $Policy -replace "'", "''"
         $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$policyClean';"
-        $dbCli = if (Get-Command mariadb -ErrorAction SilentlyContinue) { "mariadb" } else { "mysql" }
-        $result = & $dbCli -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -s -N -e $query 2>&1
-        if ($result) {
-            return @($result -split "\r?\n" | Where-Object { $_ -ne "" })
+
+        # stderr is captured separately so a diagnostic can never become an entry.
+        $errFile = [System.IO.Path]::GetTempFileName()
+        try {
+            $raw = & $dbCli.Source -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -s -N -e $query 2>$errFile
+            $exit = $LASTEXITCODE
+            $stderr = (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
+        } finally {
+            Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
         }
-        return @()
+
+        if ($exit -ne 0) {
+            Write-Error "Push aborted for '${TableName}': the query failed (exit ${exit}). $([string]$stderr).Trim()"
+            exit 1
+        }
+
+        $values = @()
+        foreach ($line in @($raw)) {
+            $text = ([string]$line).Trim()
+            if ($text -eq '') { continue }
+            # Anything that looks like JSON, an object or a quoted field is not a
+            # list value. Pushing it would corrupt the Exchange policy.
+            if ($text -match '^[\[\]{}]' -or $text.StartsWith('"') -or $text.EndsWith('",')) {
+                Write-Error "Push aborted for '${TableName}': query output looks like JSON or a serialised object rather than list data: '$text'. Refusing to push it to Exchange Online."
+                exit 1
+            }
+            $values += $text
+        }
+
+        if ($ExpectedCountVar -ne '') {
+            $expected = [Environment]::GetEnvironmentVariable($ExpectedCountVar)
+            if ($expected -ne $null -and $expected -ne '') {
+                $expectedInt = 0
+                if (-not [int]::TryParse($expected, [ref]$expectedInt)) {
+                    Write-Error "Push aborted for '${TableName}': expected-count variable ${ExpectedCountVar} is not a number ('$expected')."
+                    exit 1
+                }
+                if ($values.Count -ne $expectedInt) {
+                    Write-Error "Push aborted for '${TableName}': the MariaDB client read $($values.Count) rows but PHP read ${expectedInt} over PDO. The two disagree, so the local list is not being read consistently and the push has been refused. Re-run with the web UI push to investigate."
+                    exit 1
+                }
+            }
+        }
+
+        return $values
     }
 
-    $allowedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName))
-    $blockedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName))
-    $allowedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName))
-    $blockedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName))
+    $allowedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_ALLOWED_SENDERS'))
+    $blockedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_BLOCKED_SENDERS'))
+    $allowedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_ALLOWED_DOMAINS'))
+    $blockedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_BLOCKED_DOMAINS'))
 
     Write-Host "Found in MariaDB for Policy '$PolicyName':"
     Write-Host " - Allowed Senders: $($allowedSenders.Count)"
