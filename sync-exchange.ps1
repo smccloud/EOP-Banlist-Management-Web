@@ -323,14 +323,41 @@ if ($Action -eq "Pull") {
         $policyClean = $Policy -replace "'", "''"
         $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$policyClean';"
 
+        # Diagnostic. Set EOP_SYNC_DEBUG=1 in the environment to see exactly what
+        # the client returned and why each guard decided as it did. Needed because a
+        # report showed the guards not firing and a JSON blob reaching Exchange,
+        # neither of which the code here should permit.
+        $debug = -not [string]::IsNullOrWhiteSpace($env:EOP_SYNC_DEBUG)
+        $expectRaw = $null
+        if ($ExpectedCountVar -ne '') {
+            $expectRaw = [Environment]::GetEnvironmentVariable($ExpectedCountVar)
+        }
+        if ($debug) {
+            Write-Host "[debug] table=$TableName cli=$($dbCli.Source) exit-var-before=$LASTEXITCODE"
+            Write-Host "[debug] host='$DbHost' port=$DbPort db='$DbName' user='$DbUser' passSet=$(-not [string]::IsNullOrEmpty($DbPass))"
+            Write-Host "[debug] query=$query"
+            Write-Host "[debug] expectVar=$ExpectedCountVar expectValue=$(if ($null -eq $expectRaw) { '<NULL>' } else { "'$expectRaw'" })"
+        }
+
         # stderr is captured separately so a diagnostic can never become an entry.
         $errFile = [System.IO.Path]::GetTempFileName()
         try {
             $raw = & $dbCli.Source -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -s -N -e $query 2>$errFile
             $exit = $LASTEXITCODE
-            $stderr = (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
         } finally {
+            $stderr = (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
             Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+        }
+
+        if ($debug) {
+            Write-Host "[debug] exit=$exit"
+            Write-Host "[debug] stderr=$([string]$stderr)"
+            Write-Host "[debug] rawType=$(if ($null -eq $raw) { 'null' } else { $raw.GetType().FullName }) rawCount=$(@($raw).Count)"
+            $i = 0
+            foreach ($line in @($raw)) {
+                $i++
+                Write-Host ("[debug] raw[{0}] len={1} first40='{2}'" -f $i, ([string]$line).Length, (([string]$line).Substring(0, [Math]::Min(40, ([string]$line).Length)) -replace "`r|`n", '\n'))
+            }
         }
 
         if ($exit -ne 0) {
@@ -353,6 +380,9 @@ if ($Action -eq "Pull") {
 
         if ($ExpectedCountVar -ne '') {
             $expected = [Environment]::GetEnvironmentVariable($ExpectedCountVar)
+            if ($debug) {
+                Write-Host "[debug] guard: expectVar='$ExpectedCountVar' seen=$(if ($null -eq $expected) { '<NULL>' } else { "'$expected'" }) valuesCount=$($values.Count)"
+            }
             if ($expected -ne $null -and $expected -ne '') {
                 $expectedInt = 0
                 if (-not [int]::TryParse($expected, [ref]$expectedInt)) {
@@ -373,6 +403,13 @@ if ($Action -eq "Pull") {
     $blockedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_BLOCKED_SENDERS'))
     $allowedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_ALLOWED_DOMAINS'))
     $blockedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_BLOCKED_DOMAINS'))
+
+    if (-not [string]::IsNullOrWhiteSpace($env:EOP_SYNC_DEBUG)) {
+        Write-Host "[debug] FINAL allowedSenders.Count=$($allowedSenders.Count) type0=$(if ($allowedSenders.Count) { $allowedSenders[0].GetType().FullName } else { 'n/a' })"
+        if ($allowedSenders.Count) {
+            Write-Host "[debug] FINAL allowedSenders[0] = '$($allowedSenders[0])'"
+        }
+    }
 
     Write-Host "Found in MariaDB for Policy '$PolicyName':"
     Write-Host " - Allowed Senders: $($allowedSenders.Count)"

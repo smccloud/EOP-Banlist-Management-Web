@@ -198,6 +198,13 @@ if ($isPush) {
         escapeshellarg($policy)
     );
 
+    // EOP_SYNC_DEBUG=1 makes sync-exchange.ps1 dump the exact client output and
+    // each guard decision. Inherited from the environment, so it can be set inline
+    // for a one-off run.
+    if (!getenv('EOP_SYNC_DEBUG')) {
+        echo "(hint: re-run with EOP_SYNC_DEBUG=1 to trace the MariaDB client output)\n";
+    }
+
     $pushOutput = [];
     $pushExit = 0;
     passthru($pushShell, $pushExit);
