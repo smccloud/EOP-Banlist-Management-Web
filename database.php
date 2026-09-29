@@ -1001,27 +1001,58 @@ class Database {
         try {
             $pdo = self::getConnection();
 
-            // Ensure is_default column exists
+            // Ensure is_default column exists.
+            // This is DDL, so it must happen BEFORE the transaction opens: MySQL
+            // issues an implicit COMMIT before and after an ALTER TABLE, which
+            // would silently commit the transaction started below.
             try {
                 $check = $pdo->query("SHOW COLUMNS FROM " . TABLE_POLICIES . " LIKE 'is_default'");
                 if ($check && $check->rowCount() === 0) {
                     @$pdo->exec("ALTER TABLE " . TABLE_POLICIES . " ADD COLUMN is_default TINYINT(1) NOT NULL DEFAULT 0");
                 }
-            } catch (Exception $e) {}
+            } catch (Throwable $e) {}
 
-            // Unset previous defaults
-            @$pdo->exec("UPDATE " . TABLE_POLICIES . " SET is_default = 0");
-
-            // Insert or update new default policy
             $desc = $description !== '' ? $description : 'Primary Inbound Anti-Spam Policy';
-            $stmt = $pdo->prepare("INSERT INTO " . TABLE_POLICIES . " (policy_name, description, is_default, updated_at)
-                                   VALUES (:name, :desc, 1, NOW())
-                                   ON DUPLICATE KEY UPDATE is_default = 1, updated_at = NOW(), description = IF(:desc2 != '', :desc2, description)");
-            $stmt->execute([
-                ':name'  => $newPolicyName,
-                ':desc'  => $desc,
-                ':desc2' => $description
-            ]);
+
+            // Clearing the existing default and promoting the new one must be
+            // atomic. Previously the UPDATE ran first and the INSERT second with
+            // no transaction, so any failure between them left the table with no
+            // default policy at all while the caller was told only that the
+            // update "failed". getConnection() is a shared singleton, so only
+            // open a transaction if one is not already running.
+            $ownsTransaction = !$pdo->inTransaction();
+            if ($ownsTransaction) {
+                $pdo->beginTransaction();
+            }
+
+            try {
+                // Unset previous defaults
+                $pdo->exec("UPDATE " . TABLE_POLICIES . " SET is_default = 0");
+
+                // Insert or update new default policy.
+                // Each placeholder may appear only once: this connection sets
+                // ATTR_EMULATE_PREPARES = false, so these are real prepared
+                // statements and a repeated named placeholder raises
+                // SQLSTATE[HY093] Invalid parameter number.
+                $stmt = $pdo->prepare("INSERT INTO " . TABLE_POLICIES . " (policy_name, description, is_default, updated_at)
+                                       VALUES (:name, :desc, 1, NOW())
+                                       ON DUPLICATE KEY UPDATE is_default = 1, updated_at = NOW(), description = IF(:desc_a != '', :desc_b, description)");
+                $stmt->execute([
+                    ':name'   => $newPolicyName,
+                    ':desc'   => $desc,
+                    ':desc_a' => $description,
+                    ':desc_b' => $description
+                ]);
+
+                if ($ownsTransaction) {
+                    $pdo->commit();
+                }
+            } catch (Throwable $e) {
+                if ($ownsTransaction && $pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $e;
+            }
 
             // Persist into .env file if available
             self::updateEnvVariable('EOP_POLICY_NAME', $newPolicyName);
@@ -1033,7 +1064,7 @@ class Database {
 
             self::logAudit('UPDATE', 'SYSTEM', $newPolicyName, 'DEFAULT_POLICY', "Changed default policy name to '{$newPolicyName}'", $updatedBy);
             return true;
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             error_log('[Database::setDefaultPolicyName Error] ' . $e->getMessage());
             return false;
         }
