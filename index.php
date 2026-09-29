@@ -15,7 +15,11 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/functions.php';
 
-// If core database tables are not initialized yet, redirect to setup wizard Step 2
+// If database is not configured or core tables are not initialized yet, redirect to setup wizard
+if (!Database::isConfigured()) {
+    header('Location: setup.php');
+    exit;
+}
 if (!Database::isInitialized()) {
     header('Location: setup.php?step=2');
     exit;

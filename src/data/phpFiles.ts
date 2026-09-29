@@ -232,15 +232,46 @@ if (!file_exists(__DIR__ . '/config.php')) {
     require_once __DIR__ . '/config.php';
 }
 
+require_once __DIR__ . '/crypto.php';
+
+// Initial access check: If setup is incomplete or database is not configured, redirect web visitors to setup wizard
+if (php_sapi_name() !== 'cli' && !headers_sent()) {
+    $currentScript = basename($_SERVER['SCRIPT_FILENAME'] ?? '');
+    if ($currentScript !== 'setup.php') {
+        $isDbHostEmpty = !defined('DB_HOST') || trim((string)DB_HOST) === '';
+        $isDbNameEmpty = !defined('DB_NAME') || trim((string)DB_NAME) === '';
+        $isSetupUnlocked = !file_exists(__DIR__ . '/installed.lock');
+        if ($isDbHostEmpty || $isDbNameEmpty || $isSetupUnlocked) {
+            header('Location: setup.php');
+            exit;
+        }
+    }
+}
+
 class Database {
     private static ?PDO $instance = null;
+
+    /**
+     * Check if database credentials and host are configured
+     */
+    public static function isConfigured(): bool {
+        return defined('DB_HOST') && trim((string)DB_HOST) !== '' &&
+               defined('DB_NAME') && trim((string)DB_NAME) !== '';
+    }
 
     /**
      * Check if core database tables are initialized and reachable
      */
     public static function isInitialized(): bool {
+        if (!self::isConfigured()) {
+            return false;
+        }
+
         try {
-            $pdo = self::getConnection();
+            $pdo = self::getConnection(false);
+            if (!$pdo) {
+                return false;
+            }
             $targetTable = defined('TABLE_ALLOWED_SENDERS') ? TABLE_ALLOWED_SENDERS : 'eop_allowed_senders';
             $check = $pdo->query("SHOW TABLES LIKE '{$targetTable}'");
             return ($check && $check->rowCount() > 0);
@@ -252,7 +283,22 @@ class Database {
     /**
      * Get singleton PDO connection to Remote MariaDB server
      */
-    public static function getConnection(): PDO {
+    public static function getConnection(bool $dieOnError = true): ?PDO {
+        if (!self::isConfigured()) {
+            if (php_sapi_name() !== 'cli' && !headers_sent()) {
+                header('Location: setup.php');
+                exit;
+            }
+            if ($dieOnError) {
+                die('<div style="font-family:sans-serif;padding:2rem;color:#721c24;background:#f8d7da;border:1px solid #f5c6cb;border-radius:6px;max-width:650px;margin:2rem auto;">' .
+                    '<h3>Database Not Configured</h3>' .
+                    '<p>MariaDB database credentials have not been configured yet.</p>' .
+                    '<p><a href="setup.php" style="display:inline-block;padding:8px 16px;background:#0d6efd;color:#fff;text-decoration:none;border-radius:4px;font-size:14px;">Launch Setup Wizard &rarr;</a></p>' .
+                    '</div>');
+            }
+            return null;
+        }
+
         if (self::$instance === null) {
             $dsn = sprintf(
                 'mysql:host=%s;port=%d;dbname=%s;charset=%s',
@@ -274,11 +320,15 @@ class Database {
                 self::$instance = new PDO($dsn, DB_USER, DB_PASS, $options);
             } catch (PDOException $e) {
                 error_log('[MariaDB Error] Connection failed: ' . $e->getMessage());
-                die('<div style="font-family:sans-serif;padding:2rem;color:#721c24;background:#f8d7da;border:1px solid #f5c6cb;border-radius:6px;max-width:650px;margin:2rem auto;">' .
-                    '<h3>Database Connection Error</h3>' .
-                    '<p>Could not connect to remote MariaDB host <code>' . htmlspecialchars(DB_HOST) . ':' . DB_PORT . '</code>.</p>' .
-                    '<p><small>Check network route, MariaDB user grants, and credentials in <code>config.php</code> or <code>.env</code>.</small></p>' .
-                    '</div>');
+                if ($dieOnError) {
+                    die('<div style="font-family:sans-serif;padding:2rem;color:#721c24;background:#f8d7da;border:1px solid #f5c6cb;border-radius:6px;max-width:650px;margin:2rem auto;">' .
+                        '<h3>Database Connection Error</h3>' .
+                        '<p>Could not connect to remote MariaDB host <code>' . htmlspecialchars((string)DB_HOST) . ':' . DB_PORT . '</code>.</p>' .
+                        '<p><small>Check network route, MariaDB user grants, and credentials in <code>config.php</code> or <code>.env</code>.</small></p>' .
+                        '<p style="margin-top:1rem;"><a href="setup.php" style="display:inline-block;padding:6px 12px;background:#0d6efd;color:#fff;text-decoration:none;border-radius:4px;font-size:12px;">Launch Setup Wizard &rarr;</a></p>' .
+                        '</div>');
+                }
+                return null;
             }
         }
         return self::$instance;
@@ -1481,7 +1531,11 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/functions.php';
 
-// If core database tables are not initialized yet, redirect to setup wizard Step 2
+// If database is not configured or core tables are not initialized yet, redirect to setup wizard
+if (!Database::isConfigured()) {
+    header('Location: setup.php');
+    exit;
+}
 if (!Database::isInitialized()) {
     header('Location: setup.php?step=2');
     exit;
@@ -4358,7 +4412,11 @@ require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/ldap.php';
 require_once __DIR__ . '/functions.php';
 
-// If core database tables are not initialized yet, redirect to setup wizard Step 2
+// If database is not configured or core tables are not initialized yet, redirect to setup wizard
+if (!Database::isConfigured()) {
+    header('Location: setup.php');
+    exit;
+}
 if (!Database::isInitialized()) {
     header('Location: setup.php?step=2');
     exit;
