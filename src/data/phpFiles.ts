@@ -4616,22 +4616,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // resolved to a name) would be ignored by Database::getDefaultPolicyName().
             $finalPolicy = trim((string)($eop['policy'] ?? ''));
             if ($finalPolicy !== '') {
-                $pdo->exec("UPDATE \`eop_policies\` SET \`is_default\` = 0");
-                $policyStmt = $pdo->prepare("INSERT INTO \`eop_policies\` (\`policy_name\`, \`policy_guid\`, \`description\`, \`is_default\`, \`sync_status\`)
-                                             VALUES (:name, :guid, :desc, 1, :status)
-                                             ON DUPLICATE KEY UPDATE \`is_default\` = 1, \`policy_guid\` = IF(:guid2 != '', :guid3, \`policy_guid\`), \`sync_status\` = :status2, \`updated_at\` = NOW()");
-                $finalPolicyGuid = eopNormalizeGuid($eop['policy_guid'] ?? '');
-                $finalPolicyStatus = !empty($eop['policy_verified']) ? 'synced' : 'pending';
-                $finalPolicyDesc = 'Primary Inbound Anti-Spam Policy (Selected by the setup wizard)';
-                $policyStmt->execute([
-                    ':name' => $finalPolicy,
-                    ':guid' => $finalPolicyGuid !== '' ? $finalPolicyGuid : null,
-                    ':desc' => $finalPolicyDesc,
-                    ':status' => $finalPolicyStatus,
-                    ':guid2' => $finalPolicyGuid,
-                    ':guid3' => $finalPolicyGuid,
-                    ':status2' => $finalPolicyStatus,
-                ]);
+                // The step-2 DDL only runs on a fresh database (CREATE TABLE IF NOT
+                // EXISTS), so a database created before policy_guid was introduced
+                // will not have the column and the insert below would fail with
+                // "Unknown column", aborting the whole finalize. Add it if missing,
+                // matching the self-heal used for is_default elsewhere.
+                try {
+                    $guidCol = $pdo->query("SHOW COLUMNS FROM \`eop_policies\` LIKE 'policy_guid'");
+                    if ($guidCol && $guidCol->rowCount() === 0) {
+                        $pdo->exec("ALTER TABLE \`eop_policies\` ADD COLUMN \`policy_guid\` CHAR(36) NULL AFTER \`policy_name\`");
+                        $guidKey = $pdo->query("SHOW INDEX FROM \`eop_policies\` WHERE Key_name = 'uniq_policy_guid'");
+                        if ($guidKey && $guidKey->rowCount() === 0) {
+                            $pdo->exec("ALTER TABLE \`eop_policies\` ADD UNIQUE KEY \`uniq_policy_guid\` (\`policy_guid\`)");
+                        }
+                    }
+                } catch (Exception $guidEx) {
+                    $error = "Could not add the policy_guid column to eop_policies: " . $guidEx->getMessage();
+                }
+
+                if (!isset($error)) {
+                    $pdo->exec("UPDATE \`eop_policies\` SET \`is_default\` = 0");
+                    $policyStmt = $pdo->prepare("INSERT INTO \`eop_policies\` (\`policy_name\`, \`policy_guid\`, \`description\`, \`is_default\`, \`sync_status\`)
+                                                 VALUES (:name, :guid, :desc, 1, :status)
+                                                 ON DUPLICATE KEY UPDATE \`is_default\` = 1, \`policy_guid\` = IF(:guid2 != '', :guid3, \`policy_guid\`), \`sync_status\` = :status2, \`updated_at\` = NOW()");
+                    $finalPolicyGuid = eopNormalizeGuid($eop['policy_guid'] ?? '');
+                    $finalPolicyStatus = !empty($eop['policy_verified']) ? 'synced' : 'pending';
+                    $finalPolicyDesc = 'Primary Inbound Anti-Spam Policy (Selected by the setup wizard)';
+                    $policyStmt->execute([
+                        ':name' => $finalPolicy,
+                        ':guid' => $finalPolicyGuid !== '' ? $finalPolicyGuid : null,
+                        ':desc' => $finalPolicyDesc,
+                        ':status' => $finalPolicyStatus,
+                        ':guid2' => $finalPolicyGuid,
+                        ':guid3' => $finalPolicyGuid,
+                        ':status2' => $finalPolicyStatus,
+                    ]);
+                }
             }
 
             // 4. Save EOP Auth config. The private key, the PKCS#12 bundle and the
