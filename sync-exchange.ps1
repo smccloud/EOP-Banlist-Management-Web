@@ -92,16 +92,22 @@ Write-Host "Certificate Thumbprint: $certThumbprint (App: $clientId, Tenant: $te
 # Exchange Online returns these policy properties as single-level string lists,
 # but the exact shape is not guaranteed across ExchangeOnlineManagement module
 # versions, and both failure modes are destructive downstream:
-#   * A one-element array unrolls on return and serialises as a bare JSON string
-#     instead of a one-element array, so the leading comma below is required.
 #   * A nested collection serialises as an array-of-arrays. The PHP reconciler
 #     casts each element to string, which yields the literal "Array" for every
 #     entry, collapsing the whole list to one key and making every local row look
 #     absent from Exchange Online.
+#   * A one-element list silently becomes a scalar, so a JSON payload would carry
+#     a bare string where the PHP side expects a list.
+#
+# So this emits the elements as ordinary pipeline output - one item per value -
+# and callers that need a guaranteed array (the JSON payload below) wrap the call
+# in an explicit [string[]] cast. Do NOT re-add a leading comma to the return:
+# `return , $arr` survives a hashtable assignment but makes `@(Get-FlatStringArray ...)`
+# yield a single element that is the array, which is what silently broke the push.
 #
 # A queue is used rather than recursion, and the accumulator is a local variable
-# rather than a typed parameter: PowerShell can bind a strongly-typed
-# parameterised argument as a copy, which would discard every Add() call.
+# rather than a typed parameter: PowerShell can bind a parameterised argument as a
+# copy, which would discard every Add() call.
 function Get-FlatStringArray {
     param($Values)
 
@@ -138,7 +144,7 @@ function Get-FlatStringArray {
         if ($text -ne '') { $flat.Add($text) }
     }
 
-    return , $flat.ToArray()
+    return $flat.ToArray()
 }
 
 function Connect-EopExchangeOnline {
@@ -261,12 +267,15 @@ if ($Action -eq "Pull") {
         exit 1
     }
 
+    # [string[]] keeps a single-entry list a JSON array and an empty list `[]`.
+    # Without the cast, a one-element result is a scalar and serialises as a bare
+    # string, and an empty result disappears from the payload entirely.
     $payload = [ordered]@{
         policy_name     = $PolicyName
-        allowed_senders = Get-FlatStringArray $eopPolicy.AllowedSenders
-        blocked_senders = Get-FlatStringArray $eopPolicy.BlockedSenders
-        allowed_domains = Get-FlatStringArray $eopPolicy.AllowedSenderDomains
-        blocked_domains = Get-FlatStringArray $eopPolicy.BlockedSenderDomains
+        allowed_senders = [string[]]@(Get-FlatStringArray $eopPolicy.AllowedSenders)
+        blocked_senders = [string[]]@(Get-FlatStringArray $eopPolicy.BlockedSenders)
+        allowed_domains = [string[]]@(Get-FlatStringArray $eopPolicy.AllowedSenderDomains)
+        blocked_domains = [string[]]@(Get-FlatStringArray $eopPolicy.BlockedSenderDomains)
     }
 
     # Depth 4 with the payload as the pipeline input serialises each list as a
