@@ -357,9 +357,48 @@ class Database {
     }
 
     /**
+     * Flattens a decoded remote list into plain strings.
+     *
+     * A JSON array of strings is returned as-is. An element that is itself an
+     * array or object is unwrapped one level so a nested collection from the
+     * PowerShell side does not reach the comparator as a non-scalar. Returns null
+     * when an element cannot be reduced to a string, which callers treat as a
+     * malformed payload.
+     */
+    private static function flattenRemoteValues(array $remoteValues): ?array {
+        $flat = [];
+        foreach ($remoteValues as $value) {
+            if (is_array($value)) {
+                foreach ($value as $inner) {
+                    if (is_array($inner) || is_object($inner)) {
+                        return null;
+                    }
+                    $flat[] = (string)$inner;
+                }
+                continue;
+            }
+            if (is_object($value)) {
+                return null;
+            }
+            if (is_bool($value)) {
+                return null;
+            }
+            $flat[] = (string)$value;
+        }
+        return $flat;
+    }
+
+    /**
      * Reconcile a local list against the authoritative remote list from Exchange Online.
      * Inserts remote entries missing locally and removes local rows that no longer exist
      * in Exchange Online. Every removal is audit logged.
+     *
+     * The remote payload is flattened defensively: a list element that is itself an
+     * array means the producer emitted a nested collection, and a bare
+     * (string) cast on it would yield the literal "Array" — which would collapse
+     * every entry onto one key and make the whole list look absent remotely,
+     * deleting every local row. Such entries are unwrapped; anything that is
+     * still not a scalar afterwards aborts the reconcile instead.
      */
     public static function reconcileListWithRemote(string $listType, string $policyName, array $remoteValues, string $actor): array {
         $pdo = self::getConnection();
@@ -367,8 +406,15 @@ class Database {
         $col = self::getValueColumn($listType);
 
         $remote = [];
-        foreach ($remoteValues as $value) {
-            $normalized = strtolower(trim((string)$value));
+        $flattened = self::flattenRemoteValues($remoteValues);
+        if ($flattened === null) {
+            throw new RuntimeException(
+                "Remote {$listType} payload for policy '{$policyName}' contained nested or non-scalar entries. "
+                . 'Refusing to reconcile: a malformed payload would make every local row look absent from Exchange Online.'
+            );
+        }
+        foreach ($flattened as $value) {
+            $normalized = strtolower(trim($value));
             if ($normalized !== '') {
                 $remote[$normalized] = true;
             }

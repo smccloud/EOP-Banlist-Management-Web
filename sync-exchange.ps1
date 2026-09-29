@@ -67,10 +67,43 @@ try {
 
 Write-Host "Certificate Thumbprint: $certThumbprint (App: $clientId, Tenant: $tenantId, Org: $organization)" -ForegroundColor Cyan
 
-function Get-NonEmptyArray {
+# Adds every non-blank leaf under $Item to $Sink, recursing through nested
+# collections. Exchange Online returns these policy properties as single-level
+# string lists, but the cmdlet's return shape is not guaranteed across module
+# versions, and a nested list serialises to an array-of-arrays that the PHP side
+# cannot reconcile.
+function Add-StringLeaves {
+    param($Item, [System.Collections.Generic.List[string]]$Sink)
+
+    if ($null -eq $Item) { return }
+
+    if ($Item -is [string]) {
+        if (-not [string]::IsNullOrWhiteSpace($Item)) { $Sink.Add($Item.Trim()) }
+        return
+    }
+
+    if ($Item -is [System.Collections.IDictionary]) {
+        foreach ($key in $Item.Keys) { Add-StringLeaves -Item $Item[$key] -Sink $Sink }
+        return
+    }
+
+    if ($Item -is [System.Collections.IEnumerable]) {
+        foreach ($child in $Item) { Add-StringLeaves -Item $child -Sink $Sink }
+        return
+    }
+
+    # Non-string scalars (numbers, booleans) are not valid list entries.
+}
+
+# Returns a flat, all-string array regardless of the shape handed back. The
+# leading comma stops PowerShell from unrolling a single-element array on return,
+# which would otherwise serialise a one-entry list as a bare JSON string instead
+# of a one-element array.
+function Get-FlatStringArray {
     param($Values)
-    if ($null -eq $Values) { return @() }
-    return @($Values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $sink = [System.Collections.Generic.List[string]]::new()
+    Add-StringLeaves -Item $Values -Sink $sink
+    return , $sink.ToArray()
 }
 
 function Connect-EopExchangeOnline {
@@ -195,13 +228,17 @@ if ($Action -eq "Pull") {
 
     $payload = [ordered]@{
         policy_name     = $PolicyName
-        allowed_senders = Get-NonEmptyArray $eopPolicy.AllowedSenders
-        blocked_senders = Get-NonEmptyArray $eopPolicy.BlockedSenders
-        allowed_domains = Get-NonEmptyArray $eopPolicy.AllowedSenderDomains
-        blocked_domains = Get-NonEmptyArray $eopPolicy.BlockedSenderDomains
+        allowed_senders = Get-FlatStringArray $eopPolicy.AllowedSenders
+        blocked_senders = Get-FlatStringArray $eopPolicy.BlockedSenders
+        allowed_domains = Get-FlatStringArray $eopPolicy.AllowedSenderDomains
+        blocked_domains = Get-FlatStringArray $eopPolicy.BlockedSenderDomains
     }
 
-    $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $pullOutput -Encoding UTF8
+    # Depth 4 with the payload as the pipeline input serialises each list as a
+    # real JSON array. Set-Content must not be in the same pipeline as
+    # ConvertTo-Json, or the JSON is stringified before it is written.
+    $json = $payload | ConvertTo-Json -Depth 4 -Compress
+    Set-Content -LiteralPath $pullOutput -Value $json -Encoding UTF8
 
     Write-Host ("Retrieved remote entries: allowed_senders={0} blocked_senders={1} allowed_domains={2} blocked_domains={3}" -f `
         $payload.allowed_senders.Count, $payload.blocked_senders.Count, `
@@ -232,10 +269,10 @@ if ($Action -eq "Pull") {
         return @()
     }
 
-    $allowedSenders = Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName
-    $blockedSenders = Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName
-    $allowedDomains = Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName
-    $blockedDomains = Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName
+    $allowedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName))
+    $blockedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName))
+    $allowedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName))
+    $blockedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName))
 
     Write-Host "Found in MariaDB for Policy '$PolicyName':"
     Write-Host " - Allowed Senders: $($allowedSenders.Count)"

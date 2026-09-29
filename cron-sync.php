@@ -225,10 +225,29 @@ if ($returnVar === 0) {
     foreach ($listMap as $listType => $payloadKey) {
         $values = $remote[$payloadKey] ?? [];
         if (!is_array($values)) {
-            $values = [];
+            // A one-entry PowerShell list serialises as a bare JSON string rather
+            // than an array (a function return unrolls a single-element array).
+            // sync-exchange.ps1 now prevents that, but older payloads may still
+            // exist, so a lone string is wrapped rather than discarded.
+            if (is_string($values)) {
+                $values = ($values === '') ? [] : [$values];
+            } else {
+                fwrite(STDERR, "[" . date('Y-m-d H:i:s') . "] CRON ERROR: the remote payload for '{$listType}' is neither a list nor a string.\n");
+                Database::updatePolicySyncStatus($policy, 'failed', "Remote payload for {$listType} was not a list");
+                exit(1);
+            }
         }
 
-        $result = Database::reconcileListWithRemote($listType, $policy, $values, 'CRON_DAEMON');
+        try {
+            $result = Database::reconcileListWithRemote($listType, $policy, $values, 'CRON_DAEMON');
+        } catch (RuntimeException $e) {
+            // Never reconcile against a payload we could not read: the reconciler
+            // deletes local rows absent from the remote list, so a malformed
+            // payload would wipe the table.
+            fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] CRON ERROR: ' . $e->getMessage() . "\n");
+            Database::updatePolicySyncStatus($policy, 'failed', "Malformed remote payload for {$listType}");
+            exit(1);
+        }
         $totalInserted += $result['inserted'];
         $totalRemoved += $result['removed'];
 
