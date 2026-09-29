@@ -473,6 +473,154 @@ class Database {
     }
 
     /**
+     * Retrieve the active default policy name from MariaDB (eop_policies), falling back to config
+     */
+    public static function getDefaultPolicyName(): string {
+        try {
+            $pdo = self::getConnection();
+            static $colChecked = false;
+            if (!$colChecked) {
+                try {
+                    $check = $pdo->query("SHOW COLUMNS FROM " . TABLE_POLICIES . " LIKE 'is_default'");
+                    if ($check && $check->rowCount() === 0) {
+                        @$pdo->exec("ALTER TABLE " . TABLE_POLICIES . " ADD COLUMN is_default TINYINT(1) NOT NULL DEFAULT 0");
+                    }
+                    $colChecked = true;
+                } catch (Exception $e) {}
+            }
+
+            $stmt = $pdo->query("SELECT policy_name FROM " . TABLE_POLICIES . " WHERE is_default = 1 ORDER BY updated_at DESC LIMIT 1");
+            $row = $stmt ? $stmt->fetch() : null;
+            if (!empty($row['policy_name'])) {
+                return (string)$row['policy_name'];
+            }
+        } catch (Exception $e) {
+            // fallback below
+        }
+
+        if (defined('DEFAULT_POLICY_NAME') && DEFAULT_POLICY_NAME !== '') {
+            return DEFAULT_POLICY_NAME;
+        }
+
+        return getenv('EOP_POLICY_NAME') ?: 'Default';
+    }
+
+    /**
+     * Fetch all policies stored in MariaDB eop_policies table
+     */
+    public static function getPolicies(): array {
+        $policies = [];
+        try {
+            $pdo = self::getConnection();
+            static $colChecked = false;
+            if (!$colChecked) {
+                try {
+                    $check = $pdo->query("SHOW COLUMNS FROM " . TABLE_POLICIES . " LIKE 'is_default'");
+                    if ($check && $check->rowCount() === 0) {
+                        @$pdo->exec("ALTER TABLE " . TABLE_POLICIES . " ADD COLUMN is_default TINYINT(1) NOT NULL DEFAULT 0");
+                    }
+                    $colChecked = true;
+                } catch (Exception $e) {}
+            }
+
+            $stmt = $pdo->query("SELECT * FROM " . TABLE_POLICIES . " ORDER BY is_default DESC, policy_name ASC");
+            if ($stmt) {
+                $policies = $stmt->fetchAll();
+            }
+        } catch (Exception $e) {
+            error_log('[Database::getPolicies Error] ' . $e->getMessage());
+        }
+        return $policies;
+    }
+
+    /**
+     * Update or set the active default policy name in MariaDB and update .env
+     */
+    public static function setDefaultPolicyName(string $newPolicyName, string $updatedBy = 'SYSTEM', string $description = ''): bool {
+        $newPolicyName = trim($newPolicyName);
+        if ($newPolicyName === '') {
+            return false;
+        }
+
+        try {
+            $pdo = self::getConnection();
+
+            // Ensure is_default column exists
+            try {
+                $check = $pdo->query("SHOW COLUMNS FROM " . TABLE_POLICIES . " LIKE 'is_default'");
+                if ($check && $check->rowCount() === 0) {
+                    @$pdo->exec("ALTER TABLE " . TABLE_POLICIES . " ADD COLUMN is_default TINYINT(1) NOT NULL DEFAULT 0");
+                }
+            } catch (Exception $e) {}
+
+            // Unset previous defaults
+            @$pdo->exec("UPDATE " . TABLE_POLICIES . " SET is_default = 0");
+
+            // Insert or update new default policy
+            $desc = $description !== '' ? $description : 'Primary Inbound Anti-Spam Policy';
+            $stmt = $pdo->prepare("INSERT INTO " . TABLE_POLICIES . " (policy_name, description, is_default, updated_at)
+                                   VALUES (:name, :desc, 1, NOW())
+                                   ON DUPLICATE KEY UPDATE is_default = 1, updated_at = NOW(), description = IF(:desc2 != '', :desc2, description)");
+            $stmt->execute([
+                ':name'  => $newPolicyName,
+                ':desc'  => $desc,
+                ':desc2' => $description
+            ]);
+
+            // Persist into .env file if available
+            self::updateEnvVariable('EOP_POLICY_NAME', $newPolicyName);
+
+            // Update in-memory global available policies
+            if (isset($GLOBALS['AVAILABLE_POLICIES']) && !isset($GLOBALS['AVAILABLE_POLICIES'][$newPolicyName])) {
+                $GLOBALS['AVAILABLE_POLICIES'][$newPolicyName] = $desc;
+            }
+
+            self::logAudit('UPDATE', 'SYSTEM', $newPolicyName, 'DEFAULT_POLICY', "Changed default policy name to '{$newPolicyName}'", $updatedBy);
+            return true;
+        } catch (Exception $e) {
+            error_log('[Database::setDefaultPolicyName Error] ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Atomically update a key-value in local .env configuration files
+     */
+    public static function updateEnvVariable(string $key, string $value): bool {
+        $envPaths = [
+            __DIR__ . '/.env',
+            '/var/www/eop-antispam/.env'
+        ];
+
+        $updatedAny = false;
+        foreach ($envPaths as $envPath) {
+            if (!file_exists($envPath)) {
+                continue;
+            }
+
+            $content = @file_get_contents($envPath);
+            if ($content === false) {
+                continue;
+            }
+
+            $pattern = '/^' . preg_quote($key, '/') . '=.*/m';
+            $escapedVal = (strpos($value, ' ') !== false) ? '"' . addcslashes($value, '"\\$') . '"' : $value;
+            $replacement = "{$key}={$escapedVal}";
+
+            if (preg_match($pattern, $content)) {
+                $newContent = preg_replace($pattern, $replacement, $content);
+            } else {
+                $newContent = rtrim($content) . "\n{$replacement}\n";
+            }
+
+            if (@file_put_contents($envPath, $newContent) !== false) {
+                $updatedAny = true;
+            }
+        }
+        return $updatedAny;
+    }
+
+    /**
      * Fetch active LDAP connection configuration stored in the database table eop_ldap_config
      */
     public static function getLdapConfig(): ?array {

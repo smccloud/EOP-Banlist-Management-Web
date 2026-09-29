@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { AppConfig, ListItem, ListType, AuditLogEntry, LdapDbConfig, EopAuthConfig } from '../types';
 import {
   ShieldCheck,
+  Shield,
+  Save,
+  Info,
   Mail,
   Ban,
   Globe,
@@ -177,7 +180,20 @@ export const LiveSimulator: React.FC<LiveSimulatorProps> = ({
   const [keyTestStatus, setKeyTestStatus] = useState<string | null>(null);
   const [keySaveMessage, setKeySaveMessage] = useState<string | null>(null);
   const [showKeyPassword, setShowKeyPassword] = useState<boolean>(false);
-  const [configSubTab, setConfigSubTab] = useState<'all' | 'eop_key' | 'ldap_db'>('all');
+  const [configSubTab, setConfigSubTab] = useState<'all' | 'policy' | 'eop_key' | 'ldap_db'>('all');
+  const [defaultPolicyName, setDefaultPolicyName] = useState<string>(config.defaultPolicyName);
+  const [defaultPolicyDesc, setDefaultPolicyDesc] = useState<string>('Primary Inbound Anti-Spam Policy');
+  const [policySaveMessage, setPolicySaveMessage] = useState<string | null>(null);
+
+  const handleSaveDefaultPolicy = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!defaultPolicyName.trim()) return;
+    const trimmed = defaultPolicyName.trim();
+    setDefaultPolicyName(trimmed);
+    setActivePolicy(trimmed);
+    setPolicySaveMessage(`Default policy successfully updated to "${trimmed}". Stored in MariaDB table eop_policies and written to .env.`);
+    setTimeout(() => setPolicySaveMessage(null), 4000);
+  };
 
   // State for Table 5: eop_ldap_config in MariaDB
   const [ldapDbRows, setLdapDbRows] = useState<LdapDbConfig[]>([
@@ -2085,7 +2101,7 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                 </div>
 
                 {/* Sub-view switcher */}
-                <div className="flex items-center space-x-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg text-xs font-semibold self-start md:self-auto">
+                <div className="flex items-center space-x-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg text-xs font-semibold self-start md:self-auto flex-wrap gap-1">
                   <button
                     type="button"
                     onClick={() => setConfigSubTab('all')}
@@ -2096,6 +2112,18 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                     }`}
                   >
                     All Settings
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfigSubTab('policy')}
+                    className={`px-3 py-1.5 rounded-md transition flex items-center gap-1.5 ${
+                      configSubTab === 'policy'
+                        ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-300 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Shield className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Default Policy</span>
                   </button>
                   <button
                     type="button"
@@ -2125,32 +2153,60 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
               </div>
 
               {/* Status summary banner */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Default Policy Summary Pill */}
+                <div className="p-4 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/60 dark:bg-emerald-950/30">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-950 dark:text-emerald-200 flex items-center gap-1.5">
+                      <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                      Default Policy
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      Active Cron Target
+                    </span>
+                  </div>
+                  <div className="mt-2.5 space-y-1 text-xs text-emerald-900/90 dark:text-emerald-300/90 font-mono">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-500 dark:text-slate-400 font-sans">Policy Name:</span>
+                      <span className="font-semibold truncate max-w-[130px]" title={defaultPolicyName}>{defaultPolicyName}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-500 dark:text-slate-400 font-sans">Cron Direction:</span>
+                      <span className="font-semibold text-emerald-700 dark:text-emerald-300">PULL-ONLY</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-500 dark:text-slate-400 font-sans">PowerShell Target:</span>
+                      <span>sync-exchange.ps1</span>
+                    </div>
+                  </div>
+                </div>
+
                 {/* EOP Key Summary Pill */}
                 <div className="p-4 rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/60 dark:bg-indigo-950/30">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
                       <Key className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                      Exchange Online Private Key Auth
+                      Exchange Online CBA Auth
                     </span>
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                      Table: eop_auth_config (Active #{eopAuthRows.find((r) => r.is_active)?.id || 1})
+                      Table: eop_auth_config
                     </span>
                   </div>
                   <div className="mt-2.5 space-y-1 text-xs text-indigo-900/90 dark:text-indigo-300/90 font-mono">
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-slate-500 dark:text-slate-400 font-sans">SHA-1 Thumbprint:</span>
-                      <span className="font-semibold">{keyThumbprint.substring(0, 16)}...</span>
+                      <span className="font-semibold">{keyThumbprint.substring(0, 14)}...</span>
                     </div>
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-slate-500 dark:text-slate-400 font-sans">Key File:</span>
-                      <span>{keyUploadFileName}</span>
+                      <span className="truncate max-w-[130px]">{keyUploadFileName}</span>
                     </div>
                     <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-500 dark:text-slate-400 font-sans">Passphrase Encryption:</span>
+                      <span className="text-slate-500 dark:text-slate-400 font-sans">Encryption:</span>
                       <span className="text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1 font-sans">
-                        <Lock className="w-3 h-3" /> AES-256-GCM Encrypted
+                        <Lock className="w-3 h-3" /> AES-256-GCM
                       </span>
                     </div>
                   </div>
@@ -2161,11 +2217,11 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-purple-950 dark:text-purple-200 flex items-center gap-1.5">
                       <Database className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                      Active Directory LDAP Settings
+                      Active Directory LDAP
                     </span>
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                      Table: eop_ldap_config (Active #{ldapDbRows.find((r) => r.is_active)?.id || 1})
+                      Table: eop_ldap_config
                     </span>
                   </div>
                   <div className="mt-2.5 space-y-1 text-xs text-purple-900/90 dark:text-purple-300/90 font-mono">
@@ -2175,15 +2231,110 @@ q2r1s0t9u8v7w6x5y4z3A2B1C0D9E8F7G6H5I4J3K2L1M0N9O8P7Q6R5S4T3U2V1
                     </div>
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-slate-500 dark:text-slate-400 font-sans">Protocol:</span>
-                      <span className="uppercase font-semibold text-purple-700 dark:text-purple-300">{ldapEditProto} (No cert required for 389)</span>
+                      <span className="uppercase font-semibold text-purple-700 dark:text-purple-300">{ldapEditProto}</span>
                     </div>
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-slate-500 dark:text-slate-400 font-sans">Auth Group:</span>
-                      <span className="truncate max-w-[190px]" title={ldapEditGroupDn}>{ldapEditGroupDn.split(',')[0]}</span>
+                      <span className="truncate max-w-[130px]" title={ldapEditGroupDn}>{ldapEditGroupDn.split(',')[0]}</span>
                     </div>
                   </div>
                 </div>
               </div>
+
+              {/* SECTION: Default Anti-Spam Policy Setting */}
+              {(configSubTab === 'all' || configSubTab === 'policy') && (
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                        <Shield className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900 dark:text-white">
+                          Default Anti-Spam Policy Setting
+                        </h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Set the primary policy targeted by background cron pulls and default dashboard sessions
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-mono px-2.5 py-1 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 self-start sm:self-auto flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      Active Default: {defaultPolicyName}
+                    </span>
+                  </div>
+
+                  {policySaveMessage && (
+                    <div className="p-3.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span>{policySaveMessage}</span>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleSaveDefaultPolicy} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          Default Policy Name <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={defaultPolicyName}
+                          onChange={(e) => setDefaultPolicyName(e.target.value)}
+                          placeholder="e.g. Unimax - Inbound or Default"
+                          className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                        />
+                        <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                          Must match the policy identity in Microsoft 365 Exchange Online.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          Policy Description / Notes
+                        </label>
+                        <input
+                          type="text"
+                          value={defaultPolicyDesc}
+                          onChange={(e) => setDefaultPolicyDesc(e.target.value)}
+                          placeholder="e.g. Organization-wide inbound anti-spam filter"
+                          className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white font-normal focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                        />
+                        <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                          Stored in MariaDB table <code className="font-mono">eop_policies</code>.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-400 space-y-1">
+                      <div className="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-200">
+                        <Info className="w-3.5 h-3.5 text-blue-500" />
+                        <span>How the default policy is applied:</span>
+                      </div>
+                      <ul className="list-disc list-inside space-y-0.5 pl-2 text-slate-500 dark:text-slate-400">
+                        <li><strong>Scheduled Cron Daemon:</strong> <code>cron-sync.php --action=pull</code> automatically targets this default policy if <code>--policy</code> is omitted.</li>
+                        <li><strong>Database Persistence:</strong> Sets <code>is_default = 1</code> in MariaDB table <code>eop_policies</code>.</li>
+                        <li><strong>Environment Configuration:</strong> Updates <code>EOP_POLICY_NAME</code> in your local <code>.env</code> file.</li>
+                        <li><strong>Dashboard &amp; Navigation:</strong> Serves as the initial selected policy upon login and session startup.</li>
+                      </ul>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800">
+                      <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                        Active Default: <strong className="text-slate-800 dark:text-slate-200">{defaultPolicyName}</strong>
+                      </span>
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Save Default Policy Name</span>
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
 
               {/* SECTION 1: EOP Private Key Upload & Password Encryption */}
               {(configSubTab === 'all' || configSubTab === 'eop_key') && (

@@ -39,9 +39,22 @@ unset($_SESSION['push_summary']);
 $duplicatePopup = $_SESSION['duplicate_popup'] ?? null;
 unset($_SESSION['duplicate_popup']);
 
-// Current active policy
-$selectedPolicy = $_GET['policy'] ?? ($_SESSION['active_policy'] ?? DEFAULT_POLICY_NAME);
+// Current active default policy from database or config
+$defaultPolicy = Database::getDefaultPolicyName();
+$selectedPolicy = $_GET['policy'] ?? ($_SESSION['active_policy'] ?? $defaultPolicy);
 $_SESSION['active_policy'] = $selectedPolicy;
+
+// Load all policies dynamically from MariaDB eop_policies and globals
+$allDbPolicies = Database::getPolicies();
+$availablePolicies = $GLOBALS['AVAILABLE_POLICIES'] ?? [];
+foreach ($allDbPolicies as $p) {
+    if (!empty($p['policy_name']) && !isset($availablePolicies[$p['policy_name']])) {
+        $availablePolicies[$p['policy_name']] = $p['description'] ?? 'Custom Inbound Anti-Spam Policy';
+    }
+}
+if (!isset($availablePolicies[$defaultPolicy])) {
+    $availablePolicies[$defaultPolicy] = 'Primary Inbound Anti-Spam Policy';
+}
 
 // Current active tab
 $currentTab = $_GET['tab'] ?? 'allowed_senders';
@@ -136,9 +149,9 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                     <label for="policySelect" class="text-xs font-semibold text-slate-500 dark:text-slate-400 mr-2 uppercase tracking-wider">Policy:</label>
                     <select id="policySelect" name="policy" onchange="this.form.submit()"
                             class="bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-sm rounded-md px-3 py-1.5 focus:ring-2 focus:ring-blue-500 focus:outline-hidden font-medium">
-                        <?php foreach ($GLOBALS['AVAILABLE_POLICIES'] as $polName => $polDesc): ?>
+                        <?php foreach ($availablePolicies as $polName => $polDesc): ?>
                             <option value="<?= htmlspecialchars($polName) ?>" <?= $polName === $selectedPolicy ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($polName) ?>
+                                <?= htmlspecialchars($polName) ?><?= ($polName === $defaultPolicy) ? ' (Default)' : '' ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -451,6 +464,10 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                             </div>
 
                             <div class="flex items-center gap-2 flex-wrap">
+                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 font-mono">
+                                    <i class="fa-solid fa-shield-halved text-[10px]"></i>
+                                    Table: eop_policies
+                                </span>
                                 <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 dark:bg-blue-950/60 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-800/60 font-mono">
                                     <i class="fa-solid fa-key text-[10px]"></i>
                                     Table: eop_auth_config
@@ -463,32 +480,60 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                         </div>
 
                         <!-- Active Credentials Status Strip -->
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                            <!-- Default Policy Status -->
+                            <div class="p-4 rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/30">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div class="flex items-center gap-2 font-bold text-xs text-emerald-900 dark:text-emerald-200">
+                                        <i class="fa-solid fa-shield-halved text-emerald-600 dark:text-emerald-400"></i>
+                                        <span>Default Anti-Spam Policy</span>
+                                    </div>
+                                    <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                        Active Cron Target
+                                    </span>
+                                </div>
+                                <div class="space-y-1 text-xs text-slate-600 dark:text-slate-300 font-mono">
+                                    <div class="flex justify-between">
+                                        <span class="text-slate-400">Policy:</span>
+                                        <span class="font-bold text-slate-800 dark:text-slate-100 truncate max-w-[150px]" title="<?= htmlspecialchars($defaultPolicy) ?>"><?= htmlspecialchars($defaultPolicy) ?></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span class="text-slate-400">Cron Mode:</span>
+                                        <span class="text-emerald-700 dark:text-emerald-300 font-semibold">PULL-ONLY</span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span class="text-slate-400">Sync Script:</span>
+                                        <span class="truncate max-w-[150px]">sync-exchange.ps1</span>
+                                    </div>
+                                </div>
+                            </div>
+
                             <!-- EOP Private Key Status -->
                             <div class="p-4 rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/60 dark:bg-blue-950/30">
                                 <div class="flex items-center justify-between mb-2">
                                     <div class="flex items-center gap-2 font-bold text-xs text-blue-900 dark:text-blue-200">
-                                        <i class="fa-solid fa-shield-halved text-blue-600 dark:text-blue-400"></i>
-                                        <span>Exchange Online Private Key Auth</span>
+                                        <i class="fa-solid fa-key text-blue-600 dark:text-blue-400"></i>
+                                        <span>Exchange Online CBA Auth</span>
                                     </div>
                                     <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
                                         <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                        Active DB Record #<?= htmlspecialchars((string)($activeAuthConfig['id'] ?? 1)) ?>
+                                        DB Record #<?= htmlspecialchars((string)($activeAuthConfig['id'] ?? 1)) ?>
                                     </span>
                                 </div>
                                 <div class="space-y-1 text-xs text-slate-600 dark:text-slate-300 font-mono">
                                     <div class="flex justify-between">
                                         <span class="text-slate-400">Thumbprint:</span>
-                                        <span class="font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars(substr($activeAuthConfig['certificate_thumbprint'] ?? (defined('M365_CERT_THUMBPRINT') ? M365_CERT_THUMBPRINT : '9A2F8B3C1D4E5F6A'), 0, 20)) ?>...</span>
+                                        <span class="font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars(substr($activeAuthConfig['certificate_thumbprint'] ?? (defined('M365_CERT_THUMBPRINT') ? M365_CERT_THUMBPRINT : '9A2F8B3C1D4E5F6A'), 0, 16)) ?>...</span>
                                     </div>
                                     <div class="flex justify-between">
                                         <span class="text-slate-400">Key File:</span>
-                                        <span><?= htmlspecialchars($activeAuthConfig['key_filename'] ?? 'eop-cert-private.key') ?></span>
+                                        <span class="truncate max-w-[140px]"><?= htmlspecialchars($activeAuthConfig['key_filename'] ?? 'eop-cert.pfx') ?></span>
                                     </div>
                                     <div class="flex justify-between">
-                                        <span class="text-slate-400">Key Password:</span>
+                                        <span class="text-slate-400">Passphrase:</span>
                                         <span class="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                                            <i class="fa-solid fa-lock text-[10px]"></i> AES-256-GCM Encrypted
+                                            <i class="fa-solid fa-lock text-[10px]"></i> Encrypted
                                         </span>
                                     </div>
                                 </div>
@@ -499,31 +544,178 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                                 <div class="flex items-center justify-between mb-2">
                                     <div class="flex items-center gap-2 font-bold text-xs text-purple-900 dark:text-purple-200">
                                         <i class="fa-solid fa-network-wired text-purple-600 dark:text-purple-400"></i>
-                                        <span>Active Directory LDAP Connection</span>
+                                        <span>Active Directory LDAP</span>
                                     </div>
                                     <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
                                         <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                        Active DB Record #<?= htmlspecialchars((string)($activeLdapConfig['id'] ?? 1)) ?>
+                                        DB Record #<?= htmlspecialchars((string)($activeLdapConfig['id'] ?? 1)) ?>
                                     </span>
                                 </div>
                                 <div class="space-y-1 text-xs text-slate-600 dark:text-slate-300 font-mono">
                                     <div class="flex justify-between">
                                         <span class="text-slate-400">Host & Port:</span>
-                                        <span class="font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($activeLdapConfig['host'] ?? LDAP_HOST) ?>:<?= (int)($activeLdapConfig['port'] ?? LDAP_PORT) ?> (<?= strtoupper(htmlspecialchars($activeLdapConfig['protocol'] ?? 'ldap')) ?>)</span>
+                                        <span class="font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($activeLdapConfig['host'] ?? LDAP_HOST) ?>:<?= (int)($activeLdapConfig['port'] ?? LDAP_PORT) ?></span>
                                     </div>
                                     <div class="flex justify-between truncate" title="<?= htmlspecialchars($activeLdapConfig['authorized_group_dn'] ?? LDAP_AUTHORIZED_GROUP_DN) ?>">
                                         <span class="text-slate-400">Group DN:</span>
-                                        <span class="truncate max-w-[200px]"><?= htmlspecialchars($activeLdapConfig['authorized_group_dn'] ?? LDAP_AUTHORIZED_GROUP_DN) ?></span>
+                                        <span class="truncate max-w-[130px]"><?= htmlspecialchars($activeLdapConfig['authorized_group_dn'] ?? LDAP_AUTHORIZED_GROUP_DN) ?></span>
                                     </div>
                                     <div class="flex justify-between">
                                         <span class="text-slate-400">Security:</span>
-                                        <span>Port 389 Plain LDAP &bull; LDAPS Optional</span>
+                                        <span>Port 389 Plain LDAP</span>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- PART 1: Exchange Online Protection Private Key Upload & Settings -->
+                        <!-- PART 1: Default Anti-Spam Policy Configuration -->
+                        <div class="mb-10 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
+                            <div class="px-6 py-4 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                                <div class="flex items-center space-x-2.5">
+                                    <div class="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs">
+                                        <i class="fa-solid fa-shield-halved"></i>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-sm font-bold text-slate-900 dark:text-white">Default Anti-Spam Policy Setting</h3>
+                                        <p class="text-[11px] text-slate-500 dark:text-slate-400">Configure the primary Exchange Online policy targeted by the scheduled background cron job and default dashboard view</p>
+                                    </div>
+                                </div>
+                                <span class="text-[11px] font-mono bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 px-2.5 py-0.5 rounded-full font-semibold flex items-center gap-1.5">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                    Active: <?= htmlspecialchars($defaultPolicy) ?>
+                                </span>
+                            </div>
+
+                            <form method="POST" action="actions.php" class="p-6">
+                                <input type="hidden" name="action" value="update_default_policy">
+                                <input type="hidden" name="policy" value="<?= htmlspecialchars($selectedPolicy) ?>">
+                                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs mb-5">
+                                    <!-- Default Policy Name -->
+                                    <div class="col-span-1">
+                                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1 flex items-center justify-between">
+                                            <span>Default Policy Name <span class="text-rose-500">*</span></span>
+                                            <span class="text-[10px] text-slate-400">e.g. Unimax - Inbound or Default</span>
+                                        </label>
+                                        <input type="text" name="default_policy_name" list="existingPoliciesList" required
+                                               value="<?= htmlspecialchars($defaultPolicy) ?>"
+                                               class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                                               placeholder="Enter policy name (e.g. Unimax - Inbound)">
+                                        <datalist id="existingPoliciesList">
+                                            <?php foreach ($availablePolicies as $pName => $pDesc): ?>
+                                                <option value="<?= htmlspecialchars($pName) ?>"><?= htmlspecialchars($pDesc) ?></option>
+                                            <?php endforeach; ?>
+                                        </datalist>
+                                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                                            Matches the policy identity in Microsoft 365 Exchange Online (e.g. <code>Get-HostedContentFilterPolicy -Identity "..."</code>).
+                                        </p>
+                                    </div>
+
+                                    <!-- Policy Description -->
+                                    <div class="col-span-1">
+                                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                            Policy Description / Note:
+                                        </label>
+                                        <input type="text" name="policy_description"
+                                               value="<?= htmlspecialchars($availablePolicies[$defaultPolicy] ?? 'Primary Inbound Anti-Spam Policy') ?>"
+                                               class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-normal focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                                               placeholder="e.g. Organization-wide inbound anti-spam filter">
+                                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                                            Saved in MariaDB table <code>eop_policies</code> for administrative reference.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <!-- Explanatory Callout Banner -->
+                                <div class="p-3.5 mb-5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-400 space-y-1">
+                                    <div class="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-200">
+                                        <i class="fa-solid fa-circle-info text-blue-500"></i>
+                                        <span>How the default policy is applied across the system:</span>
+                                    </div>
+                                    <ul class="list-disc list-inside space-y-0.5 pl-2 text-slate-500 dark:text-slate-400">
+                                        <li><strong>Scheduled Background Cron:</strong> <code>cron-sync.php --action=pull</code> automatically targets this default policy if <code>--policy</code> is omitted.</li>
+                                        <li><strong>Database State:</strong> Sets <code>is_default = 1</code> in MariaDB table <code>eop_policies</code>.</li>
+                                        <li><strong>Environment Configuration:</strong> Updates <code>EOP_POLICY_NAME</code> in your local <code>.env</code> file.</li>
+                                        <li><strong>Dashboard &amp; Navigation:</strong> Serves as the initial selected policy upon login and session startup.</li>
+                                    </ul>
+                                </div>
+
+                                <div class="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-slate-800">
+                                    <span class="text-xs text-slate-500 dark:text-slate-400">
+                                        Current Default: <strong class="text-slate-800 dark:text-slate-200 font-mono"><?= htmlspecialchars($defaultPolicy) ?></strong>
+                                    </span>
+                                    <button type="submit" 
+                                            class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center space-x-2 transition">
+                                        <i class="fa-solid fa-floppy-disk"></i>
+                                        <span>Save Default Policy Name</span>
+                                    </button>
+                                </div>
+                            </form>
+
+                            <!-- Table of Known Policies with One-Click Set-as-Default -->
+                            <?php if (!empty($allDbPolicies)): ?>
+                                <div class="px-6 pb-6 border-t border-slate-100 dark:border-slate-800/80 pt-4">
+                                    <h4 class="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-1.5">
+                                        <i class="fa-solid fa-list-check text-slate-400"></i>
+                                        <span>Policies Registered in MariaDB (<code>eop_policies</code>)</span>
+                                    </h4>
+                                    <div class="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-lg">
+                                        <table class="w-full text-left text-xs text-slate-600 dark:text-slate-300">
+                                            <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-800">
+                                                <tr>
+                                                    <th class="px-3 py-2">Policy Name</th>
+                                                    <th class="px-3 py-2">Description</th>
+                                                    <th class="px-3 py-2">Sync Status</th>
+                                                    <th class="px-3 py-2">Last Synced</th>
+                                                    <th class="px-3 py-2 text-right">Default Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono text-[11px]">
+                                                <?php foreach ($allDbPolicies as $polRow): ?>
+                                                    <?php $isDef = !empty($polRow['is_default']) || $polRow['policy_name'] === $defaultPolicy; ?>
+                                                    <tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
+                                                        <td class="px-3 py-2 font-bold text-slate-900 dark:text-white">
+                                                            <?= htmlspecialchars($polRow['policy_name']) ?>
+                                                        </td>
+                                                        <td class="px-3 py-2 font-sans text-slate-500 dark:text-slate-400">
+                                                            <?= htmlspecialchars($polRow['description'] ?? '—') ?>
+                                                        </td>
+                                                        <td class="px-3 py-2">
+                                                            <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold <?= ($polRow['sync_status'] ?? '') === 'synced' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300' ?>">
+                                                                <?= htmlspecialchars($polRow['sync_status'] ?? 'pending') ?>
+                                                            </span>
+                                                        </td>
+                                                        <td class="px-3 py-2 text-slate-400 text-[10px]">
+                                                            <?= htmlspecialchars($polRow['last_synced_at'] ?? 'Never') ?>
+                                                        </td>
+                                                        <td class="px-3 py-2 text-right font-sans">
+                                                            <?php if ($isDef): ?>
+                                                                <span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
+                                                                    <i class="fa-solid fa-check"></i> Active Default
+                                                                </span>
+                                                            <?php else: ?>
+                                                                <form method="POST" action="actions.php" class="inline">
+                                                                    <input type="hidden" name="action" value="update_default_policy">
+                                                                    <input type="hidden" name="default_policy_name" value="<?= htmlspecialchars($polRow['policy_name']) ?>">
+                                                                    <input type="hidden" name="policy_description" value="<?= htmlspecialchars($polRow['description'] ?? '') ?>">
+                                                                    <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                                                    <button type="submit" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-semibold transition cursor-pointer">
+                                                                        Set as Default
+                                                                    </button>
+                                                                </form>
+                                                            <?php endif; ?>
+                                                        </td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+
+                        <!-- PART 2: Exchange Online Protection Private Key Upload & Settings -->
                         <div class="mb-10 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
                             <div class="px-6 py-4 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
                                 <div class="flex items-center space-x-2.5">
@@ -684,7 +876,7 @@ $totalPages = max(1, (int)ceil($totalItems / $limit));
                             </div>
                         </div>
 
-                        <!-- PART 2: Active Directory LDAP Settings Modification -->
+                        <!-- PART 3: Active Directory LDAP Settings Modification -->
                         <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
                             <div class="px-6 py-4 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
                                 <div class="flex items-center space-x-2.5">

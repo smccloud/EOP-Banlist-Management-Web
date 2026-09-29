@@ -482,5 +482,32 @@ if ($action === 'test_eop_key') {
     exit;
 }
 
+// --------------------------------------------------------------------------
+// 9. Update Default Policy Name (Stored in MariaDB eop_policies & .env)
+// --------------------------------------------------------------------------
+if ($action === 'update_default_policy') {
+    $newPolicyName = trim($_POST['default_policy_name'] ?? '');
+    $policyDesc = trim($_POST['policy_description'] ?? '');
+    $targetPolicy = $newPolicyName !== '' ? $newPolicyName : $policyName;
+    $redirect = "Location: index.php?policy=" . urlencode($targetPolicy) . "&tab=config_center";
+
+    if ($newPolicyName === '') {
+        setFlash('error', 'Default policy name cannot be empty.');
+        header($redirect);
+        exit;
+    }
+
+    $updated = Database::setDefaultPolicyName($newPolicyName, $user['username'], $policyDesc);
+    if ($updated) {
+        $_SESSION['active_policy'] = $newPolicyName;
+        setFlash('success', "Default policy successfully updated to '{$newPolicyName}'. Updated in MariaDB (table eop_policies) and environment configuration.");
+    } else {
+        setFlash('error', "Failed to update default policy name in database.");
+    }
+
+    header($redirect);
+    exit;
+}
+
 header("Location: index.php");
 exit;

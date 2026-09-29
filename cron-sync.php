@@ -32,7 +32,7 @@ if (isset($options['help'])) {
     exit(0);
 }
 
-$policy = $options['policy'] ?? DEFAULT_POLICY_NAME;
+$policy = $options['policy'] ?? Database::getDefaultPolicyName();
 $action = strtolower($options['action'] ?? 'pull');
 
 // Enforce pull-only in cron
