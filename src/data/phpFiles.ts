@@ -1967,6 +1967,114 @@ function requireAuth(): array {
 }
 
 /**
+ * Prepare everything sync-exchange.ps1 needs from the active eop_auth_config row.
+ *
+ * sync-exchange.ps1 reads its app-only auth values and the PKCS#12 bundle from
+ * the ENVIRONMENT rather than from parameters, so that rotating the certificate
+ * or the App Registration takes effect without editing the script. Both callers
+ * must therefore export it: cron-sync.php and the web UI's manual push. This was
+ * centralised in one function because the push path had drifted and silently
+ * failed with "Missing authentication values" on every run.
+ *
+ * Values are exported rather than passed as arguments so the bundle passphrase
+ * and the database password never appear in the process table.
+ *
+ * @return array{ok:bool,error:string,pfx_path:string}
+ */
+function eopPrepareSyncEnvironment(?array $authConfig, string $pfxFallbackPath = ''): array {
+    $result = ['ok' => false, 'error' => '', 'pfx_path' => ''];
+
+    if (!is_array($authConfig) || $authConfig === []) {
+        $result['error'] = 'No active eop_auth_config record was found. Upload the certificate in the Authentication tab first.';
+        return $result;
+    }
+
+    $missing = [];
+    foreach (['tenant_id', 'client_id', 'certificate_thumbprint'] as $field) {
+        if (empty($authConfig[$field])) {
+            $missing[] = $field;
+        }
+    }
+    if ($missing !== []) {
+        $result['error'] = 'The active eop_auth_config record is missing ' . implode(', ', $missing) . '.';
+        return $result;
+    }
+
+    // Certificate material. A PKCS#12 bundle is normally stored encrypted in the
+    // pkcs12_bundle column, so it is materialised to a private temp file for the
+    // lifetime of the request.
+    $pfxPath = $pfxFallbackPath;
+    $tempFiles = [];
+
+    $storedBundle = trim((string)($authConfig['pkcs12_bundle'] ?? ''));
+    if ($storedBundle !== '') {
+        $blob = base64_decode((string)preg_replace('/\\s+/', '', $storedBundle), true);
+        if ($blob === false || !str_starts_with($blob, "\\x30")) {
+            $result['error'] = 'The stored PKCS#12 bundle in eop_auth_config is not a DER bundle.';
+            return $result;
+        }
+        $tempPfx = tempnam(sys_get_temp_dir(), 'eopcert_');
+        if ($tempPfx === false || file_put_contents($tempPfx, $blob) === false) {
+            $result['error'] = 'Could not write the stored PKCS#12 bundle to a temporary file.';
+            return $result;
+        }
+        chmod($tempPfx, 0600);
+        $pfxPath = $tempPfx;
+        $tempFiles[] = $tempPfx;
+    }
+
+    if (!is_readable($pfxPath)) {
+        $result['error'] = "No readable PKCS#12 certificate bundle at '{$pfxPath}'. Certificate authentication needs a .pfx containing the certificate and its private key. Upload one in the Web UI or set EOP_CERT_PFX_PATH.";
+        foreach ($tempFiles as $f) { @unlink($f); }
+        return $result;
+    }
+
+    // PowerShellGet fails to initialise on Debian when XDG_CACHE_HOME is unset.
+    if (getenv('XDG_CACHE_HOME') === false) {
+        $xdgCache = '/var/cache/eop-antispam';
+        if (!is_dir($xdgCache)) {
+            @mkdir($xdgCache, 0755, true);
+        }
+        if (is_dir($xdgCache)) {
+            putenv('XDG_CACHE_HOME=' . $xdgCache);
+        }
+    }
+
+    putenv('EOP_TENANT_ID=' . (string)$authConfig['tenant_id']);
+    putenv('EOP_CLIENT_ID=' . (string)$authConfig['client_id']);
+    putenv('EOP_CERT_THUMBPRINT=' . (string)$authConfig['certificate_thumbprint']);
+    putenv('EOP_ORGANIZATION=' . (string)($authConfig['organization'] ?? ''));
+    putenv('EOP_CERT_PFX_PATH=' . $pfxPath);
+    putenv('EOP_CERT_PFX_PASSWORD=' . (string)($authConfig['encrypted_password'] ?? ''));
+
+    if ($tempFiles !== []) {
+        register_shutdown_function(static function () use ($tempFiles): void {
+            foreach ($tempFiles as $tempPath) {
+                if (is_file($tempPath)) {
+                    @unlink($tempPath);
+                }
+            }
+        });
+    }
+
+    $result['ok'] = true;
+    $result['pfx_path'] = $pfxPath;
+    return $result;
+}
+
+/**
+ * Export the MariaDB credentials sync-exchange.ps1 needs for a push. Sent via the
+ * environment rather than -Db* arguments so the password stays out of argv.
+ */
+function eopExportSyncDatabaseEnvironment(): void {
+    if (defined('DB_HOST')) { putenv('EOP_DB_HOST=' . (string)DB_HOST); }
+    if (defined('DB_PORT')) { putenv('EOP_DB_PORT=' . (int)DB_PORT); }
+    if (defined('DB_NAME')) { putenv('EOP_DB_NAME=' . (string)DB_NAME); }
+    if (defined('DB_USER')) { putenv('EOP_DB_USER=' . (string)DB_USER); }
+    if (defined('DB_PASS')) { putenv('EOP_DB_PASS=' . (string)DB_PASS); }
+}
+
+/**
  * RFC 5322 Compliant Email Address Validator
  */
 function isValidEmail(string $email): bool {
@@ -1990,7 +2098,7 @@ function isValidDomain(string $domain): bool {
         return false;
     }
     // Standard domain regex check
-    $pattern = '/^(?!:\/\/)([a-zA-Z0-9-_]+\.)*[a-zA-Z0-9][a-zA-Z0-9-_]+\.[a-zA-Z]{2,63}$/';
+    $pattern = '/^(?!://)([a-zA-Z0-9-_]+.)*[a-zA-Z0-9][a-zA-Z0-9-_]+.[a-zA-Z]{2,63}$/';
     return (bool)preg_match($pattern, $domain);
 }
 
@@ -2212,6 +2320,7 @@ CREATE TABLE IF NOT EXISTS \`${cfg.dbName}\`.\`eop_auth_config\` (
     \`certificate_thumbprint\` VARCHAR(100) NOT NULL,
     \`key_filename\` VARCHAR(255) NOT NULL DEFAULT 'eop-cert-private.key',
     \`private_key\` MEDIUMTEXT NOT NULL,
+    \`pkcs12_bundle\` MEDIUMTEXT NULL,
     \`encrypted_password\` TEXT NULL,
     \`encryption_iv\` VARCHAR(64) NULL,
     \`encryption_tag\` VARCHAR(64) NULL,
@@ -2225,11 +2334,13 @@ CREATE TABLE IF NOT EXISTS \`${cfg.dbName}\`.\`eop_auth_config\` (
     KEY \`idx_thumbprint\` (\`certificate_thumbprint\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Insert initial active row for EOP certificate & private key authentication
+-- Insert a disabled placeholder row. The setup wizard inserts the real active
+-- record, so this row must stay is_active = 0 to avoid a second active record
+-- competing with it. No secrets are stored here.
 INSERT INTO \`${cfg.dbName}\`.\`eop_auth_config\` 
     (\`tenant_id\`, \`client_id\`, \`certificate_thumbprint\`, \`key_filename\`, \`private_key\`, \`encrypted_password\`, \`encryption_iv\`, \`encryption_tag\`, \`key_type\`, \`organization\`, \`is_active\`, \`uploaded_by\`)
 VALUES 
-    ('${cfg.tenantId}', '${cfg.clientId}', '${cfg.certificateThumbprint}', '${cfg.keyFilename || "eop-cert-private.key"}', '-----BEGIN RSA PRIVATE KEY-----\\nMIIEowIBAAKCAQEA0Q3d7v5N8A9zX3lW2k1vJ8qY4t7rU9sP3mF2a1cB6d8e0f1g...[INITIAL_SEED_PRIVATE_KEY]...\\n-----END RSA PRIVATE KEY-----', 'tq8fWk6y/7bH...[AES-256-GCM-ENCRYPTED-CIPHERTEXT]...', 'G1a8V0kLm9Pq', 'Xy8Z2n9Q1v0mK4lP7s3w8A==', 'RSA_PEM', '${cfg.organization || "corp.example.com"}', 1, 'SYSTEM')
+    ('${cfg.tenantId}', '${cfg.clientId}', '${cfg.certificateThumbprint}', '${cfg.keyFilename || "eop-cert-private.key"}', '[PLACEHOLDER_REPLACED_BY_SETUP_WIZARD]', '', NULL, NULL, 'RSA_PEM', '${cfg.organization || "corp.example.com"}', 0, 'SYSTEM')
 ON DUPLICATE KEY UPDATE \`updated_at\` = NOW();
 
 -- ----------------------------------------------------------------------------
@@ -2300,6 +2411,322 @@ CREATE TABLE IF NOT EXISTS \`${cfg.dbName}\`.\`eop_sync_confirmations\` (
 -- GRANT ALL PRIVILEGES ON \`${cfg.dbName}\`.* TO '${cfg.dbUser}'@'%';
 -- FLUSH PRIVILEGES;
 `
+  },
+
+  // 5b. schema-update.sql
+  {
+    name: 'schema-update.sql',
+    path: 'schema-update.sql',
+    description: 'Idempotent incremental schema update for existing installations. Adds eop_auth_config.pkcs12_bundle, renames private_key_pem to private_key, widens identifier columns, relaxes secret columns to nullable, adds auth indexes, creates eop_sync_confirmations, and deactivates the fake placeholder auth row seeded by older schema.sql versions.',
+    category: 'core',
+    generateContent: (cfg) => `-- ============================================================================
+-- Exchange Online Protection (EOP) Anti-Spam Manager
+-- Incremental Schema Update For Existing Installations
+-- ============================================================================
+-- Purpose:
+--   Brings a database created by an EARLIER version of schema.sql up to the
+--   current definition. Safe to run repeatedly: every statement is guarded by
+--   an information_schema lookup and becomes a no-op once applied.
+--
+-- What changed:
+--   1. eop_auth_config renamed \`private_key_pem\` -> \`private_key\` and widened
+--      to MEDIUMTEXT so large RSA/PKCS#8 keys are not truncated.
+--   2. eop_auth_config gained \`pkcs12_bundle\` (encrypted PKCS#12/PFX bundle).
+--      Without this column the certificate import and every sync that uses the
+--      bundle fail with an unknown-column error.
+--   3. eop_auth_config identifier columns widened (tenant/client/thumbprint to
+--      VARCHAR(100), key_filename to VARCHAR(255)).
+--   4. eop_auth_config secret columns relaxed to NULL so the wizard can store
+--      a PKCS#12 bundle with no PEM private key.
+--   5. eop_auth_config indexes idx_auth_active / idx_thumbprint added.
+--   6. eop_sync_confirmations created if the table is absent.
+--   7. The placeholder row shipped by the older schema.sql is deactivated.
+--      That row carried a fake thumbprint and a non-functional encrypted blob
+--      and was inserted with is_active = 1, so it competed with the real
+--      record written by the setup wizard.
+--
+-- Usage:
+--   mysql -u root -p < schema-update.sql
+--   (or paste into phpMyAdmin / mariadb client against the app database)
+--
+-- No credentials, keys, or tenant secrets are stored by this script.
+-- ============================================================================
+
+USE \`${cfg.dbName}\`;
+
+-- ----------------------------------------------------------------------------
+-- 1. eop_auth_config: rename private_key_pem -> private_key (widen to MEDIUMTEXT)
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'private_key') = 0
+        AND
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'private_key_pem') = 1,
+        'ALTER TABLE \`eop_auth_config\` CHANGE COLUMN \`private_key_pem\` \`private_key\` MEDIUMTEXT NOT NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ----------------------------------------------------------------------------
+-- 2. eop_auth_config: add private_key when neither spelling exists
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'private_key') = 0,
+        'ALTER TABLE \`eop_auth_config\` ADD COLUMN \`private_key\` MEDIUMTEXT NOT NULL DEFAULT ''''',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ----------------------------------------------------------------------------
+-- 3. eop_auth_config: widen private_key to MEDIUMTEXT
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT DATA_TYPE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'private_key') = 'text',
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`private_key\` MEDIUMTEXT NOT NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ----------------------------------------------------------------------------
+-- 4. eop_auth_config: add pkcs12_bundle (encrypted PKCS#12/PFX bundle)
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'pkcs12_bundle') = 0,
+        'ALTER TABLE \`eop_auth_config\` ADD COLUMN \`pkcs12_bundle\` MEDIUMTEXT NULL AFTER \`private_key\`',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ----------------------------------------------------------------------------
+-- 5. eop_auth_config: widen identifier columns
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'tenant_id') < 100,
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`tenant_id\` VARCHAR(100) NOT NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCARE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'client_id') < 100,
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`client_id\` VARCHAR(100) NOT NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'certificate_thumbprint') < 100,
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`certificate_thumbprint\` VARCHAR(100) NOT NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'key_filename') < 255,
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`key_filename\` VARCHAR(255) NOT NULL DEFAULT ''eop-cert-private.key''',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ----------------------------------------------------------------------------
+-- 6. eop_auth_config: relax secret columns to NULL
+--    A PKCS#12 deployment has no PEM private key and no legacy IV/tag pair,
+--    so these columns must be nullable.
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT IS_NULLABLE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'encrypted_password') = 'NO',
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`encrypted_password\` TEXT NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT IS_NULLABLE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'encryption_iv') = 'NO',
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`encryption_iv\` VARCHAR(64) NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT IS_NULLABLE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'encryption_tag') = 'NO',
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`encryption_tag\` VARCHAR(64) NULL',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT IS_NULLABLE FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND COLUMN_NAME  = 'organization') = 'NO',
+        'ALTER TABLE \`eop_auth_config\` MODIFY COLUMN \`organization\` VARCHAR(255) NULL DEFAULT ''corp.example.com''',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ----------------------------------------------------------------------------
+-- 7. eop_auth_config: missing indexes
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.STATISTICS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND INDEX_NAME   = 'idx_auth_active') = 0,
+        'ALTER TABLE \`eop_auth_config\` ADD KEY \`idx_auth_active\` (\`is_active\`)',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCARE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.STATISTICS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_auth_config'
+            AND INDEX_NAME   = 'idx_thumbprint') = 0,
+        'ALTER TABLE \`eop_auth_config\` ADD KEY \`idx_thumbprint\` (\`certificate_thumbprint\`)',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ----------------------------------------------------------------------------
+-- 8. eop_sync_confirmations: create if absent
+--    Deletions withheld during a push land here for an administrator to
+--    accept or deny. The next cron run for that policy consumes the decision.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS \`eop_sync_confirmations\` (
+    \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    \`policy_name\` VARCHAR(255) NOT NULL,
+    \`list_type\` VARCHAR(50) NOT NULL,
+    \`local_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+    \`remote_count\` INT UNSIGNED NOT NULL DEFAULT 0,
+    \`pending_values\` MEDIUMTEXT NULL,
+    \`values_truncated\` TINYINT(1) NOT NULL DEFAULT 0,
+    \`status\` ENUM('pending', 'accepted', 'denied', 'applied') NOT NULL DEFAULT 'pending',
+    \`requested_by\` VARCHAR(100) NOT NULL DEFAULT 'CRON_DAEMON',
+    \`decided_by\` VARCHAR(100) NULL,
+    \`decided_at\` DATETIME NULL,
+    \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY \`uniq_policy_list\` (\`policy_name\`, \`list_type\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- 9. Deactivate the placeholder row seeded by the older schema.sql
+--    Matches only the known fake seed values, so a genuine wizard record is
+--    never touched. Run the wizard's certificate step again if no active row
+--    remains afterwards.
+-- ----------------------------------------------------------------------------
+UPDATE \`eop_auth_config\`
+   SET \`is_active\` = 0
+ WHERE \`is_active\` = 1
+   AND \`certificate_thumbprint\` = '9A2F8B3C1D4E5F6A7B8C9D0E1F2A3B4C5D6E7F80'
+   AND \`private_key\` LIKE '%INITIAL_SEED_PRIVATE_KEY%';
+
+-- ============================================================================
+-- Verification (all should return the expected results)
+-- ============================================================================
+-- SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+--   FROM information_schema.COLUMNS
+--  WHERE TABLE_SCHEMA = DATABASE()
+--    AND TABLE_NAME   = 'eop_auth_config'
+--    AND COLUMN_NAME IN ('private_key', 'pkcs12_bundle', 'encrypted_password');
+--
+-- SELECT TABLE_NAME FROM information_schema.TABLES
+--  WHERE TABLE_SCHEMA = DATABASE()
+--    AND TABLE_NAME   = 'eop_sync_confirmations';
+--
+-- SELECT id, tenant_id, certificate_thumbprint, key_type, is_active
+--   FROM eop_auth_config ORDER BY id;`
   },
 
   // 6. index.php
@@ -4163,18 +4590,42 @@ if (file_exists(__DIR__ . '/crypto.php')) {
     require_once __DIR__ . '/crypto.php';
 }
 
+// Standalone fallback in case crypto.php is ever missing or inaccessible
 if (!function_exists('eopEncryptSecret')) {
     function eopEncryptSecret(string $plaintext): string {
-        if ($plaintext === '') return '';
+        if ($plaintext === '') {
+            return '';
+        }
         $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== ''
             ? AUTH_MASTER_ENCRYPTION_KEY
-            : (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: 'eop_master_secret');
+            : (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: ($_ENV['AUTH_MASTER_ENCRYPTION_KEY'] ?? 'eop_master_secret'));
         $key = hash('sha256', $secret, true);
         $iv = random_bytes(12);
         $tag = '';
         $ciphertext = openssl_encrypt($plaintext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16);
-        if ($ciphertext === false) throw new RuntimeException('AES-256-GCM encryption failed.');
+        if ($ciphertext === false) {
+            throw new RuntimeException('AES-256-GCM encryption of secret failed.');
+        }
         return 'EOPENC1:' . base64_encode($iv . $tag . $ciphertext);
+    }
+}
+
+if (!function_exists('eopDecryptSecret')) {
+    function eopDecryptSecret(?string $stored): ?string {
+        if ($stored === null) return null;
+        if ($stored === '') return '';
+        if (!str_starts_with($stored, 'EOPENC1:')) return $stored;
+        $raw = base64_decode(substr($stored, strlen('EOPENC1:')), true);
+        if ($raw === false || strlen($raw) < 29) return null;
+        $iv = substr($raw, 0, 12);
+        $tag = substr($raw, 12, 16);
+        $ciphertext = substr($raw, 28);
+        $secret = defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== ''
+            ? AUTH_MASTER_ENCRYPTION_KEY
+            : (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: ($_ENV['AUTH_MASTER_ENCRYPTION_KEY'] ?? 'eop_master_secret'));
+        $key = hash('sha256', $secret, true);
+        $decrypted = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+        return $decrypted !== false ? $decrypted : null;
     }
 }
 
@@ -4229,7 +4680,7 @@ function eopNormalizeGuid(mixed $input): string {
  */
 function eopNormalizePolicyIdentifier(string $raw): string {
     $value = trim($raw);
-    $value = trim(trim($value), "'");
+    $value = trim(trim($value), "\\"'");
     $value = trim($value);
     $guid = eopNormalizeGuid($value);
     return $guid !== '' ? $guid : $value;
@@ -4457,8 +4908,12 @@ define('TABLE_POLICIES',        'eop_policies');
 define('TABLE_LDAP_CONFIG',     'eop_ldap_config');
 define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config');
 define('TABLE_LOCAL_ADMINS',    'eop_local_admins');
+define('TABLE_SYNC_CONFIRMATIONS', 'eop_sync_confirmations'); // Withheld deletions awaiting an administrator accept/deny decision
 
 define('AUTH_MASTER_ENCRYPTION_KEY', getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: 'eop_master_aes256_secret_key_2026_debian');
+
+// Shared AES-256-GCM envelope shared with database.php at runtime
+require_once __DIR__ . '/crypto.php';
 
 define('LDAP_HOST', getenv('LDAP_HOST') ?: 'dc01.corp.example.com');
 define('LDAP_PORT', (int)(getenv('LDAP_PORT') ?: 389));
@@ -4658,7 +5113,14 @@ function updateEnvConfiguration(array $db, ?array $ldap = null, ?array $eop = nu
     $org = $eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com');
     $policy = $eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy');
     $policyGuid = eopNormalizeGuid($eop['policy_guid'] ?? ($existing['EOP_POLICY_GUID'] ?? ''));
-    $masterKey = $existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16));
+    $masterKey = (defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
+        ? AUTH_MASTER_ENCRYPTION_KEY
+        : ($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16))));
+    if (!defined('AUTH_MASTER_ENCRYPTION_KEY')) {
+        define('AUTH_MASTER_ENCRYPTION_KEY', $masterKey);
+    }
+    putenv("AUTH_MASTER_ENCRYPTION_KEY={$masterKey}");
+    $_ENV['AUTH_MASTER_ENCRYPTION_KEY'] = $masterKey;
     $appUrl = $existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com'));
 
     $dateStr = date('Y-m-d H:i:s');
@@ -4784,7 +5246,9 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
     $org = addslashes($eop['org_domain'] ?? ($existing['M365_ORGANIZATION'] ?? 'corp.example.com'));
     $policy = addslashes($eop['policy'] ?? ($existing['EOP_POLICY_NAME'] ?? 'Default Inbound Anti-Spam Policy'));
     $policyGuid = addslashes(eopNormalizeGuid($eop['policy_guid'] ?? ($existing['EOP_POLICY_GUID'] ?? '')));
-    $masterKey = addslashes($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? bin2hex(random_bytes(16)));
+    $masterKey = addslashes((defined('AUTH_MASTER_ENCRYPTION_KEY') && AUTH_MASTER_ENCRYPTION_KEY !== '')
+        ? AUTH_MASTER_ENCRYPTION_KEY
+        : ($existing['AUTH_MASTER_ENCRYPTION_KEY'] ?? (getenv('AUTH_MASTER_ENCRYPTION_KEY') ?: bin2hex(random_bytes(16)))));
     $appUrl = addslashes($existing['APP_URL'] ?? ('https://' . ($_SERVER['HTTP_HOST'] ?? 'eop.corp.example.com')));
     // The stock description only describes the shipped default. A policy chosen in
     // the wizard (or resolved from a GUID) gets a neutral label rather than being
@@ -4795,146 +5259,138 @@ function updateConfigFile(array $db, ?array $ldap = null, ?array $eop = null): b
     $dateStr = date('Y-m-d H:i:s');
 
     $cfg = "<?php\\n" .
-'/**
- * Exchange Online Protection (EOP) Anti-Spam Policy Manager
- * Application Configuration File
- * Environment: Debian Linux / PHP 8.x / Remote MariaDB / Active Directory LDAP
- * Automatically written by setup wizard on ' . $dateStr . '
- */
-
-declare(strict_types=1);
-
-// Prevent direct script execution
-if (basename(__FILE__) === basename($_SERVER[\'SCRIPT_FILENAME\'] ?? \'\')) {
-    http_response_code(403);
-    exit(\'Direct access forbidden.\');
-}
-
-// --------------------------------------------------------------------------
-// 1. Session & Security Configuration
-// --------------------------------------------------------------------------
-ini_set(\'session.cookie_httponly\', \'1\');
-ini_set(\'session.use_only_cookies\', \'1\');
-ini_set(\'session.cookie_samesite\', \'Lax\');
-if (!empty($_SERVER[\'HTTPS\']) && $_SERVER[\'HTTPS\'] !== \'off\') {
-    ini_set(\'session.cookie_secure\', \'1\');
-}
-
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-$sessionTimeoutSeconds = 60 * 60;
-if (isset($_SESSION[\'LAST_ACTIVITY\']) && (time() - $_SESSION[\'LAST_ACTIVITY\'] > $sessionTimeoutSeconds)) {
-    session_unset();
-    session_destroy();
-    header(\'Location: login.php?msg=timeout\');
-    exit;
-}
-$_SESSION[\'LAST_ACTIVITY\'] = time();
-
-// --------------------------------------------------------------------------
-// 1b. Load Environment Variables from .env
-// Automatically loads .env written by setup.php or administrator
-// --------------------------------------------------------------------------
-$envFilePath = __DIR__ . \'/.env\';
-if (file_exists($envFilePath) && is_readable($envFilePath)) {
-    $envLines = @file($envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    if ($envLines !== false) {
-        foreach ($envLines as $envLine) {
-            $envLine = trim($envLine);
-            if ($envLine === \'\' || str_starts_with($envLine, \'#\') || str_starts_with($envLine, \';\')) {
-                continue;
-            }
-            if (strpos($envLine, \'=\') !== false) {
-                [$envKey, $envVal] = explode(\'=\', $envLine, 2);
-                $envKey = trim($envKey);
-                $envVal = trim($envVal);
-                if ((str_starts_with($envVal, \'"\') && str_ends_with($envVal, \'"\')) ||
-                    (str_starts_with($envVal, "\'") && str_ends_with($envVal, "\'"))) {
-                    $envVal = substr($envVal, 1, -1);
-                }
-                putenv($envKey . \'=\' . $envVal);
-                $_ENV[$envKey] = $envVal;
-                $_SERVER[$envKey] = $envVal;
-            }
-        }
-    }
-}
-
-// Helper function to safely fetch environment variable with fallback
-if (!function_exists(\'eopEnv\')) {
-    function eopEnv(string $key, string $default = \'\'): string {
-        if (isset($_ENV[$key]) && $_ENV[$key] !== \'\') return (string)$_ENV[$key];
-        if (isset($_SERVER[$key]) && $_SERVER[$key] !== \'\') return (string)$_SERVER[$key];
-        $val = getenv($key);
-        if ($val !== false && $val !== \'\') return (string)$val;
-        return $default;
-    }
-}
-
-// --------------------------------------------------------------------------
-// 2. Remote MariaDB Database Settings
-// --------------------------------------------------------------------------
-define(\'DB_HOST\', eopEnv(\'DB_HOST\', \'' . $dbHost . '\'));
-define(\'DB_PORT\', (int)eopEnv(\'DB_PORT\', \'' . $dbPort . '\'));
-define(\'DB_NAME\', eopEnv(\'DB_NAME\', \'' . $dbName . '\'));
-define(\'DB_USER\', eopEnv(\'DB_USER\', \'' . $dbUser . '\'));
-define(\'DB_PASS\', eopEnv(\'DB_PASS\', \'' . $dbPass . '\'));
-define(\'DB_CHARSET\', \'utf8mb4\');
-
-// Individual MariaDB tables per list requirement
-define(\'TABLE_ALLOWED_SENDERS\', \'eop_allowed_senders\');
-define(\'TABLE_BLOCKED_SENDERS\', \'eop_blocked_senders\');
-define(\'TABLE_ALLOWED_DOMAINS\', \'eop_allowed_domains\');
-define(\'TABLE_BLOCKED_DOMAINS\', \'eop_blocked_domains\');
-define(\'TABLE_AUDIT_LOG\',       \'eop_audit_log\');
-define(\'TABLE_POLICIES\',        \'eop_policies\');
-define(\'TABLE_LDAP_CONFIG\',     \'eop_ldap_config\');
-define(\'TABLE_EOP_AUTH_CONFIG\', \'eop_auth_config\');
-define(\'TABLE_LOCAL_ADMINS\',    \'eop_local_admins\');
-define(\'TABLE_SYNC_CONFIRMATIONS\', \'eop_sync_confirmations\');
-
-define(\'AUTH_MASTER_ENCRYPTION_KEY\', eopEnv(\'AUTH_MASTER_ENCRYPTION_KEY\', \'' . $masterKey . '\'));
-
-// --------------------------------------------------------------------------
-// 3. Microsoft Active Directory (LDAP) Settings
-// --------------------------------------------------------------------------
-define(\'LDAP_HOST\', eopEnv(\'LDAP_HOST\', \'' . $ldapHost . '\'));
-define(\'LDAP_PORT\', (int)eopEnv(\'LDAP_PORT\', \'' . $ldapPort . '\'));
-define(\'LDAP_PROTOCOL\', eopEnv(\'LDAP_PROTOCOL\', \'' . $ldapProto . '\'));
-define(\'LDAP_USE_SSL\', LDAP_PROTOCOL === \'ldaps\');
-define(\'LDAP_USE_TLS\', LDAP_PROTOCOL === \'starttls\');
-define(\'LDAP_BASE_DN\', eopEnv(\'LDAP_BASE_DN\', \'' . $ldapBase . '\'));
-define(\'LDAP_AUTHORIZED_GROUP_DN\', eopEnv(\'LDAP_AUTHORIZED_GROUP_DN\', \'' . $ldapGrp . '\'));
-define(\'LDAP_BIND_DN\', eopEnv(\'LDAP_BIND_DN\', \'' . $ldapBind . '\'));
-define(\'LDAP_BIND_PASSWORD\', eopEnv(\'LDAP_BIND_PASSWORD\', \'' . $ldapPass . '\'));
-define(\'LDAP_ACCOUNT_SUFFIX\', \'@\' . \'' . ($org ?: 'corp.example.com') . '\');
-define(\'LDAP_NETBIOS_DOMAIN\', \'' . $ldapDomain . '\');
-
-define(\'FALLBACK_ADMIN_ENABLED\', ' . $fallbackEnabled . ');
-define(\'FALLBACK_ADMIN_USERNAME\', eopEnv(\'FALLBACK_ADMIN_USER\', \'' . $fallbackUser . '\'));
-define(\'FALLBACK_ADMIN_PASSWORD_HASH\', \'$2y$12$EmergencyFallbackAdminHash2026SecureBcrypt\');
-
-define(\'DEFAULT_POLICY_NAME\', eopEnv(\'EOP_POLICY_NAME\', \'' . $policy . '\'));
-define(\'DEFAULT_POLICY_GUID\', eopEnv(\'EOP_POLICY_GUID\', \'' . $policyGuid . \'));
-define(\'APP_TITLE\', \'EOP Anti-Spam Policy Manager\');
-define(\'APP_URL\', eopEnv(\'APP_URL\', \'' . $appUrl . '\'));
-
-$GLOBALS[\'AVAILABLE_POLICIES\'] = [
-    \'' . $policy . '\' => \'' . $policyDescription . '\',
-    \'Strict Anti-Spam Policy\'  => \'Strict Security Baseline (Targeted VIPs & High Value Mailboxes)\',
-    \'Executive Inbound Policy\' => \'Custom Executive Mailbox Inbound Filtering\',
-    \'Custom Inbound Filter\'    => \'Custom Departmental Filter Policy\'
-];
-
-define(\'M365_TENANT_ID\', eopEnv(\'M365_TENANT_ID\', \'' . $tenantId . '\'));
-define(\'M365_CLIENT_ID\', eopEnv(\'M365_CLIENT_ID\', \'' . $clientId . '\'));
-define(\'M365_CERT_THUMBPRINT\', eopEnv(\'M365_CERT_THUMBPRINT\', \'' . $thumb . '\'));
-define(\'M365_ORGANIZATION\', eopEnv(\'M365_ORGANIZATION\', \'' . $org . '\'));
-define(\'M365_CLIENT_SECRET\', eopEnv(\'M365_CLIENT_SECRET\', \'YOUR_AZURE_APP_CLIENT_SECRET\'));
-define(\'SYNC_SCRIPT_PATH\', __DIR__ . \'/sync-exchange.ps1\');
-';
+"/**\\n" .
+" * Exchange Online Protection (EOP) Anti-Spam Policy Manager\\n" .
+" * Application Configuration File\\n" .
+" * Environment: Debian Linux / PHP 8.x / Remote MariaDB / Active Directory LDAP\\n" .
+" * Automatically written by setup wizard on {$dateStr}\\n" .
+" */\\n\\n" .
+"declare(strict_types=1);\\n\\n" .
+"// Prevent direct script execution\\n" .
+"if (basename(__FILE__) === basename(\\$_SERVER['SCRIPT_FILENAME'] ?? '')) {\\n" .
+"    http_response_code(403);\\n" .
+"    exit('Direct access forbidden.');\\n" .
+"}\\n\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"// 1. Session & Security Configuration\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"ini_set('session.cookie_httponly', '1');\\n" .
+"ini_set('session.use_only_cookies', '1');\\n" .
+"ini_set('session.cookie_samesite', 'Lax');\\n" .
+"if (!empty(\\$_SERVER['HTTPS']) && \\$_SERVER['HTTPS'] !== 'off') {\\n" .
+"    ini_set('session.cookie_secure', '1');\\n" .
+"}\\n\\n" .
+"if (session_status() === PHP_SESSION_NONE) {\\n" .
+"    session_start();\\n" .
+"}\\n\\n" .
+"\\$sessionTimeoutSeconds = 60 * 60;\\n" .
+"if (isset(\\$_SESSION['LAST_ACTIVITY']) && (time() - \\$_SESSION['LAST_ACTIVITY'] > \\$sessionTimeoutSeconds)) {\\n" .
+"    session_unset();\\n" .
+"    session_destroy();\\n" .
+"    header('Location: login.php?msg=timeout');\\n" .
+"    exit;\\n" .
+"}\\n" .
+"\\$_SESSION['LAST_ACTIVITY'] = time();\\n\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"// 1b. Load Environment Variables from .env\\n" .
+"// Automatically loads .env written by setup.php or administrator\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"\\$envFilePath = __DIR__ . '/.env';\\n" .
+"if (file_exists(\\$envFilePath) && is_readable(\\$envFilePath)) {\\n" .
+"    \\$envLines = @file(\\$envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);\\n" .
+"    if (\\$envLines !== false) {\\n" .
+"        foreach (\\$envLines as \\$envLine) {\\n" .
+"            \\$envLine = trim(\\$envLine);\\n" .
+"            if (\\$envLine === '' || str_starts_with(\\$envLine, '#') || str_starts_with(\\$envLine, ';')) {\\n" .
+"                continue;\\n" .
+"            }\\n" .
+"            if (strpos(\\$envLine, '=') !== false) {\\n" .
+"                [\\$envKey, \\$envVal] = explode('=', \\$envLine, 2);\\n" .
+"                \\$envKey = trim(\\$envKey);\\n" .
+"                \\$envVal = trim(\\$envVal);\\n" .
+"                if ((str_starts_with(\\$envVal, '\\"') && str_ends_with(\\$envVal, '\\"')) ||\\n" .
+"                    (str_starts_with(\\$envVal, \\"'\\") && str_ends_with(\\$envVal, \\"'\\"))) {\\n" .
+"                    \\$envVal = substr(\\$envVal, 1, -1);\\n" .
+"                }\\n" .
+"                putenv(\\"{\\$envKey}={\\$envVal}\\");\\n" .
+"                \\$_ENV[\\$envKey] = \\$envVal;\\n" .
+"                \\$_SERVER[\\$envKey] = \\$envVal;\\n" .
+"            }\\n" .
+"        }\\n" .
+"    }\\n" .
+"}\\n\\n" .
+"// Helper function to safely fetch environment variable with fallback\\n" .
+"if (!function_exists('eopEnv')) {\\n" .
+"    function eopEnv(string \\$key, string \\$default = ''): string {\\n" .
+"        if (isset(\\$_ENV[\\$key]) && \\$_ENV[\\$key] !== '') {\\n" .
+"            return (string)\\$_ENV[\\$key];\\n" .
+"        }\\n" .
+"        if (isset(\\$_SERVER[\\$key]) && \\$_SERVER[\\$key] !== '') {\\n" .
+"            return (string)\\$_SERVER[\\$key];\\n" .
+"        }\\n" .
+"        \\$val = getenv(\\$key);\\n" .
+"        if (\\$val !== false && \\$val !== '') {\\n" .
+"            return (string)\\$val;\\n" .
+"        }\\n" .
+"        return \\$default;\\n" .
+"    }\\n" .
+"}\\n\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"// 2. Remote MariaDB Database Settings\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"define('DB_HOST', eopEnv('DB_HOST', '{$dbHost}'));\\n" .
+"define('DB_PORT', (int)eopEnv('DB_PORT', '{$dbPort}'));\\n" .
+"define('DB_NAME', eopEnv('DB_NAME', '{$dbName}'));\\n" .
+"define('DB_USER', eopEnv('DB_USER', '{$dbUser}'));\\n" .
+"define('DB_PASS', eopEnv('DB_PASS', '{$dbPass}'));\\n" .
+"define('DB_CHARSET', 'utf8mb4');\\n\\n" .
+"// Individual MariaDB tables per list requirement\\n" .
+"define('TABLE_ALLOWED_SENDERS', 'eop_allowed_senders');\\n" .
+"define('TABLE_BLOCKED_SENDERS', 'eop_blocked_senders');\\n" .
+"define('TABLE_ALLOWED_DOMAINS', 'eop_allowed_domains');\\n" .
+"define('TABLE_BLOCKED_DOMAINS', 'eop_blocked_domains');\\n" .
+"define('TABLE_AUDIT_LOG',       'eop_audit_log');\\n" .
+"define('TABLE_POLICIES',        'eop_policies');\\n" .
+"define('TABLE_LDAP_CONFIG',     'eop_ldap_config');\\n" .
+"define('TABLE_EOP_AUTH_CONFIG', 'eop_auth_config');\\n" .
+"define('TABLE_LOCAL_ADMINS',    'eop_local_admins');\\n" .
+"define('TABLE_SYNC_CONFIRMATIONS', 'eop_sync_confirmations');\\n\\n" .
+"define('AUTH_MASTER_ENCRYPTION_KEY', eopEnv('AUTH_MASTER_ENCRYPTION_KEY', '{$masterKey}'));\\n\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"// 3. Microsoft Active Directory (LDAP) Settings\\n" .
+"// --------------------------------------------------------------------------\\n" .
+"define('LDAP_HOST', eopEnv('LDAP_HOST', '{$ldapHost}'));\\n" .
+"define('LDAP_PORT', (int)eopEnv('LDAP_PORT', '{$ldapPort}'));\\n" .
+"define('LDAP_PROTOCOL', eopEnv('LDAP_PROTOCOL', '{$ldapProto}'));\\n" .
+"define('LDAP_USE_SSL', LDAP_PROTOCOL === 'ldaps');\\n" .
+"define('LDAP_USE_TLS', LDAP_PROTOCOL === 'starttls');\\n" .
+"define('LDAP_BASE_DN', eopEnv('LDAP_BASE_DN', '{$ldapBase}'));\\n" .
+"define('LDAP_AUTHORIZED_GROUP_DN', eopEnv('LDAP_AUTHORIZED_GROUP_DN', '{$ldapGrp}'));\\n" .
+"define('LDAP_BIND_DN', eopEnv('LDAP_BIND_DN', '{$ldapBind}'));\\n" .
+"define('LDAP_BIND_PASSWORD', eopEnv('LDAP_BIND_PASSWORD', '{$ldapPass}'));\\n" .
+"define('LDAP_ACCOUNT_SUFFIX', '@' . '{$org}');\\n" .
+"define('LDAP_NETBIOS_DOMAIN', '{$ldapDomain}');\\n\\n" .
+"define('FALLBACK_ADMIN_ENABLED', {$fallbackEnabled});\\n" .
+"define('FALLBACK_ADMIN_USERNAME', eopEnv('FALLBACK_ADMIN_USER', '{$fallbackUser}'));\\n" .
+"define('FALLBACK_ADMIN_PASSWORD_HASH', '\\$2y\\$12\\$EmergencyFallbackAdminHash2026SecureBcrypt');\\n\\n" .
+"define('DEFAULT_POLICY_NAME', eopEnv('EOP_POLICY_NAME', '{$policy}'));\\n" .
+"// Exchange GUID of the policy named above, when the setup wizard resolved it.\\n" .
+"// Empty when the policy was never confirmed against Exchange Online.\\n" .
+"define('DEFAULT_POLICY_GUID', eopEnv('EOP_POLICY_GUID', '{$policyGuid}'));\\n" .
+"define('APP_TITLE', 'EOP Anti-Spam Policy Manager');\\n" .
+"define('APP_URL', eopEnv('APP_URL', '{$appUrl}'));\\n\\n" .
+"\\$GLOBALS['AVAILABLE_POLICIES'] = [\\n" .
+"    '{$policy}' => '{$policyDescription}',\\n" .
+"    'Strict Anti-Spam Policy'  => 'Strict Security Baseline (Targeted VIPs & High Value Mailboxes)',\\n" .
+"    'Executive Inbound Policy' => 'Custom Executive Mailbox Inbound Filtering',\\n" .
+"    'Custom Inbound Filter'    => 'Custom Departmental Filter Policy'\\n" .
+"];\\n\\n" .
+"define('M365_TENANT_ID', eopEnv('M365_TENANT_ID', '{$tenantId}'));\\n" .
+"define('M365_CLIENT_ID', eopEnv('M365_CLIENT_ID', '{$clientId}'));\\n" .
+"define('M365_CERT_THUMBPRINT', eopEnv('M365_CERT_THUMBPRINT', '{$thumb}'));\\n" .
+"define('M365_ORGANIZATION', eopEnv('M365_ORGANIZATION', '{$org}'));\\n" .
+"define('M365_CLIENT_SECRET', eopEnv('M365_CLIENT_SECRET', 'YOUR_AZURE_APP_CLIENT_SECRET'));\\n" .
+"define('SYNC_SCRIPT_PATH', __DIR__ . '/sync-exchange.ps1');\\n";
 
     $written = @file_put_contents($cfgPath, $cfg);
     if ($written !== false) {
@@ -5045,7 +5501,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'success'        => false,
                     'status'         => 'FAILED',
                     'message'        => $error,
-                    'details'        => 'Could not establish connection to MariaDB server. Check network reachability, firewall rules, port binding (default 3306), MariaDB grant privileges for user \'' . htmlspecialchars($user) . '\', and password credentials.',
+                    'details'        => 'Could not establish connection to MariaDB server. Check network reachability, firewall rules, port binding (default 3306), MariaDB grant privileges for user \\'' . htmlspecialchars($user) . '\\', and password credentials.',
                     'tested_at'      => date('Y-m-d H:i:s'),
                     'latency_ms'     => $latencyMs,
                     'host'           => $host,
@@ -5059,7 +5515,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Step 2: Test Database & Populate Schema
+    // Step 2: Populate Schema & Advance to Step 3
     if ($action === 'step2_db' || $action === 'populate_db') {
         $host = trim($_POST['db_host'] ?? '127.0.0.1');
         $port = (int)($_POST['db_port'] ?? 3306);
@@ -5167,15 +5623,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 'eop_auth_config' => "CREATE TABLE IF NOT EXISTS \`eop_auth_config\` (
                     \`id\` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    \`tenant_id\` VARCHAR(64) NOT NULL,
-                    \`client_id\` VARCHAR(64) NOT NULL,
-                    \`certificate_thumbprint\` VARCHAR(64) NOT NULL,
-                    \`key_filename\` VARCHAR(100) NOT NULL DEFAULT 'eop-cert-private.key',
-                    \`private_key_pem\` TEXT NOT NULL,
-                    \`encrypted_password\` TEXT NOT NULL,
-                    \`encryption_iv\` VARCHAR(64) NOT NULL,
-                    \`encryption_tag\` VARCHAR(64) NOT NULL,
-                    \`organization\` VARCHAR(255) NOT NULL DEFAULT 'corp.example.com',
+                    \`tenant_id\` VARCHAR(100) NOT NULL,
+                    \`client_id\` VARCHAR(100) NOT NULL,
+                    \`certificate_thumbprint\` VARCHAR(100) NOT NULL,
+                    \`key_filename\` VARCHAR(255) NOT NULL DEFAULT 'eop-cert-private.key',
+                    \`private_key\` MEDIUMTEXT NOT NULL,
+                    \`pkcs12_bundle\` MEDIUMTEXT NULL,
+                    \`encrypted_password\` TEXT NULL,
+                    \`encryption_iv\` VARCHAR(64) NULL,
+                    \`encryption_tag\` VARCHAR(64) NULL,
+                    \`organization\` VARCHAR(255) NULL DEFAULT 'corp.example.com',
                     \`key_type\` ENUM('RSA_PEM', 'PKCS8_PEM', 'PKCS12_PFX') NOT NULL DEFAULT 'RSA_PEM',
                     \`is_active\` TINYINT(1) NOT NULL DEFAULT 1,
                     \`uploaded_by\` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
@@ -5264,6 +5721,195 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } catch (Exception $e) {
             $error = "Database Connection Failed: " . $e->getMessage();
+        }
+    }
+
+    // Step 3 Test Action: Test LDAP Connection without advancing to Step 4
+    if ($action === 'test_ldap') {
+        $testStart = microtime(true);
+        $ldapHost = trim($_POST['ldap_host'] ?? '');
+        $ldapPort = (int)($_POST['ldap_port'] ?? 389);
+        $ldapProtocol = $_POST['ldap_protocol'] ?? 'ldap';
+        $ldapBaseDn = trim($_POST['ldap_base_dn'] ?? '');
+        $ldapGroupDn = trim($_POST['ldap_group_dn'] ?? '');
+        $ldapBindDn = trim($_POST['ldap_bind_dn'] ?? '');
+        $ldapBindPass = $_POST['ldap_bind_pass'] ?? '';
+        $ldapDomain = trim($_POST['ldap_domain'] ?? 'CORP');
+
+        // Fallback Non-LDAP Administrator settings
+        $fallbackEnabled = !empty($_POST['fallback_admin_enabled']);
+        $fallbackUser = trim($_POST['fallback_admin_username'] ?? 'eopadmin');
+        $fallbackPass = $_POST['fallback_admin_password'] ?? '';
+
+        // Save current form values to session so user doesn't lose what they entered
+        $_SESSION['wizard']['ldap'] = [
+            'host'                   => $ldapHost,
+            'port'                   => $ldapPort,
+            'protocol'               => $ldapProtocol,
+            'base_dn'                => $ldapBaseDn,
+            'group_dn'               => $ldapGroupDn,
+            'bind_dn'                => $ldapBindDn,
+            'bind_pass'              => $ldapBindPass,
+            'domain'                 => $ldapDomain,
+            'fallback_admin_enabled' => $fallbackEnabled,
+            'fallback_admin_username'=> $fallbackUser,
+            'fallback_admin_password'=> $fallbackPass,
+        ];
+
+        if (empty($ldapHost)) {
+            $error = "Domain Controller Host / IP is required to test LDAP connection.";
+            $ldapTestResult = [
+                'success'    => false,
+                'status'     => 'MISSING HOST',
+                'message'    => $error,
+                'details'    => 'Please enter the Active Directory or OpenLDAP Domain Controller Host/IP address before initiating connection test.',
+                'tested_at'  => date('Y-m-d H:i:s'),
+                'latency_ms' => 0,
+                'host'       => $ldapHost,
+                'port'       => $ldapPort,
+                'protocol'   => strtoupper($ldapProtocol),
+                'uri'        => 'Not specified',
+                'auth_type'  => 'None',
+                'bind_dn'    => 'N/A',
+            ];
+            $_SESSION['wizard']['ldap_test_result'] = $ldapTestResult;
+        } else {
+            try {
+                $isSsl = ($ldapProtocol === 'ldaps' || $ldapPort === 636);
+                $protoPrefix = $isSsl ? 'ldaps://' : 'ldap://';
+                $uri = $protoPrefix . $ldapHost . ':' . $ldapPort;
+
+                if (function_exists('ldap_connect')) {
+                    $conn = @ldap_connect($uri);
+                    if (!$conn) {
+                        throw new Exception("Could not initialize connection to Active Directory at {$uri}");
+                    }
+                    ldap_set_option($conn, LDAP_OPT_PROTOCOL_VERSION, 3);
+                    ldap_set_option($conn, LDAP_OPT_REFERRALS, 0);
+                    ldap_set_option($conn, LDAP_OPT_NETWORK_TIMEOUT, 4);
+
+                    if (!$isSsl && ($ldapProtocol === 'starttls')) {
+                        if (!@ldap_start_tls($conn)) {
+                            throw new Exception("StartTLS handshake failed with Active Directory Domain Controller at {$uri}.");
+                        }
+                    }
+
+                    $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
+
+                    if ($ldapBindDn !== '' && $ldapBindPass !== '') {
+                        $bind = @ldap_bind($conn, $ldapBindDn, $ldapBindPass);
+                        if (!$bind) {
+                            $ldapErr = ldap_error($conn) ?: 'Invalid service account bind credentials';
+                            throw new Exception("Service Account Bind failed: {$ldapErr}");
+                        }
+                        $success = "Active Directory LDAP Connection Successful! Connected to {$uri} and successfully authenticated with Bind DN '{$ldapBindDn}'.";
+                        $ldapTestResult = [
+                            'success'    => true,
+                            'status'     => 'CONNECTED',
+                            'message'    => $success,
+                            'details'    => "Successfully connected to {$uri} in {$latencyMs} ms. Service Account Bind authenticated OK with '{$ldapBindDn}'. Validated Base DN: \\"{$ldapBaseDn}\\", Group DN: \\"{$ldapGroupDn}\\".",
+                            'tested_at'  => date('Y-m-d H:i:s'),
+                            'latency_ms' => $latencyMs,
+                            'host'       => $ldapHost,
+                            'port'       => $ldapPort,
+                            'protocol'   => strtoupper($ldapProtocol),
+                            'uri'        => $uri,
+                            'auth_type'  => 'Authenticated Bind',
+                            'bind_dn'    => $ldapBindDn,
+                            'group_dn'   => $ldapGroupDn ?: '(All Users / None)',
+                            'base_dn'    => $ldapBaseDn ?: '(Domain Root)',
+                        ];
+                    } else {
+                        // Anonymous or connection ping
+                        $bind = @ldap_bind($conn);
+                        if (!$bind) {
+                            $ldapErr = ldap_error($conn) ?: 'Anonymous bind rejected by Domain Controller';
+                            $notice = "Domain Controller reached at {$uri}, but anonymous bind was rejected ({$ldapErr}). Supply a valid Service Account Bind DN and Password for authenticated access.";
+                            $ldapTestResult = [
+                                'success'    => true,
+                                'warning'    => true,
+                                'status'     => 'REACHABLE (AUTH REQUIRED)',
+                                'message'    => $notice,
+                                'details'    => "Network ping to {$uri} succeeded in {$latencyMs} ms, but Active Directory security policies reject anonymous queries. Supply a Service Account Bind DN and Password.",
+                                'tested_at'  => date('Y-m-d H:i:s'),
+                                'latency_ms' => $latencyMs,
+                                'host'       => $ldapHost,
+                                'port'       => $ldapPort,
+                                'protocol'   => strtoupper($ldapProtocol),
+                                'uri'        => $uri,
+                                'auth_type'  => 'Anonymous Ping',
+                                'bind_dn'    => 'Anonymous (Rejected)',
+                                'group_dn'   => $ldapGroupDn ?: '(Not Checked)',
+                                'base_dn'    => $ldapBaseDn ?: '(Not Checked)',
+                            ];
+                        } else {
+                            $success = "Active Directory LDAP Connection Successful! Domain Controller is reachable at {$uri}.";
+                            $ldapTestResult = [
+                                'success'    => true,
+                                'status'     => 'CONNECTED',
+                                'message'    => $success,
+                                'details'    => "Successfully connected to Domain Controller at {$uri} in {$latencyMs} ms. Anonymous directory lookup allowed by Domain Controller.",
+                                'tested_at'  => date('Y-m-d H:i:s'),
+                                'latency_ms' => $latencyMs,
+                                'host'       => $ldapHost,
+                                'port'       => $ldapPort,
+                                'protocol'   => strtoupper($ldapProtocol),
+                                'uri'        => $uri,
+                                'auth_type'  => 'Anonymous Bind',
+                                'bind_dn'    => 'Anonymous',
+                                'group_dn'   => $ldapGroupDn ?: '(All Users / None)',
+                                'base_dn'    => $ldapBaseDn ?: '(Domain Root)',
+                            ];
+                        }
+                    }
+                    @ldap_unbind($conn);
+                } else {
+                    // Fall back to socket test if php-ldap is not compiled in CLI/web server
+                    $fp = @fsockopen($ldapHost, $ldapPort, $errno, $errstr, 4);
+                    if (!$fp) {
+                        throw new Exception("Could not reach Active Directory host {$ldapHost} on port {$ldapPort}: {$errstr} (Error {$errno})");
+                    }
+                    fclose($fp);
+                    $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
+                    $success = "TCP connection to Active Directory on {$ldapHost}:{$ldapPort} succeeded!";
+                    $ldapTestResult = [
+                        'success'    => true,
+                        'status'     => 'TCP REACHABLE',
+                        'message'    => $success,
+                        'details'    => "TCP handshake on {$ldapHost}:{$ldapPort} succeeded in {$latencyMs} ms. Note: Install php-ldap on Debian ('apt-get install php-ldap') for full Active Directory query capability.",
+                        'tested_at'  => date('Y-m-d H:i:s'),
+                        'latency_ms' => $latencyMs,
+                        'host'       => $ldapHost,
+                        'port'       => $ldapPort,
+                        'protocol'   => strtoupper($ldapProtocol),
+                        'uri'        => $uri,
+                        'auth_type'  => 'TCP Socket Test',
+                        'bind_dn'    => $ldapBindDn ?: 'N/A',
+                        'group_dn'   => $ldapGroupDn ?: 'N/A',
+                        'base_dn'    => $ldapBaseDn ?: 'N/A',
+                    ];
+                }
+            } catch (Exception $e) {
+                $latencyMs = round((microtime(true) - $testStart) * 1000, 1);
+                $error = "LDAP Connection Test Failed: " . $e->getMessage();
+                $ldapTestResult = [
+                    'success'    => false,
+                    'status'     => 'FAILED',
+                    'message'    => $error,
+                    'details'    => "Connection attempt to " . ($uri ?? "{$ldapHost}:{$ldapPort}") . " failed after {$latencyMs} ms. Check that the Domain Controller IP/hostname is correct, firewall allows port {$ldapPort}, and bind credentials are valid.",
+                    'tested_at'  => date('Y-m-d H:i:s'),
+                    'latency_ms' => $latencyMs,
+                    'host'       => $ldapHost,
+                    'port'       => $ldapPort,
+                    'protocol'   => strtoupper($ldapProtocol),
+                    'uri'        => $uri ?? "{$ldapHost}:{$ldapPort}",
+                    'auth_type'  => ($ldapBindDn !== '' ? 'Authenticated Bind' : 'Anonymous / Ping'),
+                    'bind_dn'    => $ldapBindDn ?: 'None',
+                    'group_dn'   => $ldapGroupDn ?: 'N/A',
+                    'base_dn'    => $ldapBaseDn ?: 'N/A',
+                ];
+            }
+            $_SESSION['wizard']['ldap_test_result'] = $ldapTestResult;
         }
     }
 
@@ -5381,7 +6027,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $rawFp = @openssl_x509_fingerprint($certs['cert'], 'sha1', false);
                     $fingerprint = eopNormalizeThumbprint($rawFp ?: '');
                     if ($fingerprint === '' && openssl_x509_export($certs['cert'], $pemCert)) {
-                        $cleanPem = preg_replace('/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s+/', '', $pemCert);
+                        $cleanPem = preg_replace('/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\\s+/', '', $pemCert);
                         $der = base64_decode($cleanPem);
                         if ($der !== false && $der !== '') {
                             $fingerprint = strtoupper(sha1($der));
@@ -5458,6 +6104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 
         // Ensure thumbprint is always normalized to 40-character uppercase hexadecimal
+        // (recovers cleanly even if existing session stored raw binary from previous step)
         if (!empty($eop['thumbprint'])) {
             $eop['thumbprint'] = eopNormalizeThumbprint($eop['thumbprint']);
             $_SESSION['wizard']['eop']['thumbprint'] = $eop['thumbprint'];
@@ -5529,17 +6176,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if (!isset($error)) {
                     $pdo->exec("UPDATE \`eop_policies\` SET \`is_default\` = 0");
-                    $policyStmt = $pdo->prepare("INSERT INTO \`eop_policies\` (\`policy_name\`, \`policy_guid\`, \`description\`, \`is_default\`, \`sync_status\`)
-                                                 VALUES (:name, :guid, :desc, 1, :status)
+                    $policyStmt = $pdo->prepare("INSERT INTO \`eop_policies\` (\`policy_name\`, \`description\`, \`is_default\`, \`sync_status\`, \`policy_guid\`)
+                                                 VALUES (:name, :desc, 1, :status, :guid)
                                                  ON DUPLICATE KEY UPDATE \`is_default\` = 1, \`policy_guid\` = IF(:guid2 != '', :guid3, \`policy_guid\`), \`sync_status\` = :status2, \`updated_at\` = NOW()");
                     $finalPolicyGuid = eopNormalizeGuid($eop['policy_guid'] ?? '');
                     $finalPolicyStatus = !empty($eop['policy_verified']) ? 'synced' : 'pending';
                     $finalPolicyDesc = 'Primary Inbound Anti-Spam Policy (Selected by the setup wizard)';
                     $policyStmt->execute([
                         ':name' => $finalPolicy,
-                        ':guid' => $finalPolicyGuid !== '' ? $finalPolicyGuid : null,
                         ':desc' => $finalPolicyDesc,
                         ':status' => $finalPolicyStatus,
+                        ':guid' => $finalPolicyGuid !== '' ? $finalPolicyGuid : null,
                         ':guid2' => $finalPolicyGuid,
                         ':guid3' => $finalPolicyGuid,
                         ':status2' => $finalPolicyStatus,
@@ -5689,6 +6336,13 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
             <div class="mb-6 p-4 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-200 text-xs flex items-center gap-3">
                 <svg class="w-5 h-5 text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                 <span><?php echo htmlspecialchars($error); ?></span>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($notice): ?>
+            <div class="mb-6 p-4 rounded-xl bg-emerald-950/60 border border-emerald-800 text-emerald-200 text-xs flex items-center gap-3">
+                <svg class="w-5 h-5 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <span><?php echo htmlspecialchars($notice); ?></span>
             </div>
         <?php endif; ?>
 
@@ -5953,6 +6607,100 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         </div>
                     </div>
 
+                    <!-- Dedicated Test LDAP Connection Action Box -->
+                    <div class="flex items-center justify-between p-4 bg-slate-900/90 rounded-xl border border-blue-500/40 mt-2">
+                        <div>
+                            <div class="text-xs font-bold text-white flex items-center gap-1.5">
+                                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                <span>Active Directory / OpenLDAP Connection Test</span>
+                            </div>
+                            <div class="text-[11px] text-slate-400 mt-0.5">Verify domain controller reachability and credentials before advancing to EOP.</div>
+                        </div>
+                        <button type="submit" name="action" value="test_ldap" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm flex items-center gap-1.5 transition cursor-pointer">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            <span>Test LDAP Connection</span>
+                        </button>
+                    </div>
+
+                    <!-- Status Display After Test LDAP Connection Run -->
+                    <?php if ($ldapTestResult): ?>
+                        <div class="mt-3 p-4 rounded-xl border transition-all shadow-sm <?php 
+                            echo $ldapTestResult['success'] 
+                                ? (!empty($ldapTestResult['warning']) ? 'bg-amber-950/70 border-amber-600/70 text-amber-200' : 'bg-emerald-950/80 border-emerald-500/70 text-emerald-200') 
+                                : 'bg-rose-950/80 border-rose-600/70 text-rose-200'; 
+                        ?>">
+                            <div class="flex items-center justify-between flex-wrap gap-2 pb-2.5 mb-2.5 border-b <?php 
+                                echo $ldapTestResult['success'] 
+                                    ? (!empty($ldapTestResult['warning']) ? 'border-amber-800/80' : 'border-emerald-800/80') 
+                                    : 'border-rose-800/80'; 
+                            ?>">
+                                <div class="flex items-center gap-2">
+                                    <?php if ($ldapTestResult['success'] && empty($ldapTestResult['warning'])): ?>
+                                        <span class="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs">✓</span>
+                                        <span class="font-bold text-xs text-white">Active Directory / OpenLDAP Connection Status: Verified</span>
+                                    <?php elseif ($ldapTestResult['success'] && !empty($ldapTestResult['warning'])): ?>
+                                        <span class="w-5 h-5 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-xs">!</span>
+                                        <span class="font-bold text-xs text-white">Active Directory Status: Reachable (Auth Warning)</span>
+                                    <?php else: ?>
+                                        <span class="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center font-bold text-xs">&times;</span>
+                                        <span class="font-bold text-xs text-white">Active Directory Status: Connection Failed</span>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="flex items-center gap-2 text-[11px] font-mono">
+                                    <span class="px-2 py-0.5 rounded <?php echo $ldapTestResult['success'] ? (!empty($ldapTestResult['warning']) ? 'bg-amber-900/60 text-amber-300 border border-amber-700/60' : 'bg-emerald-900/60 text-emerald-300 border border-emerald-700/60') : 'bg-rose-900/60 text-rose-300 border border-rose-700/60'; ?> font-bold">
+                                        <?php echo htmlspecialchars($ldapTestResult['status']); ?>
+                                    </span>
+                                    <?php if (!empty($ldapTestResult['latency_ms'])): ?>
+                                        <span class="px-2 py-0.5 rounded bg-slate-900/90 text-slate-300 border border-slate-700">
+                                            ⚡ <?php echo $ldapTestResult['latency_ms']; ?> ms
+                                        </span>
+                                    <?php endif; ?>
+                                    <span class="text-slate-400 font-sans text-[10px]">
+                                        Tested at <?php echo htmlspecialchars($ldapTestResult['tested_at'] ?? date('H:i:s')); ?>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="text-xs mb-3 <?php echo $ldapTestResult['success'] ? (!empty($ldapTestResult['warning']) ? 'text-amber-100' : 'text-emerald-100') : 'text-rose-100'; ?>">
+                                <?php echo htmlspecialchars($ldapTestResult['message']); ?>
+                            </div>
+
+                            <?php if (!empty($ldapTestResult['details'])): ?>
+                                <div class="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] font-mono text-slate-300 mb-3 leading-relaxed">
+                                    <?php echo htmlspecialchars($ldapTestResult['details']); ?>
+                                </div>
+                            <?php endif; ?>
+
+                            <!-- Diagnostic Stats Grid -->
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] font-mono">
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">ENDPOINT URI</span>
+                                    <span class="text-slate-200 font-semibold truncate block" title="<?php echo htmlspecialchars($ldapTestResult['uri'] ?? ''); ?>">
+                                        <?php echo htmlspecialchars($ldapTestResult['uri'] ?? 'N/A'); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">PROTOCOL / SECURITY</span>
+                                    <span class="text-slate-200 font-semibold block">
+                                        <?php echo htmlspecialchars($ldapTestResult['protocol'] ?? 'LDAP'); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">AUTH METHOD</span>
+                                    <span class="text-slate-200 font-semibold block">
+                                        <?php echo htmlspecialchars($ldapTestResult['auth_type'] ?? 'N/A'); ?>
+                                    </span>
+                                </div>
+                                <div class="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span class="text-slate-500 block">LATENCY</span>
+                                    <span class="<?php echo ($ldapTestResult['latency_ms'] ?? 999) < 100 ? 'text-emerald-400' : 'text-amber-400'; ?> font-semibold block">
+                                        <?php echo !empty($ldapTestResult['latency_ms']) ? $ldapTestResult['latency_ms'] . ' ms' : 'N/A'; ?>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
                     <!-- Emergency Non-LDAP Fallback Administrator Account Setup -->
                     <div class="p-4 bg-slate-900/80 rounded-xl border border-amber-500/40 space-y-3 mt-4">
                         <div class="flex items-center justify-between">
@@ -5963,7 +6711,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                                 <p class="text-[11px] text-slate-400">Allows administrator login directly through MariaDB if the Active Directory Domain Controller connection fails or is offline.</p>
                             </div>
                             <label class="flex items-center space-x-2 text-xs text-slate-300 font-semibold cursor-pointer">
-                                <input type="checkbox" name="fallback_admin_enabled" value="1" <?php echo (!isset($_SESSION['wizard']['ldap']['fallback_admin_enabled']) || !empty($_SESSION['wizard']['ldap']['fallback_admin_enabled'])) ? 'checked' : ''; ?> class="w-4 h-4 text-amber-500 rounded border-slate-700">
+                                <input type="checkbox" name="fallback_admin_enabled" id="fallbackAdminEnabledCheckbox" value="1" <?php echo (!isset($_SESSION['wizard']['ldap']['fallback_admin_enabled']) || !empty($_SESSION['wizard']['ldap']['fallback_admin_enabled'])) ? 'checked' : ''; ?> class="w-4 h-4 text-amber-500 rounded border-slate-700">
                                 <span>Enable Fallback Account</span>
                             </label>
                         </div>
@@ -5974,30 +6722,79 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                                 <input type="text" name="fallback_admin_username" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_username'] ?? 'eopadmin'); ?>" placeholder="eopadmin" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
                             </div>
                             <div>
-                                <label class="block text-xs font-medium text-slate-300 mb-1">Fallback Password</label>
-                                <input type="password" name="fallback_admin_password" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_password'] ?? 'Emergency#Admin2026!'); ?>" placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500">
+                                <div class="flex items-center justify-between mb-1">
+                                    <label class="block text-xs font-medium text-slate-300">Fallback Password</label>
+                                    <button type="button" onclick="toggleFallbackPasswordVisibility()" class="text-[10px] text-slate-400 hover:text-slate-200 cursor-pointer">
+                                        <span id="toggleFallbackPassText">Show</span>
+                                    </button>
+                                </div>
+                                <input type="password" id="fallbackAdminPassInput" name="fallback_admin_password" value="<?php echo htmlspecialchars($_SESSION['wizard']['ldap']['fallback_admin_password'] ?? 'Emergency#Admin2026!'); ?>" placeholder="12+ chars, 3 of 4: upper, lower, numbers, symbols" class="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-amber-500 transition-colors">
                             </div>
                         </div>
 
-                        <div class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] space-y-1">
-                            <div class="font-semibold text-amber-300">Password Policy Requirement:</div>
+                        <!-- Live Interactive Password Policy Requirement Box -->
+                        <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-[11px]" id="passwordPolicyBox">
+                            <div class="flex items-center justify-between font-semibold">
+                                <div class="text-amber-300 flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                    <span>Password Policy Requirement:</span>
+                                </div>
+                                <span id="pwdPolicyBadge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950/80 text-rose-300 border border-rose-800 transition-colors">
+                                    CRITERIA UNMET
+                                </span>
+                            </div>
+
+                            <!-- Length criteria: 12+ characters -->
+                            <div id="pwdLenItem" class="flex items-center justify-between p-2 rounded-lg border border-slate-800 bg-slate-900 text-slate-400 transition-colors">
+                                <div class="flex items-center gap-2">
+                                    <span id="pwdLenIcon" class="w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold text-slate-500">&times;</span>
+                                    <span class="font-semibold">Minimum Length: 12+ Characters</span>
+                                </div>
+                                <span id="pwdLenCount" class="font-mono font-bold">0 characters</span>
+                            </div>
+
                             <div class="text-slate-400 leading-tight">
                                 Must be at least <strong>12+ characters</strong> with at least <strong>three</strong> of the following:
                             </div>
-                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1 text-[10px] font-mono text-slate-300 pt-1">
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Uppercase (A-Z)</div>
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Lowercase (a-z)</div>
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Numbers (0-9)</div>
-                                <div class="bg-slate-900 px-2 py-1 rounded border border-slate-800">&bull; Symbols (!@#$...)</div>
+
+                            <!-- 4 Categories Checklist -->
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px] font-mono">
+                                <div id="pwdUpperItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdUpperIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Uppercase (A-Z)</span>
+                                </div>
+                                <div id="pwdLowerItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdLowerIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Lowercase (a-z)</span>
+                                </div>
+                                <div id="pwdNumberItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdNumberIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Numbers (0-9)</span>
+                                </div>
+                                <div id="pwdSymbolItem" class="flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors">
+                                    <span id="pwdSymbolIcon" class="w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500">&times;</span>
+                                    <span>Symbols (!@#$...)</span>
+                                </div>
+                            </div>
+
+                            <div class="flex items-center justify-between text-[10px] pt-1 text-slate-400">
+                                <span>Complexity Score:</span>
+                                <span id="pwdScoreText" class="font-semibold text-slate-300">0 of 4 categories satisfied</span>
                             </div>
                         </div>
                     </div>
 
                     <div class="flex items-center justify-between pt-4 border-t border-slate-700">
                         <a href="?step=2" class="text-xs text-slate-400 hover:text-white">&larr; Back to Database</a>
-                        <button type="submit" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
-                            Save &amp; Continue to Exchange EOP &rarr;
-                        </button>
+                        <div class="flex items-center gap-2.5">
+                            <button type="submit" name="action" value="test_ldap" class="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer flex items-center gap-1.5">
+                                <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                <span>Test LDAP Connection</span>
+                            </button>
+                            <button type="submit" name="action" value="step3_ldap" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer">
+                                Save &amp; Continue to Exchange EOP &rarr;
+                            </button>
+                        </div>
                     </div>
                 </form>
             </div>
@@ -6010,7 +6807,7 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     <div class="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold">4</div>
                     <div>
                         <h2 class="text-lg font-bold text-white">Exchange Online Protection (EOP) Connection</h2>
-                        <p class="text-slate-400 text-xs">Enter your Microsoft 365 Entra App Registration, Certificate Thumbprint, and RSA Private Key for PowerShell sync.</p>
+                        <p class="text-slate-400 text-xs">Enter your Microsoft 365 Entra App Registration, Certificate Thumbprint, and target anti-spam policy (by name or GUID) for PowerShell sync.</p>
                     </div>
                 </div>
 
@@ -6047,9 +6844,9 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                             <p class="text-[11px] text-slate-400 mt-1">
                                 Accepts either the policy display name or its Exchange GUID
                                 (<code>Get-HostedContentFilterPolicy</code>). A GUID is canonicalised to lowercase
-                                <code>8-4-4-4-12</code> and resolved back to the policy name, which is what the rest of the
-                                application keys its lists on. The GUID is stored alongside the name in
-                                <code>EOP_POLICY_GUID</code>.
+                                <code>8-4-4-4-12</code> and, when Exchange verification below succeeds, resolved back to the
+                                policy name &mdash; which is what the rest of the application keys its lists on. The GUID is
+                                stored alongside the name in <code>EOP_POLICY_GUID</code>.
                             </p>
                             <label class="mt-2.5 flex items-start gap-2 text-[11px] text-slate-300 cursor-pointer">
                                 <input type="checkbox" name="verify_policy" value="1" <?php echo !isset($_POST['verify_policy_present']) || isset($_POST['verify_policy']) ? 'checked' : ''; ?> class="mt-0.5 w-3.5 h-3.5 rounded bg-slate-900 border-slate-600 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
@@ -6068,21 +6865,21 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                     </div>
 
                     <div>
-                        <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-                            <label class="block text-xs font-medium text-slate-300">PKCS#12 Certificate Bundle (.pfx / .p12) <span class="text-amber-400">*</span></label>
-                            <label class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-[11px] font-semibold cursor-pointer shadow-xs transition">
-                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                                <span>Upload Certificate Bundle (.pfx, .p12)</span>
-                                <input type="file" name="pkcs12_file" accept=".pfx,.p12" required class="hidden">
-                            </label>
-                        </div>
-                        <p class="text-[11px] text-slate-400 mt-1">The only accepted certificate format. The bundle must contain the certificate and its private key; bare PEM private keys are rejected. The thumbprint above is derived from this file.</p>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">PKCS#12 Certificate Bundle (.pfx / .p12) <span class="text-amber-400">*</span></label>
+                        <input type="file" name="pkcs12_file" accept=".pfx,.p12" required
+                               class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-1 file:text-xs file:text-white focus:outline-hidden focus:border-blue-500">
+                        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+                            The only accepted certificate format. The bundle must contain the certificate and its private key; bare PEM
+                            private keys are rejected. The certificate and key are encrypted with AES-256-GCM into
+                            <code>eop_auth_config.pkcs12_bundle</code> and imported into the certificate store on every pull, and the
+                            thumbprint above is derived from this file.
+                        </p>
                     </div>
 
                     <div>
-                        <label class="block text-xs font-medium text-slate-300 mb-1">Private Key AES-256 Passphrase</label>
-                        <input type="password" name="passphrase" value="<?php echo htmlspecialchars($_SESSION['wizard']['eop']['passphrase'] ?? 'P@ssphrase_Secure_Cert_2026'); ?>" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500">
-                        <p class="text-[11px] text-slate-400 mt-1">This key is encrypted in MariaDB via AES-256-GCM authenticated cipher.</p>
+                        <label class="block text-xs font-medium text-slate-300 mb-1">PKCS#12 Passphrase</label>
+                        <input type="password" name="passphrase" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-hidden focus:border-blue-500" autocomplete="new-password">
+                        <p class="text-[11px] text-slate-400 mt-1">Leave empty if the bundle has no passphrase. The passphrase is encrypted in MariaDB via AES-256-GCM authenticated cipher.</p>
                     </div>
 
                     <div class="flex items-center justify-between pt-4 border-t border-slate-700">
@@ -6147,7 +6944,13 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         </div>
                         <div class="text-[11px] space-y-0.5 text-slate-300 font-mono">
                             <div>Tenant: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['tenant_id'] ?? ''), 0, 8); ?>...</div>
-                            <div>Thumb: <?php echo substr(htmlspecialchars($_SESSION['wizard']['eop']['thumbprint'] ?? ''), 0, 8); ?>...</div>
+                            <div>Thumb: <?php echo substr(htmlspecialchars(eopNormalizeThumbprint($_SESSION['wizard']['eop']['thumbprint'] ?? '')), 0, 8); ?>...</div>
+                            <div>PKCS#12: <?php
+                                $reviewBundle = $_SESSION['wizard']['eop']['pkcs12_bundle'] ?? '';
+                                echo $reviewBundle !== ''
+                                    ? htmlspecialchars($_SESSION['wizard']['eop']['pkcs12_filename'] ?? 'certificate.pfx') . ' (' . number_format(strlen((string)base64_decode($reviewBundle)) / 1024, 1) . ' KB)'
+                                    : '<span class="text-amber-400">not uploaded</span>';
+                            ?></div>
                             <div class="text-emerald-400 font-sans font-semibold mt-1">AES-256 Key Stored</div>
                         </div>
                     </div>
@@ -6179,8 +6982,10 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
                         </div>
                     </div>
                     <p class="text-[11px] text-slate-500 mt-2">
-                        Both forms are accepted in Step 4. When a GUID is supplied it is resolved to this name before it is
-                        written to <code>.env</code>, so every policy-keyed list in MariaDB stays consistent.
+                        Both forms are accepted in Step 4. When a GUID is supplied and Exchange verification succeeded, it is
+                        resolved to this name before being written to <code>.env</code>, so every policy-keyed list in MariaDB
+                        stays consistent. Without verification the identifier is stored as entered &mdash;
+                        <code>-Identity</code> still accepts either form.
                     </p>
                 </div>
 
@@ -6212,12 +7017,103 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
     </div>
 
     <script>
+    function updatePasswordPolicy() {
+        var input = document.getElementById('fallbackAdminPassInput');
+        if (!input) return;
+        var pwd = input.value || '';
+
+        var minLength = pwd.length >= 12;
+        var hasUpper = /[A-Z]/.test(pwd);
+        var hasLower = /[a-z]/.test(pwd);
+        var hasNumber = /[0-9]/.test(pwd);
+        var hasSymbol = /[^A-Za-z0-9]/.test(pwd);
+        var passedCategories = (hasUpper ? 1 : 0) + (hasLower ? 1 : 0) + (hasNumber ? 1 : 0) + (hasSymbol ? 1 : 0);
+        var isValid = minLength && (passedCategories >= 3);
+
+        // Helper to update green category badge
+        function setCategoryState(boxId, iconId, isPass) {
+            var box = document.getElementById(boxId);
+            var icon = document.getElementById(iconId);
+            if (!box || !icon) return;
+            if (isPass) {
+                box.className = 'flex items-center gap-1.5 p-2 rounded border border-emerald-600 bg-emerald-950/70 text-emerald-300 transition-colors';
+                icon.textContent = '✓';
+                icon.className = 'w-3.5 h-3.5 flex items-center justify-center font-bold text-emerald-400';
+            } else {
+                box.className = 'flex items-center gap-1.5 bg-slate-900 p-2 rounded border border-slate-800 text-slate-400 transition-colors';
+                icon.textContent = '×';
+                icon.className = 'w-3.5 h-3.5 flex items-center justify-center font-bold text-slate-500';
+            }
+        }
+
+        // Update length item
+        var lenBox = document.getElementById('pwdLenItem');
+        var lenIcon = document.getElementById('pwdLenIcon');
+        var lenCount = document.getElementById('pwdLenCount');
+        if (lenCount) lenCount.textContent = pwd.length + ' character' + (pwd.length === 1 ? '' : 's');
+        if (lenBox && lenIcon) {
+            if (minLength) {
+                lenBox.className = 'flex items-center justify-between p-2 rounded-lg border border-emerald-600 bg-emerald-950/70 text-emerald-300 transition-colors';
+                lenIcon.textContent = '✓';
+                lenIcon.className = 'w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold text-emerald-400';
+            } else {
+                lenBox.className = 'flex items-center justify-between p-2 rounded-lg border border-slate-800 bg-slate-900 text-slate-400 transition-colors';
+                lenIcon.textContent = '×';
+                lenIcon.className = 'w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold text-slate-500';
+            }
+        }
+
+        setCategoryState('pwdUpperItem', 'pwdUpperIcon', hasUpper);
+        setCategoryState('pwdLowerItem', 'pwdLowerIcon', hasLower);
+        setCategoryState('pwdNumberItem', 'pwdNumberIcon', hasNumber);
+        setCategoryState('pwdSymbolItem', 'pwdSymbolIcon', hasSymbol);
+
+        // Score summary
+        var scoreText = document.getElementById('pwdScoreText');
+        if (scoreText) {
+            if (passedCategories >= 3) {
+                scoreText.innerHTML = '<strong>' + passedCategories + ' of 4</strong> categories satisfied (<span class="text-emerald-400 font-semibold">Meets policy threshold</span>)';
+            } else {
+                scoreText.innerHTML = '<strong>' + passedCategories + ' of 4</strong> categories satisfied (<span class="text-amber-400 font-semibold">' + (3 - passedCategories) + ' more needed</span>)';
+            }
+        }
+
+        // Overall badge and input field styles
+        var badge = document.getElementById('pwdPolicyBadge');
+        if (badge) {
+            if (isValid) {
+                badge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-900/80 text-emerald-300 border border-emerald-600 transition-colors';
+                badge.textContent = '✓ REQUIREMENTS SATISFIED (PASSED)';
+                input.classList.remove('border-slate-700', 'focus:border-amber-500');
+                input.classList.add('border-emerald-500', 'focus:border-emerald-400');
+            } else {
+                badge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950/80 text-rose-300 border border-rose-800 transition-colors';
+                badge.textContent = 'CRITERIA UNMET';
+                input.classList.remove('border-emerald-500', 'focus:border-emerald-400');
+                input.classList.add('border-slate-700', 'focus:border-amber-500');
+            }
+        }
+    }
+
+    function toggleFallbackPasswordVisibility() {
+        var input = document.getElementById('fallbackAdminPassInput');
+        var textSpan = document.getElementById('toggleFallbackPassText');
+        if (!input || !textSpan) return;
+        if (input.type === 'password') {
+            input.type = 'text';
+            textSpan.textContent = 'Hide';
+        } else {
+            input.type = 'password';
+            textSpan.textContent = 'Show';
+        }
+    }
+
     // Mirrors eopNormalizeGuid() on the server: strips urn:uuid:/braces/separators
     // and reports whether the policy field holds a GUID rather than a display name.
     function describePolicyIdentifier(raw) {
         var value = (raw || '').trim().toLowerCase();
         if (value === '') return 'empty';
-        value = value.replace(/^urn:uuid:/, '').replace(/^\{|\}$/g, '');
+        value = value.replace(/^urn:uuid:/, '').replace(/^\\{|\\}$/g, '');
         var hex = value.replace(/[^0-9a-f]/g, '');
         if (hex.length === 32 && /^[0-9a-f]+$/.test(hex)) return 'guid';
         return 'name';
@@ -6241,7 +7137,16 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
         }
     }
 
+    // Attach listeners on load
     document.addEventListener('DOMContentLoaded', function() {
+        var passInput = document.getElementById('fallbackAdminPassInput');
+        if (passInput) {
+            passInput.addEventListener('input', updatePasswordPolicy);
+            passInput.addEventListener('keyup', updatePasswordPolicy);
+            passInput.addEventListener('change', updatePasswordPolicy);
+            updatePasswordPolicy();
+        }
+
         var policyInput = document.getElementById('policyInput');
         if (policyInput) {
             policyInput.addEventListener('input', updatePolicyKindIndicator);
@@ -6249,6 +7154,11 @@ $allReqsOk = $phpVersionOk && $pdoOk && $opensslOk && $ldapExtOk;
             updatePolicyKindIndicator();
         }
     });
+
+    // Also call immediately in case DOM is already ready
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(updatePasswordPolicy, 50);
+    }
     </script>
 </body>
 </html>
@@ -7199,28 +8109,55 @@ exit;
     Syncs MariaDB EOP Anti-Spam individual tables with Microsoft 365 Exchange Online Protection.
     Runs on Debian Linux using PowerShell 7 (pwsh).
 .PARAMETER PolicyName
-    The name of the Exchange Online hosted content filter policy (e.g. "${cfg.defaultPolicyName}").
+    The name of the Exchange Online hosted content filter policy (e.g. "Default").
 .PARAMETER Action
     Sync direction: "Pull" (default for cron) or "Push" (manual admin push only).
-    - Pull: Retrieves Allowed/Blocked senders and domains from Exchange Online via Get-HostedContentFilterPolicy
-            and reconciles them into MariaDB individual tables. Does NOT modify Exchange Online.
+    - Pull: Authenticates with certificate auth, retrieves Allowed/Blocked senders and
+            domains via Get-HostedContentFilterPolicy and writes them to the JSON file
+            named by $env:EOP_PULL_OUTPUT. Does NOT modify Exchange Online and does NOT
+            touch the database directly; cron-sync.php performs the MariaDB writes.
     - Push: Applies MariaDB individual tables to Exchange Online via Set-HostedContentFilterPolicy.
+.NOTES
+    Authentication values (tenant, client id, thumbprint, organization) arrive through
+    the environment from cron-sync.php, which reads them from the active eop_auth_config
+    record. Certificate material arrives as a PKCS#12 bundle path in
+    $env:EOP_CERT_PFX_PATH, because eop_auth_config stores the private key only.
 #>
 
 param (
     [string]$PolicyName = "${cfg.defaultPolicyName}",
     [ValidateSet("Pull", "Push")]
     [string]$Action = "Pull",
-    [string]$DbHost = "${cfg.dbHost}",
-    [int]$DbPort = ${cfg.dbPort},
-    [string]$DbName = "${cfg.dbName}",
-    [string]$DbUser = "${cfg.dbUser}",
-    [string]$DbPass = "${cfg.dbPass}"
+    # Only required for the manual Push path. The Pull path never connects to MariaDB.
+    # Each falls back to the environment so the database password never has to
+    # appear in the process table; cron-sync.php and the web UI both export these.
+    # DbPort defaults to 0 rather than 3306 so that "unset" is distinguishable from
+    # "explicitly 3306" and the environment can still supply it.
+    [string]$DbHost = "",
+    [int]$DbPort = 0,
+    [string]$DbName = "",
+    [string]$DbUser = "",
+    [string]$DbPass = ""
 )
+
+if ([string]::IsNullOrWhiteSpace($DbHost)) { $DbHost = [string]$env:EOP_DB_HOST }
+if ($DbPort -le 0) {
+    $envPort = [int]$env:EOP_DB_PORT
+    $DbPort = if ($envPort -gt 0) { $envPort } else { 3306 }
+}
+if ([string]::IsNullOrWhiteSpace($DbName))  { $DbName = [string]$env:EOP_DB_NAME }
+if ([string]::IsNullOrWhiteSpace($DbUser))  { $DbUser = [string]$env:EOP_DB_USER }
+if ([string]::IsNullOrWhiteSpace($DbPass))  { $DbPass = [string]$env:EOP_DB_PASS }
+
+# Build marker. Bump this whenever the behaviour of this script changes, and check
+# it against the repository when diagnosing a failure. A stale copy on the server
+# has silently disabled the fail-closed push guards before, and the symptom looked
+# like a data problem rather than a deployment problem.
+$ScriptBuild = '2026-09-29-dbclientpath-1'
 
 Write-Host "=========================================================="
 Write-Host "EOP Anti-Spam Sync: Policy='$PolicyName' | Action=$Action"
-Write-Host "Database Host: \${DbHost}:\${DbPort} | DB: \$DbName"
+Write-Host "Script build: $ScriptBuild"
 if ($Action -eq "Pull") {
     Write-Host "CRON MODE: PULL ONLY (Exchange Online -> MariaDB)" -ForegroundColor Yellow
     Write-Host "Cron job will only pull changes from EOP; local entries are NOT pushed." -ForegroundColor Yellow
@@ -7229,67 +8166,382 @@ if ($Action -eq "Pull") {
 }
 Write-Host "=========================================================="
 
-# Connect to Exchange Online Protection using Certificate / AppId
+# Authentication values are supplied by cron-sync.php from the active
+# eop_auth_config record so that certificate and App Registration changes take
+# effect without editing this script.
+$tenantId       = $env:EOP_TENANT_ID
+$clientId       = $env:EOP_CLIENT_ID
+$certThumbprint = $env:EOP_CERT_THUMBPRINT
+$organization   = $env:EOP_ORGANIZATION
+
+$missing = @()
+if ([string]::IsNullOrWhiteSpace($tenantId))       { $missing += 'EOP_TENANT_ID' }
+if ([string]::IsNullOrWhiteSpace($clientId))       { $missing += 'EOP_CLIENT_ID' }
+if ([string]::IsNullOrWhiteSpace($certThumbprint)) { $missing += 'EOP_CERT_THUMBPRINT' }
+if ($missing.Count -gt 0) {
+    Write-Error "Missing authentication values: $($missing -join ', '). cron-sync.php populates these from the active eop_auth_config record."
+    exit 1
+}
+
 try {
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
 } catch {
-    Write-Warning "ExchangeOnlineManagement module not installed. Run: Install-Module -Name ExchangeOnlineManagement -Scope AllUsers"
+    Write-Error "ExchangeOnlineManagement module could not be loaded: $($_.Exception.Message)"
+    exit 1
 }
 
-Write-Host "Authenticated via Certificate Thumbprint: ${cfg.certificateThumbprint} (App: ${cfg.clientId})" -ForegroundColor Cyan
+Write-Host "Certificate Thumbprint: $certThumbprint (App: $clientId, Tenant: $tenantId, Org: $organization)" -ForegroundColor Cyan
 
-if ($Action -eq "Pull") {
-    # --------------------------------------------------------------------------
-    # CRON JOB ACTION: PULL ONLY from EOP into MariaDB (Get-HostedContentFilterPolicy)
-    # --------------------------------------------------------------------------
-    Write-Host "[CRON PULL] Querying Microsoft 365 Exchange Online via Get-HostedContentFilterPolicy..."
-    # $eopPolicy = Get-HostedContentFilterPolicy -Identity $PolicyName
-    # $pulledAllowedSenders = @($eopPolicy.AllowedSenders)
-    # $pulledBlockedSenders = @($eopPolicy.BlockedSenders)
-    # $pulledAllowedDomains = @($eopPolicy.AllowedSenderDomains)
-    # $pulledBlockedDomains = @($eopPolicy.BlockedSenderDomains)
+# Returns a flat, all-string array regardless of the shape handed back.
+#
+# Exchange Online returns these policy properties as single-level string lists,
+# but the exact shape is not guaranteed across ExchangeOnlineManagement module
+# versions, and both failure modes are destructive downstream:
+#   * A nested collection serialises as an array-of-arrays. The PHP reconciler
+#     casts each element to string, which yields the literal "Array" for every
+#     entry, collapsing the whole list to one key and making every local row look
+#     absent from Exchange Online.
+#   * A one-element list silently becomes a scalar, so a JSON payload would carry
+#     a bare string where the PHP side expects a list.
+#
+# So this emits the elements as ordinary pipeline output - one item per value -
+# and callers that need a guaranteed array (the JSON payload below) wrap the call
+# in an explicit [string[]] cast. Do NOT re-add a leading comma to the return:
+# \`return , $arr\` survives a hashtable assignment but makes \`@(Get-FlatStringArray ...)\`
+# yield a single element that is the array, which is what silently broke the push.
+#
+# A queue is used rather than recursion, and the accumulator is a local variable
+# rather than a typed parameter: PowerShell can bind a parameterised argument as a
+# copy, which would discard every Add() call.
+function Get-FlatStringArray {
+    param($Values)
 
-    Write-Host "Simulating retrieval of remote policy '$PolicyName' from Microsoft 365..."
-    Write-Host "Ingesting remote EOP entries into MariaDB individual tables (INSERT IGNORE)..."
+    $flat = [System.Collections.Generic.List[string]]::new()
+    $queue = [System.Collections.Generic.Queue[object]]::new()
+    if ($null -ne $Values) {
+        $queue.Enqueue($Values)
+    }
 
-    # Helper function to insert into MariaDB safely without duplicates
-    function Import-ToMariaDb {
-        param ([string]$TableName, [string]$ColName, [array]$Values, [string]$Policy)
-        if (!$Values -or $Values.Count -eq 0) { return }
-        $dbCli = if (Get-Command mariadb -ErrorAction SilentlyContinue) { "mariadb" } else { "mysql" }
-        foreach ($v in $Values) {
-            $valClean = $v.Trim().ToLower() -replace "'", "''"
-            $policyClean = $Policy -replace "'", "''"
-            if ($valClean -ne "") {
-                $sql = "INSERT IGNORE INTO $TableName (policy_name, $ColName, note, added_by) VALUES ('$policyClean', '$valClean', 'Pulled from Exchange Online via Cron', 'EOP_CRON_PULL');"
-                & $dbCli -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -e $sql 2>&1 | Out-Null
+    while ($queue.Count -gt 0) {
+        $item = $queue.Dequeue()
+
+        if ($null -eq $item) { continue }
+
+        if ($item -is [string]) {
+            $text = ([string]$item).Trim()
+            if ($text -ne '') { $flat.Add($text) }
+            continue
+        }
+
+        if ($item -is [System.Collections.IDictionary]) {
+            foreach ($key in $item.Keys) { $queue.Enqueue($item[$key]) }
+            continue
+        }
+
+        if ($item -is [System.Collections.IEnumerable]) {
+            foreach ($child in $item) { $queue.Enqueue($child) }
+            continue
+        }
+
+        # Any other leaf is coerced rather than discarded, so an unexpected
+        # return type degrades to a string instead of emptying the list.
+        $text = ([string]$item).Trim()
+        if ($text -ne '') { $flat.Add($text) }
+    }
+
+    return $flat.ToArray()
+}
+
+function Connect-EopExchangeOnline {
+    param (
+        [string]$AppId,
+        [string]$Thumbprint,
+        [string]$Organization,
+        [string]$PfxFile,
+        [string]$PfxSecret
+    )
+
+    $cert = $null
+
+    # 1. Cross-platform .NET loading of PKCS#12 certificate (Debian Linux & Windows compatible)
+    # Does not rely on Windows-only Import-PfxCertificate cmdlet or Windows-specific Cert:\\ drive
+    if (-not [string]::IsNullOrWhiteSpace($PfxFile) -and (Test-Path -LiteralPath $PfxFile)) {
+        Write-Host "Loading PKCS#12 certificate from '$PfxFile'..."
+        try {
+            $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+            if ([string]::IsNullOrEmpty($PfxSecret)) {
+                $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($PfxFile, "", $keyFlags)
+            } else {
+                $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($PfxFile, $PfxSecret, $keyFlags)
+            }
+            Write-Host "Certificate loaded successfully: Subject='$($cert.Subject)', Thumbprint='$($cert.Thumbprint)'" -ForegroundColor Cyan
+        } catch {
+            Write-Warning "Could not instantiate X509Certificate2 from '\${PfxFile}': $($_.Exception.Message)"
+        }
+
+        # 2. Register in CurrentUser X509 store via cross-platform .NET API
+        if ($null -ne $cert) {
+            try {
+                $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+                    [System.Security.Cryptography.X509Certificates.StoreName]::My,
+                    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+                )
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $store.Add($cert)
+                $store.Close()
+                Write-Host "Certificate registered in CurrentUser X509 store."
+            } catch {
+                # Store registration is optional when passing -Certificate object directly
             }
         }
     }
 
-    Write-Host "SUCCESS: Cron Pull Complete. MariaDB tables synchronized with Exchange Online." -ForegroundColor Green
-    Write-Host "IMPORTANT: Push to EOP was SKIPPED (cron job only pulls changes from EOP, does not push)." -ForegroundColor Yellow
+    Write-Host "Connecting to Exchange Online (AppId: $AppId, Organization: $Organization)..."
+    $connected = $false
+    $connectErrors = @()
+
+    # Method 1: Pass [X509Certificate2] object directly (-Certificate parameter)
+    if ($null -ne $cert) {
+        try {
+            Write-Host "Attempting Connect-ExchangeOnline with -Certificate object..."
+            Connect-ExchangeOnline -Certificate $cert -AppId $AppId -Organization $Organization -ErrorAction Stop
+            $connected = $true
+        } catch {
+            $connectErrors += "Method 1 (-Certificate): $($_.Exception.Message)"
+        }
+    }
+
+    # Method 2: Pass certificate file path + SecureString password
+    if (-not $connected -and -not [string]::IsNullOrWhiteSpace($PfxFile) -and (Test-Path -LiteralPath $PfxFile)) {
+        try {
+            Write-Host "Attempting Connect-ExchangeOnline with -CertificateFilePath..."
+            $secPwd = ConvertTo-SecureString -String ($PfxSecret ?? "") -AsPlainText -Force
+            Connect-ExchangeOnline -CertificateFilePath $PfxFile -CertificatePassword $secPwd -AppId $AppId -Organization $Organization -ErrorAction Stop
+            $connected = $true
+        } catch {
+            $connectErrors += "Method 2 (-CertificateFilePath): $($_.Exception.Message)"
+        }
+    }
+
+    # Method 3: Connect with -CertificateThumbprint (requires cert in store)
+    if (-not $connected -and -not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+        try {
+            Write-Host "Attempting Connect-ExchangeOnline with -CertificateThumbprint ($Thumbprint)..."
+            Connect-ExchangeOnline -AppId $AppId -CertificateThumbprint $Thumbprint -Organization $Organization -ErrorAction Stop
+            $connected = $true
+        } catch {
+            $connectErrors += "Method 3 (-CertificateThumbprint): $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $connected) {
+        Write-Error "Connect-ExchangeOnline failed on all authentication methods: $($connectErrors -join ' | ')"
+        exit 1
+    }
+
+    Write-Host "Successfully connected to Exchange Online." -ForegroundColor Green
+}
+
+if ($Action -eq "Pull") {
+    # --------------------------------------------------------------------------
+    # CRON JOB ACTION: PULL ONLY from EOP (Get-HostedContentFilterPolicy)
+    # --------------------------------------------------------------------------
+    $pfxPath     = $env:EOP_CERT_PFX_PATH
+    $pfxPassword = $env:EOP_CERT_PFX_PASSWORD
+    $pullOutput  = $env:EOP_PULL_OUTPUT
+
+    if ([string]::IsNullOrWhiteSpace($pullOutput)) {
+        Write-Error "EOP_PULL_OUTPUT is not set. cron-sync.php must supply the JSON output path."
+        exit 1
+    }
+
+    if ([string]::IsNullOrWhiteSpace($pfxPath) -or -not (Test-Path -LiteralPath $pfxPath)) {
+        Write-Error "No PKCS#12 certificate found at '$pfxPath'. Certificate authentication needs a .pfx containing the certificate and its private key; eop_auth_config only stores the private key."
+        exit 1
+    }
+
+    # Connect to Exchange Online using cross-platform .NET certificate authentication
+    Connect-EopExchangeOnline -AppId $clientId -Thumbprint $certThumbprint -Organization $organization -PfxFile $pfxPath -PfxSecret $pfxPassword
+
+    Write-Host "[CRON PULL] Querying policy '$PolicyName' via Get-HostedContentFilterPolicy..."
+    try {
+        $eopPolicy = Get-HostedContentFilterPolicy -Identity $PolicyName -ErrorAction Stop
+    } catch {
+        Write-Error "Get-HostedContentFilterPolicy failed for '$PolicyName': $($_.Exception.Message)"
+        Disconnect-ExchangeOnline -ErrorAction SilentlyContinue | Out-Null
+        exit 1
+    }
+
+    # [string[]] keeps a single-entry list a JSON array and an empty list \`[]\`.
+    # Without the cast, a one-element result is a scalar and serialises as a bare
+    # string, and an empty result disappears from the payload entirely.
+    $payload = [ordered]@{
+        policy_name     = $PolicyName
+        allowed_senders = [string[]]@(Get-FlatStringArray $eopPolicy.AllowedSenders)
+        blocked_senders = [string[]]@(Get-FlatStringArray $eopPolicy.BlockedSenders)
+        allowed_domains = [string[]]@(Get-FlatStringArray $eopPolicy.AllowedSenderDomains)
+        blocked_domains = [string[]]@(Get-FlatStringArray $eopPolicy.BlockedSenderDomains)
+    }
+
+    # Depth 4 with the payload as the pipeline input serialises each list as a
+    # real JSON array. Set-Content must not be in the same pipeline as
+    # ConvertTo-Json, or the JSON is stringified before it is written.
+    $json = $payload | ConvertTo-Json -Depth 4 -Compress
+    Set-Content -LiteralPath $pullOutput -Value $json -Encoding UTF8
+
+    Write-Host ("Retrieved remote entries: allowed_senders={0} blocked_senders={1} allowed_domains={2} blocked_domains={3}" -f \`
+        $payload.allowed_senders.Count, $payload.blocked_senders.Count, \`
+        $payload.allowed_domains.Count, $payload.blocked_domains.Count) -ForegroundColor Green
+    Write-Host "Remote policy written to $pullOutput. MariaDB writes are performed by cron-sync.php." -ForegroundColor Green
+
+    Disconnect-ExchangeOnline -ErrorAction SilentlyContinue | Out-Null
+    Write-Host "SUCCESS: Remote policy retrieved. No changes were pushed to Exchange Online." -ForegroundColor Green
     exit 0
 } else {
     # --------------------------------------------------------------------------
     # MANUAL ADMIN ACTION: PUSH from MariaDB to EOP (Set-HostedContentFilterPolicy)
     # --------------------------------------------------------------------------
-    function Query-MariaDbList {
-        param ([string]$TableName, [string]$ColumnName, [string]$Policy)
-        $policyClean = $Policy -replace "'", "''"
-        $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$policyClean';"
-        $dbCli = if (Get-Command mariadb -ErrorAction SilentlyContinue) { "mariadb" } else { "mysql" }
-        $result = & $dbCli -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -s -N -e $query 2>&1
-        if ($result) {
-            return @($result -split "\\r?\\n" | Where-Object { $_ -ne "" })
-        }
-        return @()
+    if ([string]::IsNullOrWhiteSpace($DbPass) -or [string]::IsNullOrWhiteSpace($DbUser)) {
+        Write-Error "The Push action requires -DbHost, -DbName, -DbUser and -DbPass. Credentials are no longer hardcoded in this script."
+        exit 1
     }
 
-    $allowedSenders = Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName
-    $blockedSenders = Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName
-    $allowedDomains = Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName
-    $blockedDomains = Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName
+    # Reads one list from MariaDB for the push.
+    #
+    # This fails CLOSED. The previous version merged stderr into stdout with 2>&1
+    # and treated any non-empty output as data, so a missing client or a failed
+    # query had its error text pushed to Exchange Online as policy entries - and
+    # because Set-HostedContentFilterPolicy applies all four lists in one call,
+    # that would silently replace real blocklists. It also used -split on what
+    # may be an array, which coerces the array to a single string and yields one
+    # multi-line "entry".
+    #
+    # $ExpectedCountVar names an environment variable holding the row count PHP
+    # already determined over PDO. If the CLI disagrees, the two are reading
+    # different data and the push is refused rather than applied.
+    function Query-MariaDbList {
+        param (
+            [string]$TableName,
+            [string]$ColumnName,
+            [string]$Policy,
+            [string]$ExpectedCountVar = ''
+        )
+
+        # Resolve the client without trusting the caller's PATH. PHP-FPM clears
+        # the environment, so a web-spawned pwsh has no PATH and Get-Command
+        # finds nothing even though the client is installed - the pull path never
+        # noticed because it does not touch MariaDB. Cron worked because it
+        # inherits a login PATH, which is exactly why the same push succeeded from
+        # the CLI and failed from the web UI. Probe the standard locations before
+        # falling back to PATH so the two paths cannot disagree again.
+        $dbCli = Get-Command mariadb -ErrorAction SilentlyContinue
+        if (-not $dbCli) { $dbCli = Get-Command mysql -ErrorAction SilentlyContinue }
+        if (-not $dbCli) {
+            foreach ($candidate in @(
+                '/usr/bin/mariadb', '/usr/local/bin/mariadb', '/usr/sbin/mariadb', '/bin/mariadb',
+                '/usr/bin/mysql',   '/usr/local/bin/mysql',   '/usr/sbin/mysql',   '/bin/mysql'
+            )) {
+                if (Test-Path -LiteralPath $candidate) {
+                    $dbCli = Get-Command $candidate -ErrorAction SilentlyContinue
+                    if ($dbCli) { break }
+                }
+            }
+        }
+        if (-not $dbCli) {
+            Write-Error "Push aborted for '\${TableName}': neither the 'mariadb' nor the 'mysql' client is installed, so the local list cannot be read. Install the MariaDB client package, or push from the web UI."
+            exit 1
+        }
+
+        $policyClean = $Policy -replace "'", "''"
+        $query = "SELECT $ColumnName FROM $TableName WHERE policy_name = '$policyClean';"
+
+        # Diagnostic. Set EOP_SYNC_DEBUG=1 in the environment to see exactly what
+        # the client returned and why each guard decided as it did. Needed because a
+        # report showed the guards not firing and a JSON blob reaching Exchange,
+        # neither of which the code here should permit.
+        $debug = -not [string]::IsNullOrWhiteSpace($env:EOP_SYNC_DEBUG)
+        $expectRaw = $null
+        if ($ExpectedCountVar -ne '') {
+            $expectRaw = [Environment]::GetEnvironmentVariable($ExpectedCountVar)
+        }
+        if ($debug) {
+            Write-Host "[debug] table=$TableName cli=$($dbCli.Source) exit-var-before=$LASTEXITCODE"
+            Write-Host "[debug] host='$DbHost' port=$DbPort db='$DbName' user='$DbUser' passSet=$(-not [string]::IsNullOrEmpty($DbPass))"
+            Write-Host "[debug] query=$query"
+            Write-Host "[debug] expectVar=$ExpectedCountVar expectValue=$(if ($null -eq $expectRaw) { '<NULL>' } else { "'$expectRaw'" })"
+        }
+
+        # stderr is captured separately so a diagnostic can never become an entry.
+        $errFile = [System.IO.Path]::GetTempFileName()
+        try {
+            $raw = & $dbCli.Source -h $DbHost -P $DbPort -u $DbUser "-p$DbPass" -D $DbName -s -N -e $query 2>$errFile
+            $exit = $LASTEXITCODE
+        } finally {
+            $stderr = (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
+            Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+        }
+
+        if ($debug) {
+            Write-Host "[debug] exit=$exit"
+            Write-Host "[debug] stderr=$([string]$stderr)"
+            Write-Host "[debug] rawType=$(if ($null -eq $raw) { 'null' } else { $raw.GetType().FullName }) rawCount=$(@($raw).Count)"
+            $i = 0
+            foreach ($line in @($raw)) {
+                $i++
+                Write-Host ("[debug] raw[{0}] len={1} first40='{2}'" -f $i, ([string]$line).Length, (([string]$line).Substring(0, [Math]::Min(40, ([string]$line).Length)) -replace "\`r|\`n", '\\n'))
+            }
+        }
+
+        if ($exit -ne 0) {
+            Write-Error "Push aborted for '\${TableName}': the query failed (exit \${exit}). $([string]$stderr).Trim()"
+            exit 1
+        }
+
+        $values = @()
+        foreach ($line in @($raw)) {
+            $text = ([string]$line).Trim()
+            if ($text -eq '') { continue }
+            # Anything that looks like JSON, an object or a quoted field is not a
+            # list value. Pushing it would corrupt the Exchange policy.
+            if ($text -match '^[\\[\\]{}]' -or $text.StartsWith('"') -or $text.EndsWith('",')) {
+                Write-Error "Push aborted for '\${TableName}': query output looks like JSON or a serialised object rather than list data: '$text'. Refusing to push it to Exchange Online."
+                exit 1
+            }
+            $values += $text
+        }
+
+        if ($ExpectedCountVar -ne '') {
+            $expected = [Environment]::GetEnvironmentVariable($ExpectedCountVar)
+            if ($debug) {
+                Write-Host "[debug] guard: expectVar='$ExpectedCountVar' seen=$(if ($null -eq $expected) { '<NULL>' } else { "'$expected'" }) valuesCount=$($values.Count)"
+            }
+            if ($expected -ne $null -and $expected -ne '') {
+                $expectedInt = 0
+                if (-not [int]::TryParse($expected, [ref]$expectedInt)) {
+                    Write-Error "Push aborted for '\${TableName}': expected-count variable \${ExpectedCountVar} is not a number ('$expected')."
+                    exit 1
+                }
+                if ($values.Count -ne $expectedInt) {
+                    Write-Error "Push aborted for '\${TableName}': the MariaDB client read $($values.Count) rows but PHP read \${expectedInt} over PDO. The two disagree, so the local list is not being read consistently and the push has been refused. Re-run with the web UI push to investigate."
+                    exit 1
+                }
+            }
+        }
+
+        return $values
+    }
+
+    $allowedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_senders" -ColumnName "sender_email" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_ALLOWED_SENDERS'))
+    $blockedSenders = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_senders" -ColumnName "sender_email" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_BLOCKED_SENDERS'))
+    $allowedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_allowed_domains" -ColumnName "domain_name" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_ALLOWED_DOMAINS'))
+    $blockedDomains = @(Get-FlatStringArray (Query-MariaDbList -TableName "eop_blocked_domains" -ColumnName "domain_name" -Policy $PolicyName -ExpectedCountVar 'EOP_EXPECT_BLOCKED_DOMAINS'))
+
+    if (-not [string]::IsNullOrWhiteSpace($env:EOP_SYNC_DEBUG)) {
+        Write-Host "[debug] FINAL allowedSenders.Count=$($allowedSenders.Count) type0=$(if ($allowedSenders.Count) { $allowedSenders[0].GetType().FullName } else { 'n/a' })"
+        if ($allowedSenders.Count) {
+            Write-Host "[debug] FINAL allowedSenders[0] = '$($allowedSenders[0])'"
+        }
+    }
 
     Write-Host "Found in MariaDB for Policy '$PolicyName':"
     Write-Host " - Allowed Senders: $($allowedSenders.Count)"
@@ -7298,12 +8550,20 @@ if ($Action -eq "Pull") {
     Write-Host " - Blocked Domains: $($blockedDomains.Count)"
 
     Write-Host "Executing Manual Admin Push to EOP via Set-HostedContentFilterPolicy..."
-    # Set-HostedContentFilterPolicy -Identity $PolicyName \`
-    #     -AllowedSenders $allowedSenders \`
-    #     -BlockedSenders $blockedSenders \`
-    #     -AllowedSenderDomains $allowedDomains \`
-    #     -BlockedSenderDomains $blockedDomains
+    try {
+        Connect-EopExchangeOnline -AppId $clientId -Thumbprint $certThumbprint -Organization $organization -PfxFile $env:EOP_CERT_PFX_PATH -PfxSecret $env:EOP_CERT_PFX_PASSWORD
+        Set-HostedContentFilterPolicy -Identity $PolicyName \`
+            -AllowedSenders $allowedSenders \`
+            -BlockedSenders $blockedSenders \`
+            -AllowedSenderDomains $allowedDomains \`
+            -BlockedSenderDomains $blockedDomains \`
+            -ErrorAction Stop
+    } catch {
+        Write-Error "Push to Exchange Online failed: $($_.Exception.Message)"
+        exit 1
+    }
 
+    Disconnect-ExchangeOnline -ErrorAction SilentlyContinue | Out-Null
     Write-Host "SUCCESS: Policy '$PolicyName' pushed to Exchange Online!" -ForegroundColor Green
     exit 0
 }
@@ -8012,6 +9272,7 @@ eop-antispam-php-mariadb/
 ├── ldap.php              # Active Directory LDAP Group DN authentication engine
 ├── functions.php         # CSRF verification, input sanitization, and helper utilities
 ├── schema.sql            # MariaDB database table definitions & 9-table schema
+├── schema-update.sql     # Idempotent upgrade script for existing installations
 ├── index.php             # Main management dashboard (Dark mode, tables, cards, modal UI)
 ├── setup.php             # 5-step initial run setup wizard with permanent lock
 ├── login.php             # Active Directory LDAP authentication portal (Dark mode)
@@ -8103,6 +9364,18 @@ On your remote MariaDB server (\`${cfg.dbHost}\`), run the \`schema.sql\` file:
 \`\`\`bash
 mariadb -u root -p < schema.sql
 \`\`\`
+
+> **Upgrading an existing installation?** Do not re-run \`schema.sql\` against a
+> populated database. Run \`schema-update.sql\` instead. It is idempotent, so it is
+> safe to run more than once, and it adds \`eop_auth_config.pkcs12_bundle\` (required
+> for PKCS#12 certificate authentication), renames \`private_key_pem\` to
+> \`private_key\`, widens the auth identifier columns, relaxes the secret columns to
+> nullable, adds the missing auth indexes, and creates \`eop_sync_confirmations\`.
+> It also deactivates the placeholder auth row that older \`schema.sql\` versions
+> seeded with \`is_active = 1\`.
+> \`\`\`bash
+> mariadb -u root -p < schema-update.sql
+> \`\`\`
 
 Grant remote access to your Debian server IP:
 \`\`\`sql

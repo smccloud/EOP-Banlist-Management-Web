@@ -768,6 +768,18 @@ On your remote MariaDB server, import the schema file:
 mariadb -u root -p < schema.sql
 ```
 
+> **Upgrading an existing installation?** Do not re-run `schema.sql` against a
+> populated database. Run `schema-update.sql` instead. It is idempotent, so it is
+> safe to run more than once, and it adds `eop_auth_config.pkcs12_bundle` (required
+> for PKCS#12 certificate authentication), renames `private_key_pem` to
+> `private_key`, widens the auth identifier columns, relaxes the secret columns to
+> nullable, adds the missing auth indexes, and creates `eop_sync_confirmations`.
+> It also deactivates the placeholder auth row that older `schema.sql` versions
+> seeded with `is_active = 1`.
+> ```bash
+> mariadb -u root -p < schema-update.sql
+> ```
+
 Grant remote network privileges to your Debian server's IP address:
 
 ```sql
@@ -1039,6 +1051,7 @@ eop-antispam-php-mariadb/
 ├── ldap.php              # Active Directory LDAP Group DN & Bind Password auth engine
 ├── functions.php         # CSRF verification, input sanitization, and helper utilities
 ├── schema.sql            # MariaDB database table definitions & 11-table schema
+├── schema-update.sql     # Idempotent upgrade script for existing installations
 ├── index.php             # Main dashboard (Dark mode, tables, cards, modal UI, split smart sort)
 ├── setup.php             # 5-step initial run setup wizard with permanent lock
 ├── login.php             # Active Directory LDAP & Fallback auth portal (Dark mode)
