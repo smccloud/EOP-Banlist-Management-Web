@@ -430,47 +430,18 @@ class Database {
         }
         $insertResult = self::bulkInsert($listType, $policyName, $candidates, $actor);
 
-        $delete = $pdo->prepare("DELETE FROM {$table} WHERE id = :id AND policy_name = :policy");
+        // Do not delete local items on pull from EOP - preserve items added in UI
         $removed = [];
         $notRemoved = [];
-        foreach ($localRows as $row) {
-            $normalized = strtolower(trim((string)$row['item_value']));
-            if (!isset($remote[$normalized])) {
-                $delete->execute([':id' => (int)$row['id'], ':policy' => $policyName]);
-                // Only count what the database actually removed. Previously every row
-                // present in $localRows was reported as deleted whether or not the
-                // DELETE matched, so a row that was already gone produced a "removed"
-                // count that the table then contradicted.
-                if ($delete->rowCount() > 0) {
-                    $removed[] = $row['item_value'];
-                } else {
-                    $notRemoved[] = $row['item_value'];
-                }
-            }
-        }
-
-        if ($notRemoved) {
-            // Surfaced rather than swallowed: a non-zero count here means the local
-            // table and the reconciler disagree, which is worth seeing in the cron log.
-            self::logAudit('SYNC', $listType, $policyName, count($notRemoved) . ' items', 'Absent from Exchange Online but the delete matched no row: ' . implode(', ', array_slice($notRemoved, 0, 25)), $actor);
-        }
-
-        if ($removed) {
-            // 'REMOVE', not 'DELETE': eop_audit_log.action is an ENUM of
-            // ADD/REMOVE/UPDATE/SYNC/LOGIN/LOGOUT. Passing 'DELETE' made this
-            // INSERT fail under strict mode, and logAudit swallows the error, so
-            // every deletion the pull performed was invisible in the audit trail.
-            self::logAudit('REMOVE', $listType, $policyName, count($removed) . ' items', 'Removed by cron pull (absent from Exchange Online): ' . implode(', ', array_slice($removed, 0, 25)), $actor);
-        }
 
         return [
             'remote'    => count($remote),
             'inserted'  => $insertResult['inserted'],
-            'removed'   => count($removed),
-            'unchanged' => count($localRows) - count($removed),
+            'removed'   => 0,
+            'unchanged' => count($localRows),
             'errors'    => $insertResult['errors'],
-            'removed_values' => $removed,
-            'not_removed_values' => $notRemoved,
+            'removed_values' => [],
+            'not_removed_values' => [],
         ];
     }
 
@@ -823,13 +794,11 @@ class Database {
         $localValues = self::fetchNormalizedValues($listType, $policyName);
         $localCount = count($localValues);
 
-        // Empty remote and empty local: nothing is at risk.
-        if ($localCount === 0) {
-            if ($existing !== null) {
-                self::clearSyncConfirmation($policyName, $listType);
-            }
-            return $passThrough(self::reconcileListWithRemote($listType, $policyName, [], $actor), 'none');
+        // Empty remote - don't wipe local UI additions, just skip
+        if ($existing !== null) {
+            self::clearSyncConfirmation($policyName, $listType);
         }
+        return $passThrough(self::reconcileListWithRemote($listType, $policyName, [], $actor), 'none');
 
         $skippedResult = static function (string $guard, ?array $confirmation) use ($localCount, $listType, $policyName, $actor, $passThrough): array {
             return $passThrough([
