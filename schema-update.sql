@@ -121,7 +121,7 @@ SET @sql := (
 );
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
-DEALLOCARE PREPARE stmt;
+DEALLOCATE PREPARE stmt;
 
 SET @sql := (
     SELECT IF(
@@ -241,7 +241,7 @@ SET @sql := (
 );
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
-DEALLOCARE PREPARE stmt;
+DEALLOCATE PREPARE stmt;
 
 SET @sql := (
     SELECT IF(
