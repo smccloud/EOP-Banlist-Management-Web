@@ -42,6 +42,9 @@ A production-ready **PHP 8** web application designed for **Debian Linux** and b
   - [4. NGINX HTTPS SSL Web Server Certificates](#4-nginx-https-ssl-web-server-certificates)
 - [Exchange Online Protection Sync Engine](#exchange-online-protection-sync-engine)
   - [Scheduled Cron Daemon (Pull-Only by default)](#scheduled-cron-daemon-pull-only-by-default)
+  - [Row Ownership (`source`)](#row-ownership-source)
+  - [Withheld Deletion: Empty Remote Lists](#withheld-deletion-empty-remote-lists)
+  - [Reconciling the Live Schema](#reconciling-the-live-schema)
   - [Manual Admin Push All (Exchange Online)](#manual-admin-push-all-exchange-online)
 - [Web Interface & UX Capabilities](#web-interface--ux-capabilities)
   - [Smart Sorter Classification Engine](#smart-sorter-classification-engine)
@@ -567,6 +570,41 @@ An administrator then accepts or denies each affected list from the **web UI**, 
 
 Accepting deletes exactly the values captured when the confirmation was raised, not whatever happens to be present at apply time, so entries added after approval are not silently destroyed. Decisions are recorded in `eop_audit_log`.
 
+### Reconciling the Live Schema
+
+`schema.sql` is the canonical definition. A live database can drift from it, so
+`schema-update.sql` reconciles both directions and never assumes which side is
+newer.
+
+| Area | Drift seen in a live export | Reconciliation |
+|---|---|---|
+| List tables | `source` absent | Added, then backfilled from `added_by` |
+| List tables | `policy_name` `VARCHAR(128)` | Widened to `VARCHAR(255)` |
+| List tables | `note` `VARCHAR(500)` | Widened to `TEXT` |
+| `eop_policies` | `is_default` undeclared in `schema.sql` | Added; the application already self-heals this at runtime |
+| `eop_ldap_config` | `use_ssl`, `use_tls`, `account_suffix`, `timeout_seconds`, `updated_by`, `created_at` absent | Added, seeding the TLS flags from `ldap_protocol` |
+| `eop_ldap_config` | `idx_ldap_active` absent | Added; `getLdapConfig()` filters `is_active = 1` on every page load |
+| `eop_audit_log` | primary key only | Added `idx_audit_policy`, `idx_audit_username` |
+| `eop_audit_log` | `policy_name` `VARCHAR(128)` | Widened to `VARCHAR(255)` |
+
+Every statement is guarded by an `information_schema` lookup, so a re-run is a
+no-op, and the script resolves its schema from `DATABASE()` rather than
+hardcoding a database name.
+
+#### LDAP Column Naming
+
+The live `eop_ldap_config` uses `ldap_host`, `ldap_port`, `ldap_protocol`,
+`ldap_base_dn`, `ldap_group_dn`, `ldap_bind_dn`, `ldap_bind_password`, and
+`ldap_domain`. **`schema-update.sql` treats those names as authoritative**: it
+only *adds* columns and never renames, so nothing is lost.
+
+`ldap.php` and `Database::saveLdapConfig()` still use the older names
+(`host`, `authorized_group_dn`, `bind_password`, `netbios_domain`). **Saving
+LDAP config from the Config Center fails with an unknown-column error until the
+application is updated to the `ldap_*` names.** The added columns carry the
+values the application needs in the columns it expects, so the code-side rename
+can be done separately.
+
 `eop_sync_confirmations` is created on demand by the `Database` layer, so an existing installation picks it up without re-running the setup wizard. The web UI degrades to a silent no-op if the app user lacks DDL privileges; cron still withholds the deletion, which is the safe direction to fail in.
 
 ```powershell
@@ -796,13 +834,19 @@ mariadb -u root -p < schema.sql
 
 > **Upgrading an existing installation?** Do not re-run `schema.sql` against a
 > populated database. Run `schema-update.sql` instead. It is idempotent, so it is
-> safe to run more than once, and it adds `eop_auth_config.pkcs12_bundle` (required
-> for PKCS#12 certificate authentication), renames `private_key_pem` to
-> `private_key`, widens the auth identifier columns, relaxes the secret columns to
-> nullable, adds the missing auth indexes, and creates `eop_sync_confirmations`.
-> It also adds the `source` provenance column to the four list tables and
-> backfills it, and deactivates the placeholder auth row that older `schema.sql`
-> versions seeded with `is_active = 1`.
+> safe to run more than once. It:
+>
+> - adds `eop_auth_config.pkcs12_bundle` (required for PKCS#12 certificate
+>   authentication), renames `private_key_pem` to `private_key`, widens the auth
+>   identifier columns, relaxes the secret columns to nullable, and adds the
+>   missing auth indexes;
+> - creates `eop_sync_confirmations`;
+> - adds the `source` provenance column to the four list tables and backfills it;
+> - reconciles `eop_ldap_config`, `eop_policies`, and `eop_audit_log` against a
+>   live structure export (see [Reconciling the Live Schema](#reconciling-the-live-schema));
+> - deactivates the placeholder auth row that older `schema.sql` versions seeded
+>   with `is_active = 1`.
+>
 > ```bash
 > mariadb -u root -p < schema-update.sql
 > ```
