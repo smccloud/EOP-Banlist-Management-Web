@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS `eop_allowed_senders` (
   `sender_email` VARCHAR(255) NOT NULL,
   `note` TEXT NULL,
   `added_by` VARCHAR(128) NOT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'local',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_policy_sender` (`policy_name`, `sender_email`),
@@ -377,6 +378,7 @@ CREATE TABLE IF NOT EXISTS `eop_blocked_senders` (
   `sender_email` VARCHAR(255) NOT NULL,
   `note` TEXT NULL,
   `added_by` VARCHAR(128) NOT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'local',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_policy_blocked_sender` (`policy_name`, `sender_email`),
@@ -390,6 +392,7 @@ CREATE TABLE IF NOT EXISTS `eop_allowed_domains` (
   `domain_name` VARCHAR(255) NOT NULL,
   `note` TEXT NULL,
   `added_by` VARCHAR(128) NOT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'local',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_policy_domain` (`policy_name`, `domain_name`),
@@ -403,6 +406,7 @@ CREATE TABLE IF NOT EXISTS `eop_blocked_domains` (
   `domain_name` VARCHAR(255) NOT NULL,
   `note` TEXT NULL,
   `added_by` VARCHAR(128) NOT NULL,
+  `source` VARCHAR(16) NOT NULL DEFAULT 'local',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_policy_blocked_domain` (`policy_name`, `domain_name`),
@@ -522,17 +526,39 @@ To prevent unintended overwrites of Microsoft 365 policies, the background cron 
 - It pulls remote entries from Microsoft 365 using `Get-HostedContentFilterPolicy`.
 - Discovered entries are reconciled into the corresponding MariaDB tables without modifying Exchange Online.
 
+### Row Ownership (`source`)
+
+Exchange Online is authoritative for the rows **it** owns; this UI is authoritative for the rows a **person** added here. Each list row records which side owns it in a `source` column:
+
+| `source` | Set when | A pull may delete it? |
+|---|---|---|
+| `local` | An administrator added the row in this UI | **No** - its absence from the remote list says nothing about a row EOP never had |
+| `eop` | A pull inserted the row, a push handed it to EOP, or EOP reported a pre-existing row back | **Yes**, if the remote list no longer contains it |
+
+This is what lets a removal in the Exchange portal propagate without also destroying entries added in the UI:
+
+- Delete an entry in the Exchange portal -> the next pull removes it here.
+- Add an entry in this UI -> the next pull leaves it alone, even though EOP does not have it.
+- Add an entry here and then push -> the push marks it `eop`, so a later removal in the portal *does* propagate.
+- **`note` (the description) is never written for a row that already exists**, so a description authored in the UI survives every pull. Only `source` is updated.
+
+Existing rows are backfilled from `added_by`: `CRON_DAEMON` and `SYSTEM` become `eop`, everything else becomes `local`. The application applies the migration itself on the first sync after an upgrade, so no manual step is required; `schema-update.sql` performs the identical change if you prefer to apply it yourself.
+
+If the column cannot be added - typically a deployment whose app user lacks DDL privileges - a pull degrades to insert-only rather than deleting rows whose owner it cannot determine.
+
 #### Withheld Deletion: Empty Remote Lists
 
-Reconciliation deletes local rows that are absent from the remote list. An **empty** remote list is indistinguishable from a policy that genuinely has no entries, so a single bad pull — a transient `Get-HostedContentFilterPolicy` response, a module-version quirk, a truncated payload — would empty a populated list and report success.
+Reconciliation deletes EOP-owned local rows that are absent from the remote list. An **empty** remote list is indistinguishable from a policy that genuinely has no entries, so a single bad pull - a transient `Get-HostedContentFilterPolicy` response, a module-version quirk, a truncated payload - would empty every EOP-owned row and report success.
 
 Cron therefore withholds the deletion in that case:
 
-| Remote list | Local rows | Behaviour |
+| Remote list | EOP-owned local rows | Behaviour |
 |---|---|---|
-| has entries | any | Normal reconcile (insert missing, remove absent) |
+| has entries | any | Normal reconcile (insert missing, remove absent `eop` rows, keep `local` rows) |
 | **empty** | **none** | Nothing at risk; reconciles normally |
 | **empty** | **some** | **Deletion withheld.** A confirmation is raised in `eop_sync_confirmations`, the policy's `sync_status` becomes `pending`, and the cron output prints an `ACTION REQUIRED` block instead of the success line |
+
+Rows marked `local` are never part of this decision, because no sync deletes them.
 
 An administrator then accepts or denies each affected list from the **web UI**, on the policy's page:
 
@@ -774,8 +800,9 @@ mariadb -u root -p < schema.sql
 > for PKCS#12 certificate authentication), renames `private_key_pem` to
 > `private_key`, widens the auth identifier columns, relaxes the secret columns to
 > nullable, adds the missing auth indexes, and creates `eop_sync_confirmations`.
-> It also deactivates the placeholder auth row that older `schema.sql` versions
-> seeded with `is_active = 1`.
+> It also adds the `source` provenance column to the four list tables and
+> backfills it, and deactivates the placeholder auth row that older `schema.sql`
+> versions seeded with `is_active = 1`.
 > ```bash
 > mariadb -u root -p < schema-update.sql
 > ```
@@ -1050,7 +1077,7 @@ eop-antispam-php-mariadb/
 ├── database.php          # PDO database wrapper & individual table CRUD operations
 ├── ldap.php              # Active Directory LDAP Group DN & Bind Password auth engine
 ├── functions.php         # CSRF verification, input sanitization, and helper utilities
-├── schema.sql            # MariaDB database table definitions & 11-table schema
+├── schema.sql            # MariaDB database table definitions & 9-table schema
 ├── schema-update.sql     # Idempotent upgrade script for existing installations
 ├── index.php             # Main dashboard (Dark mode, tables, cards, modal UI, split smart sort)
 ├── setup.php             # 5-step initial run setup wizard with permanent lock

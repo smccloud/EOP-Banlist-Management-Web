@@ -341,12 +341,94 @@ if ($action === 'trigger_sync') {
     $logMsg = implode("\n", $output);
     if ($returnVar === 0) {
         if ($actionParam === 'Pull') {
-            Database::updatePolicySyncStatus($policyName, 'synced', 'Pulled changes from Exchange Online into MariaDB');
-            Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Manual pull from Exchange Online completed', $user['username']);
-            setFlash('success', "Exchange Online pull completed successfully! Remote entries ingested into MariaDB for policy '{$policyName}'.");
+            // The PowerShell side stages the policy JSON in the temp file named by
+            // EOP_PULL_OUTPUT. It is the only record of what Exchange Online holds,
+            // so it has to be read and reconciled here - running the fetch and then
+            // ignoring its output leaves the lists untouched while reporting success.
+            $remote = null;
+            if (is_readable($pullOutput)) {
+                $decoded = json_decode((string)file_get_contents($pullOutput), true);
+                if (is_array($decoded)) {
+                    $remote = $decoded;
+                }
+            }
+
+            if ($remote === null) {
+                Database::updatePolicySyncStatus($policyName, 'failed', 'Pull finished but wrote no readable policy payload');
+                Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Manual pull from Exchange Online produced no readable payload', $user['username']);
+                setFlash('error', "Exchange Online pull finished but returned no readable policy data. Nothing was changed; check the sync log.");
+                header($redirect);
+                exit;
+            }
+
+            $pulledInserted = 0;
+            $pulledRemoved = 0;
+            $pulledKept = 0;
+            $pullErrors = [];
+            $pullGuard = [];
+
+            // Same list map and same guarded reconciler the cron daemon uses, so
+            // the two paths cannot drift apart.
+            foreach (Database::listTypes() as $listType) {
+                $values = $remote[$listType] ?? [];
+                if (!is_array($values)) {
+                    // A one-entry PowerShell list can serialise as a bare string.
+                    $values = is_string($values) ? ($values === '' ? [] : [$values]) : [];
+                }
+
+                try {
+                    $result = Database::reconcileListWithRemoteGuarded($listType, $policyName, $values, $user['username']);
+                } catch (RuntimeException $e) {
+                    Database::updatePolicySyncStatus($policyName, 'failed', "Malformed remote payload for {$listType}");
+                    Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Manual pull aborted: ' . $e->getMessage(), $user['username']);
+                    setFlash('error', "Exchange Online pull aborted for '{$listType}': the payload could not be read. Nothing was changed.");
+                    header($redirect);
+                    exit;
+                }
+
+                $guard = $result['guard'] ?? 'none';
+                if ($guard === 'prompted' || $guard === 'awaiting_decision') {
+                    $pullGuard[$listType] = $guard;
+                } elseif ($guard === 'denied') {
+                    $pullGuard[$listType] = $guard;
+                }
+
+                $pulledInserted += (int)($result['inserted'] ?? 0);
+                $pulledRemoved  += (int)($result['removed'] ?? 0);
+                $pulledKept     += count($result['not_removed_values'] ?? []);
+                foreach (($result['errors'] ?? []) as $pullError) {
+                    $pullErrors[] = "{$listType}: {$pullError}";
+                }
+            }
+
+            $summary = "Manual pull: {$pulledInserted} added, {$pulledRemoved} removed, {$pulledKept} kept (added in this UI)";
+
+            if ($pullGuard !== []) {
+                Database::updatePolicySyncStatus(
+                    $policyName,
+                    'pending',
+                    count($pullGuard) . ' list(s) withheld: empty remote list needs administrator confirmation'
+                );
+                Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', "Manual pull from Exchange Online: {$summary}; deletion withheld for " . implode(', ', array_keys($pullGuard)), $user['username']);
+                setFlash('warning', "Exchange Online pull finished: {$summary}. Exchange Online returned an empty list while owned entries exist, so deletion was withheld for " . implode(', ', array_keys($pullGuard)) . '. Review it on this page.');
+            } else {
+                Database::updatePolicySyncStatus($policyName, 'synced', $summary);
+                Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', "Manual pull from Exchange Online completed: {$summary}", $user['username']);
+                setFlash('success', "Exchange Online pull completed: {$summary} for policy '{$policyName}'.");
+            }
+
+            foreach ($pullErrors as $pullError) {
+                Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', "Pull row error: {$pullError}", $user['username']);
+            }
         } else {
             Database::updatePolicySyncStatus($policyName, 'synced', 'Pushed changes to Exchange Online');
             Database::logAudit('SYNC', 'SYSTEM', $policyName, 'ALL', 'Manual push to Exchange Online completed', $user['username']);
+
+            // Exchange Online now holds these rows, so it becomes authoritative for
+            // them and a later portal removal propagates back on a pull.
+            foreach (Database::listTypes() as $listType) {
+                Database::markListAsEopOwned($listType, $policyName, $user['username']);
+            }
             
             // Capture entries pushed to each list for the post-push summary popup
             $pushedAllowedSenders = array_column(Database::getListItems('allowed_senders', $policyName, '', 500, 0), 'item_value');

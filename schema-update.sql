@@ -23,6 +23,10 @@
 --      That row carried a fake thumbprint and a non-functional encrypted blob
 --      and was inserted with is_active = 1, so it competed with the real
 --      record written by the setup wizard.
+--   8. The four list tables gained `source`, recording whether a row is owned by
+--      this UI ('local') or by Exchange Online ('eop'). A pull deletes only the
+--      'eop' rows that EOP no longer reports, so entries added in the UI are
+--      preserved. Optional: the application applies this itself on first sync.
 --
 -- Usage:
 --   mysql -u root -p < schema-update.sql
@@ -280,7 +284,87 @@ CREATE TABLE IF NOT EXISTS `eop_sync_confirmations` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ----------------------------------------------------------------------------
--- 9. Deactivate the placeholder row seeded by the older schema.sql
+-- 10. List provenance: add `source` to the four list tables
+--     `source` records which side owns a row: 'local' (added in the UI, never
+--     removed by a sync) or 'eop' (Exchange Online is authoritative for it, so a
+--     removal in the portal propagates back on the next pull). Without it a pull
+--     cannot tell an EOP-owned row from a UI-owned one and refuses to delete
+--     anything.
+--
+--     Backfilled from `added_by`: CRON_DAEMON and SYSTEM are the only actors the
+--     sync code has ever written, and those rows are the ones EOP is authoritative
+--     for. Everything else predates the column as a human addition and is left
+--     'local', which errs towards keeping rows. A row added in the UI and then
+--     pushed is promoted to 'eop' by the push itself, so removing it in the
+--     portal still propagates.
+-- ----------------------------------------------------------------------------
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_allowed_senders'
+            AND COLUMN_NAME  = 'source') = 0,
+        'ALTER TABLE `eop_allowed_senders` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_blocked_senders'
+            AND COLUMN_NAME  = 'source') = 0,
+        'ALTER TABLE `eop_blocked_senders` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_allowed_domains'
+            AND COLUMN_NAME  = 'source') = 0,
+        'ALTER TABLE `eop_allowed_domains` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql := (
+    SELECT IF(
+        (SELECT COUNT(*) FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'eop_blocked_domains'
+            AND COLUMN_NAME  = 'source') = 0,
+        'ALTER TABLE `eop_blocked_domains` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`',
+        'DO 0'
+    )
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+UPDATE `eop_allowed_senders` SET `source` = 'eop'
+ WHERE `added_by` IN ('CRON_DAEMON', 'SYSTEM') AND `source` <> 'eop';
+UPDATE `eop_blocked_senders` SET `source` = 'eop'
+ WHERE `added_by` IN ('CRON_DAEMON', 'SYSTEM') AND `source` <> 'eop';
+UPDATE `eop_allowed_domains` SET `source` = 'eop'
+ WHERE `added_by` IN ('CRON_DAEMON', 'SYSTEM') AND `source` <> 'eop';
+UPDATE `eop_blocked_domains` SET `source` = 'eop'
+ WHERE `added_by` IN ('CRON_DAEMON', 'SYSTEM') AND `source` <> 'eop';
+
+-- ----------------------------------------------------------------------------
+-- 11. Deactivate the placeholder row seeded by the older schema.sql
 --    Matches only the known fake seed values, so a genuine wizard record is
 --    never touched. Run the wizard's certificate step again if no active row
 --    remains afterwards.
@@ -306,3 +390,8 @@ UPDATE `eop_auth_config`
 --
 -- SELECT id, tenant_id, certificate_thumbprint, key_type, is_active
 --   FROM eop_auth_config ORDER BY id;
+--
+-- SELECT TABLE_NAME, COLUMN_NAME, COLUMN_DEFAULT FROM information_schema.COLUMNS
+--  WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'source' ORDER BY TABLE_NAME;
+--
+-- SELECT `source`, COUNT(*) FROM eop_allowed_senders GROUP BY `source`;

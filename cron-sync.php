@@ -211,8 +211,16 @@ if ($isPush) {
 
     if ($pushExit === 0) {
         $total = array_sum($counts);
+        // Exchange Online now holds these rows, so it becomes authoritative for
+        // them: a later removal in the portal has to propagate back on a pull.
+        // Provenance only - the note is left as authored.
+        $marked = 0;
+        foreach (array_keys($counts) as $listType) {
+            $marked += Database::markListAsEopOwned($listType, $policy, 'CRON_DAEMON');
+        }
+
         Database::updatePolicySyncStatus($policy, 'synced', "Cron push applied {$total} entries across 4 lists");
-        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pushed MariaDB -> Exchange Online (Push): {$total} entries across 4 lists", 'CRON_DAEMON');
+        Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pushed MariaDB -> Exchange Online (Push): {$total} entries across 4 lists" . ($marked > 0 ? "; {$marked} rows now managed by Exchange Online" : ''), 'CRON_DAEMON');
         echo "[" . date('Y-m-d H:i:s') . "] Cron EOP push completed successfully.\n";
         exit(0);
     }
@@ -305,6 +313,7 @@ if ($returnVar === 0) {
 
     $totalInserted = 0;
     $totalRemoved = 0;
+    $totalKept = 0;
     $awaitingDecision = [];
     $heldByDecision = [];
 
@@ -359,9 +368,14 @@ if ($returnVar === 0) {
             $totalInserted += $result['inserted'];
             $totalRemoved += $result['removed'];
 
+            // Rows this UI owns: absent from the remote list but deliberately
+            // left in place, because Exchange Online never had them.
+            $kept = count($result['not_removed_values'] ?? []);
+            $totalKept += $kept;
+
             printf(
-                "  %-18s remote=%-5d inserted=%-5d removed=%-5d\n",
-                $listType, $result['remote'], $result['inserted'], $result['removed']
+                "  %-18s remote=%-5d inserted=%-5d removed=%-5d kept_local=%-5d\n",
+                $listType, $result['remote'], $result['inserted'], $result['removed'], $kept
             );
         }
 
@@ -400,7 +414,7 @@ if ($returnVar === 0) {
         );
         echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed; administrator confirmation required.\n";
     } else {
-        $summary = "Cron pull: {$totalInserted} added, {$totalRemoved} removed";
+        $summary = "Cron pull: {$totalInserted} added, {$totalRemoved} removed, {$totalKept} kept (added in this UI)";
         Database::updatePolicySyncStatus($policy, 'synced', $summary);
         Database::logAudit('SYNC', 'SYSTEM', $policy, 'ALL', "Crontab pulled changes from Exchange Online (Pull-Only): {$summary}", 'CRON_DAEMON');
         echo "[" . date('Y-m-d H:i:s') . "] Cron EOP pull completed successfully.\n";

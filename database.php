@@ -39,6 +39,13 @@ class Database {
     private static ?PDO $instance = null;
 
     /**
+     * Per-table cache of whether the `source` provenance column exists.
+     *
+     * @var array<string, bool>
+     */
+    private static array $sourceColumnReady = [];
+
+    /**
      * Check if database credentials and host are configured
      */
     public static function isConfigured(): bool {
@@ -152,6 +159,97 @@ class Database {
     }
 
     /**
+     * Provenance marker for a list row.
+     *
+     * A pull treats Exchange Online as authoritative for the rows EOP owns and
+     * leaves everything a human created in this UI alone. `added_by` cannot
+     * express that distinction reliably (a local account may be named anything,
+     * and the cron actor string is a convention rather than a contract), so the
+     * rows carry an explicit owner instead.
+     */
+    public const SOURCE_LOCAL = 'local';
+    public const SOURCE_EOP   = 'eop';
+
+    /**
+     * The four synchronised list types, in the order the sync code walks them.
+     */
+    public static function listTypes(): array {
+        return ['allowed_senders', 'blocked_senders', 'allowed_domains', 'blocked_domains'];
+    }
+
+    /**
+     * Whether a table has the `source` column. Cached per table because the
+     * information_schema lookup runs on every insert.
+     *
+     * A false here is the safe failure mode: without provenance the reconciler
+     * cannot tell an EOP-owned row from a UI-owned one, so it must not delete.
+     */
+    private static function sourceColumnAvailable(string $table): bool {
+        if (array_key_exists($table, self::$sourceColumnReady)) {
+            return self::$sourceColumnReady[$table];
+        }
+
+        $available = false;
+        try {
+            $stmt = self::getConnection()->prepare(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table AND COLUMN_NAME = \'source\''
+            );
+            $stmt->execute([':table' => $table]);
+            $available = ((int)$stmt->fetchColumn()) > 0;
+        } catch (Throwable $e) {
+            error_log('[Database::sourceColumnAvailable] ' . $e->getMessage());
+            $available = false;
+        }
+
+        self::$sourceColumnReady[$table] = $available;
+        return $available;
+    }
+
+    /**
+     * Add the `source` column to the list tables on demand.
+     *
+     * config.php and the schema are deployed separately, so an existing install
+     * reaches this code before it has the new column. ALTER TABLE is attempted
+     * once per process; if it fails (typically a deployment whose app user has
+     * no DDL privilege) the column stays absent and the reconciler degrades to
+     * insert-only rather than deleting rows whose owner it cannot determine.
+     *
+     * Rows are backfilled from `added_by`: the two actors the sync code has ever
+     * written are the cron daemon and SYSTEM, and those rows are the ones EOP
+     * is authoritative for. Everything else predates this column as a human
+     * addition and is left as 'local', which is the direction that errs towards
+     * keeping rows.
+     */
+    private static function ensureListSourceColumn(): void {
+        static $ensured = false;
+        if ($ensured) {
+            return;
+        }
+        $ensured = true;
+
+        foreach (self::listTypes() as $listType) {
+            $table = self::getTableName($listType);
+            if (self::sourceColumnAvailable($table)) {
+                continue;
+            }
+            try {
+                $pdo = self::getConnection();
+                $pdo->exec(
+                    "ALTER TABLE `{$table}` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT 'local' AFTER `added_by`"
+                );
+                $pdo->exec(
+                    "UPDATE `{$table}` SET `source` = 'eop' WHERE `added_by` IN ('CRON_DAEMON', 'SYSTEM')"
+                );
+                self::$sourceColumnReady[$table] = true;
+                error_log("[Database::ensureListSourceColumn] added provenance column to {$table}");
+            } catch (Throwable $e) {
+                error_log('[Database::ensureListSourceColumn] ' . $table . ': ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
      * Fetch list entries for a specific policy from its dedicated table
      */
     public static function getListItems(string $listType, string $policyName, string $search = '', int $limit = 50, int $offset = 0): array {
@@ -251,8 +349,14 @@ class Database {
         $table = self::getTableName($listType);
         $col = self::getValueColumn($listType);
 
-        $sql = "INSERT INTO {$table} (policy_name, {$col}, note, added_by, created_at, updated_at)
-                VALUES (:policy, :val, :note, :user, NOW(), NOW())";
+        // Everything added through the UI is locally owned, so a later pull will
+        // not delete it when Exchange Online does not report it back.
+        self::ensureListSourceColumn();
+        $sourceColumn = self::sourceColumnAvailable($table) ? ', `source`' : '';
+        $sourceValue  = self::sourceColumnAvailable($table) ? ", 'local'" : '';
+
+        $sql = "INSERT INTO {$table} (policy_name, {$col}, note, added_by{$sourceColumn}, created_at, updated_at)
+                VALUES (:policy, :val, :note, :user{$sourceValue}, NOW(), NOW())";
         
         $stmt = $pdo->prepare($sql);
         $success = $stmt->execute([
@@ -296,22 +400,33 @@ class Database {
 
     /**
      * Bulk insert items into dedicated table
+     *
+     * Each entry may carry a 'source' of local|eop; entries that omit it are
+     * recorded as locally owned. INSERT IGNORE means a row that already exists
+     * keeps its existing note and provenance, so re-running a pull is idempotent
+     * and never rewrites a description written in the UI.
      */
     public static function bulkInsert(string $listType, string $policyName, array $items, string $addedBy): array {
         $pdo = self::getConnection();
         $table = self::getTableName($listType);
         $col = self::getValueColumn($listType);
 
+        self::ensureListSourceColumn();
+        $hasSource = self::sourceColumnAvailable($table);
+
         $inserted = 0;
         $skipped = 0;
         $errors = [];
 
-        $stmt = $pdo->prepare("INSERT IGNORE INTO {$table} (policy_name, {$col}, note, added_by, created_at, updated_at) 
-                               VALUES (:policy, :val, :note, :user, NOW(), NOW())");
+        $columnSql  = $hasSource ? ', `source`' : '';
+        $sourceBind = $hasSource ? ', :source' : '';
+        $stmt = $pdo->prepare("INSERT IGNORE INTO {$table} (policy_name, {$col}, note, added_by{$columnSql}, created_at, updated_at) 
+                               VALUES (:policy, :val, :note, :user{$sourceBind}, NOW(), NOW())");
 
         foreach ($items as $entry) {
             $val = strtolower(trim($entry['value']));
             $note = trim($entry['note'] ?? '');
+            $source = ($entry['source'] ?? '') === self::SOURCE_EOP ? self::SOURCE_EOP : self::SOURCE_LOCAL;
 
             if (empty($val)) {
                 $skipped++;
@@ -319,12 +434,16 @@ class Database {
             }
 
             try {
-                $stmt->execute([
+                $params = [
                     ':policy' => $policyName,
                     ':val'    => $val,
                     ':note'   => $note,
-                    ':user'   => $addedBy
-                ]);
+                    ':user'   => $addedBy,
+                ];
+                if ($hasSource) {
+                    $params[':source'] = $source;
+                }
+                $stmt->execute($params);
                 if ($stmt->rowCount() > 0) {
                     $inserted++;
                 } else {
@@ -390,8 +509,22 @@ class Database {
 
     /**
      * Reconcile a local list against the authoritative remote list from Exchange Online.
-     * Inserts remote entries missing locally and removes local rows that no longer exist
-     * in Exchange Online. Every removal is audit logged.
+     *
+     * Exchange Online is authoritative for the rows it owns, and this UI is
+     * authoritative for the rows a person added here. Concretely:
+     *
+     *  - a remote entry missing locally is inserted and recorded as EOP-owned;
+     *  - a local row EOP reports back becomes EOP-owned, so EOP may later delete
+     *    it (this is what makes a removal in the portal propagate for a row that
+     *    was first created here and then pushed);
+     *  - a local row that is EOP-owned and absent from the remote list is deleted;
+     *  - a local row added here and never seen by EOP is left untouched, because
+     *    its absence from the remote list says nothing about a row EOP never had;
+     *  - `note` is never written for a row that already exists, so a description
+     *    authored in the UI survives every pull.
+     *
+     * Deletions are audit logged. Rows are removed one at a time rather than in
+     * one statement so the audit trail names them.
      *
      * The remote payload is flattened defensively: a list element that is itself an
      * array means the producer emitted a nested collection, and a bare
@@ -404,6 +537,9 @@ class Database {
         $pdo = self::getConnection();
         $table = self::getTableName($listType);
         $col = self::getValueColumn($listType);
+
+        self::ensureListSourceColumn();
+        $hasSource = self::sourceColumnAvailable($table);
 
         $remote = [];
         $flattened = self::flattenRemoteValues($remoteValues);
@@ -420,29 +556,135 @@ class Database {
             }
         }
 
-        $select = $pdo->prepare("SELECT id, {$col} AS item_value FROM {$table} WHERE policy_name = :policy");
+        $select = $pdo->prepare("SELECT id, {$col} AS item_value" . ($hasSource ? ', `source`' : '') . " FROM {$table} WHERE policy_name = :policy");
         $select->execute([':policy' => $policyName]);
         $localRows = $select->fetchAll(PDO::FETCH_ASSOC);
 
         $candidates = [];
         foreach (array_keys($remote) as $value) {
-            $candidates[] = ['value' => $value, 'note' => 'Pulled from Exchange Online'];
+            $candidates[] = ['value' => $value, 'note' => 'Pulled from Exchange Online', 'source' => self::SOURCE_EOP];
         }
         $insertResult = self::bulkInsert($listType, $policyName, $candidates, $actor);
 
-        // Do not delete local items on pull from EOP - preserve items added in UI
+        // Local rows EOP no longer reports, restricted to the rows EOP owns. With
+        // no provenance column there is no way to tell the two apart, so nothing
+        // is deleted rather than guessing.
         $removed = [];
         $notRemoved = [];
+        $toPromote = [];
+
+        foreach ($localRows as $row) {
+            $value = strtolower(trim((string)$row['item_value']));
+            if ($value === '') {
+                continue;
+            }
+            $ownedByEop = !$hasSource ? false : (string)($row['source'] ?? '') === self::SOURCE_EOP;
+
+            if (isset($remote[$value])) {
+                // EOP reports this row, so EOP is authoritative for its removal
+                // from now on. Only the ownership flips; the note is untouched.
+                if ($hasSource && !$ownedByEop) {
+                    $toPromote[] = $value;
+                }
+                continue;
+            }
+
+            if ($ownedByEop) {
+                $removed[] = $value;
+            } else {
+                $notRemoved[] = $value;
+            }
+        }
+
+        if ($toPromote !== []) {
+            self::promoteToEopOwned($listType, $policyName, $toPromote);
+        }
+
+        $removedValues = [];
+        $deleteErrors = [];
+        if ($removed !== []) {
+            $delete = $pdo->prepare("DELETE FROM {$table} WHERE {$col} = :val AND policy_name = :policy");
+            foreach ($removed as $value) {
+                try {
+                    $delete->execute([':val' => $value, ':policy' => $policyName]);
+                    if ($delete->rowCount() > 0) {
+                        $removedValues[] = $value;
+                    }
+                } catch (Throwable $e) {
+                    $deleteErrors[] = "Failed to remove {$value}: " . $e->getMessage();
+                }
+            }
+        }
+
+        if ($removedValues !== []) {
+            self::logAudit(
+                'REMOVE',
+                $listType,
+                $policyName,
+                count($removedValues) . ' items',
+                'Removed by pull: no longer present in Exchange Online: ' . implode(', ', array_slice($removedValues, 0, 25)),
+                $actor
+            );
+        }
+
+        $errors = array_merge($insertResult['errors'], $deleteErrors);
+        $unchanged = count($localRows) - count($removedValues);
 
         return [
             'remote'    => count($remote),
             'inserted'  => $insertResult['inserted'],
-            'removed'   => 0,
-            'unchanged' => count($localRows),
-            'errors'    => $insertResult['errors'],
-            'removed_values' => [],
-            'not_removed_values' => [],
+            'removed'   => count($removedValues),
+            'unchanged' => max(0, $unchanged),
+            'errors'    => $errors,
+            'removed_values' => $removedValues,
+            'not_removed_values' => $notRemoved,
         ];
+    }
+
+    /**
+     * Flip rows to EOP-owned. Called when the remote list reports a row back, so
+     * that a subsequent removal of that row in Exchange Online propagates here.
+     *
+     * `source` is the only column written: the note and added_by are left as they
+     * are, which is what preserves a description authored in the UI.
+     */
+    private static function promoteToEopOwned(string $listType, string $policyName, array $values): void {
+        $table = self::getTableName($listType);
+        if (!self::sourceColumnAvailable($table)) {
+            return;
+        }
+        $col = self::getValueColumn($listType);
+        $stmt = self::getConnection()->prepare("UPDATE {$table} SET `source` = :source WHERE {$col} = :val AND policy_name = :policy");
+        foreach ($values as $value) {
+            try {
+                $stmt->execute([':source' => self::SOURCE_EOP, ':val' => $value, ':policy' => $policyName]);
+            } catch (Throwable $e) {
+                error_log('[Database::promoteToEopOwned] ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Mark every row for a policy as EOP-owned after a successful push.
+     *
+     * A push hands the local list to Exchange Online, so from that point EOP is
+     * authoritative for the rows it now holds, and removing one in the portal
+     * has to be able to remove it here.
+     */
+    public static function markListAsEopOwned(string $listType, string $policyName, string $actor): int {
+        try {
+            self::ensureListSourceColumn();
+            $table = self::getTableName($listType);
+            if (!self::sourceColumnAvailable($table)) {
+                return 0;
+            }
+            $stmt = self::getConnection()->prepare("UPDATE {$table} SET `source` = :source WHERE policy_name = :policy");
+            $stmt->execute([':source' => self::SOURCE_EOP, ':policy' => $policyName]);
+            return $stmt->rowCount();
+        } catch (Throwable $e) {
+            error_log('[Database::markListAsEopOwned Error] ' . $e->getMessage());
+            return 0;
+        }
     }
 
     /**
@@ -633,18 +875,31 @@ class Database {
      * Delete exactly the values captured in a confirmation. Deleting the captured
      * set rather than "everything currently present" means rows added after the
      * administrator approved are not silently destroyed.
+     *
+     * Ownership is re-checked at delete time as well. The captured set only ever
+     * holds EOP-owned rows, but a row's provenance can change between the capture
+     * and the apply, and a row this UI now owns must not be removed by a decision
+     * taken about a different set.
      */
     private static function applyConfirmedDeletion(string $listType, string $policyName, array $values, string $actor): array {
         $pdo = self::getConnection();
         $table = self::getTableName($listType);
         $col = self::getValueColumn($listType);
 
-        $delete = $pdo->prepare("DELETE FROM {$table} WHERE {$col} = :val AND policy_name = :policy");
+        $hasSource = self::sourceColumnAvailable($table);
+        $delete = $pdo->prepare(
+            "DELETE FROM {$table} WHERE {$col} = :val AND policy_name = :policy"
+            . ($hasSource ? ' AND `source` = :source' : '')
+        );
         $removed = [];
         $errors = [];
         foreach ($values as $value) {
             try {
-                $delete->execute([':val' => $value, ':policy' => $policyName]);
+                $params = [':val' => $value, ':policy' => $policyName];
+                if ($hasSource) {
+                    $params[':source'] = self::SOURCE_EOP;
+                }
+                $delete->execute($params);
                 if ($delete->rowCount() > 0) {
                     $removed[] = $value;
                 }
@@ -723,13 +978,31 @@ class Database {
     /**
      * Normalised local values for a policy/list, in the same casing the
      * reconciler compares against.
+     *
+     * With $eopOwnedOnly the query narrows to rows Exchange Online is
+     * authoritative for, which is the set a pull is allowed to delete. A table
+     * without the provenance column returns the empty set, because nothing can
+     * be shown to be EOP-owned.
      */
-    private static function fetchNormalizedValues(string $listType, string $policyName): array {
-        $pdo = self::getConnection();
+    private static function fetchNormalizedValues(string $listType, string $policyName, bool $eopOwnedOnly = false): array {
+        self::ensureListSourceColumn();
         $table = self::getTableName($listType);
         $col = self::getValueColumn($listType);
-        $stmt = $pdo->prepare("SELECT {$col} AS item_value FROM {$table} WHERE policy_name = :policy");
-        $stmt->execute([':policy' => $policyName]);
+
+        $sql = "SELECT {$col} AS item_value FROM {$table} WHERE policy_name = :policy";
+        if ($eopOwnedOnly) {
+            if (!self::sourceColumnAvailable($table)) {
+                return [];
+            }
+            $sql .= ' AND `source` = :source';
+        }
+
+        $stmt = self::getConnection()->prepare($sql);
+        $params = [':policy' => $policyName];
+        if ($eopOwnedOnly) {
+            $params[':source'] = self::SOURCE_EOP;
+        }
+        $stmt->execute($params);
 
         $values = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -742,15 +1015,17 @@ class Database {
     }
 
     /**
-     * Reconcile a pulled list, refusing to empty a populated local list without an
+     * Reconcile a pulled list, refusing to empty an EOP-owned list without an
      * explicit administrator decision.
      *
-     * An empty remote list is indistinguishable from a policy that genuinely has
-     * no entries, and the reconciler deletes every local row absent from the
-     * remote set. A single bad pull would therefore wipe the list. So when the
-     * remote list is empty and local rows exist, the deletion is held back and a
-     * confirmation is raised for the UI instead. The administrator's accept/deny
-     * is stored and consumed here on a later run.
+     * A pull deletes local rows that Exchange Online no longer reports, but only
+     * the rows EOP owns - anything authored in this UI is out of scope. Even so,
+     * an empty remote list is indistinguishable from a policy that genuinely has
+     * no entries, and "delete every EOP-owned row we hold" is destructive enough
+     * to deserve a human check. So when the remote list comes back empty while
+     * EOP-owned rows exist, the deletion is held back and a confirmation is raised
+     * for the UI instead. The administrator's accept/deny is stored and consumed
+     * here on a later run.
      *
      * The returned array is the normal reconcile result plus:
      *   guard        - none | prompted | awaiting_decision | denied | applied
@@ -791,14 +1066,19 @@ class Database {
             return $passThrough(self::reconcileListWithRemote($listType, $policyName, $remoteValues, $actor), 'none');
         }
 
-        $localValues = self::fetchNormalizedValues($listType, $policyName);
+        // Only rows Exchange Online owns are at risk from a pull. A row authored in
+        // this UI is never deleted by a sync, so an empty remote list is only worth
+        // confirming when there are EOP-owned rows to lose.
+        $localValues = self::fetchNormalizedValues($listType, $policyName, true);
         $localCount = count($localValues);
 
-        // Empty remote - don't wipe local UI additions, just skip
-        if ($existing !== null) {
-            self::clearSyncConfirmation($policyName, $listType);
+        if ($localCount === 0) {
+            // Nothing a pull could remove, so there is no decision to raise.
+            if ($existing !== null) {
+                self::clearSyncConfirmation($policyName, $listType);
+            }
+            return $passThrough(self::reconcileListWithRemote($listType, $policyName, [], $actor), 'none');
         }
-        return $passThrough(self::reconcileListWithRemote($listType, $policyName, [], $actor), 'none');
 
         $skippedResult = static function (string $guard, ?array $confirmation) use ($localCount, $listType, $policyName, $actor, $passThrough): array {
             return $passThrough([
@@ -864,7 +1144,7 @@ class Database {
             $listType,
             $policyName,
             'SYNC_CONFIRMATION',
-            "Remote list came back empty while {$localCount} local entries exist. Deletion withheld pending administrator confirmation.",
+            "Remote list came back empty while {$localCount} Exchange Online-owned entries exist. Deletion withheld pending administrator confirmation.",
             $actor
         );
         return $skippedResult('prompted', $raised);

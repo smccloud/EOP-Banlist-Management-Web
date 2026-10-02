@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_allowed_senders` (
     `sender_email` VARCHAR(255) NOT NULL,
     `note` VARCHAR(500) NULL DEFAULT '',
     `added_by` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
+    `source` VARCHAR(16) NOT NULL DEFAULT 'local',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `idx_policy_sender` (`policy_name`, `sender_email`),
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_blocked_senders` (
     `sender_email` VARCHAR(255) NOT NULL,
     `note` VARCHAR(500) NULL DEFAULT '',
     `added_by` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
+    `source` VARCHAR(16) NOT NULL DEFAULT 'local',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `idx_policy_sender` (`policy_name`, `sender_email`),
@@ -55,6 +57,7 @@ CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_allowed_domains` (
     `domain_name` VARCHAR(255) NOT NULL,
     `note` VARCHAR(500) NULL DEFAULT '',
     `added_by` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
+    `source` VARCHAR(16) NOT NULL DEFAULT 'local',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `idx_policy_domain` (`policy_name`, `domain_name`),
@@ -71,6 +74,7 @@ CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_blocked_domains` (
     `domain_name` VARCHAR(255) NOT NULL,
     `note` VARCHAR(500) NULL DEFAULT '',
     `added_by` VARCHAR(100) NOT NULL DEFAULT 'SYSTEM',
+    `source` VARCHAR(16) NOT NULL DEFAULT 'local',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `idx_policy_domain` (`policy_name`, `domain_name`),
@@ -139,6 +143,53 @@ SET @policy_guid_key_sql := IF(@policy_guid_key = 0,
 PREPARE policy_guid_key_stmt FROM @policy_guid_key_sql;
 EXECUTE policy_guid_key_stmt;
 DEALLOCATE PREPARE policy_guid_key_stmt;
+
+-- ----------------------------------------------------------------------------
+-- Existing installations created before list provenance was tracked.
+--
+-- `source` records which side owns a row, and it is what lets a pull delete the
+-- entries Exchange Online removed without also deleting entries a person added
+-- in this UI. 'local' means the UI owns the row and no sync will remove it;
+-- 'eop' means Exchange Online is authoritative for it.
+--
+-- Rows are backfilled from `added_by`: the only actors the sync code has ever
+-- written are the cron daemon and SYSTEM, and those rows are the ones EOP is
+-- authoritative for. Everything else predates the column as a human addition and
+-- is left 'local', which errs towards keeping rows. The application performs the
+-- same migration lazily on first sync for a deployment whose app user cannot run
+-- DDL, so running this block by hand is optional.
+-- ----------------------------------------------------------------------------
+SET @src := 'eop_allowed_senders';
+SET @sql := (SELECT IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = 'eop_antispam_db' AND TABLE_NAME = @src AND COLUMN_NAME = 'source') = 0,
+    'ALTER TABLE `eop_antispam_db`.`eop_allowed_senders` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+SET @sql := (SELECT IF(1=1, 'UPDATE `eop_antispam_db`.`eop_allowed_senders` SET `source` = ''eop'' WHERE `added_by` IN (''CRON_DAEMON'',''SYSTEM'') AND `source` <> ''eop''', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @src := 'eop_blocked_senders';
+SET @sql := (SELECT IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = 'eop_antispam_db' AND TABLE_NAME = @src AND COLUMN_NAME = 'source') = 0,
+    'ALTER TABLE `eop_antispam_db`.`eop_blocked_senders` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+SET @sql := (SELECT IF(1=1, 'UPDATE `eop_antispam_db`.`eop_blocked_senders` SET `source` = ''eop'' WHERE `added_by` IN (''CRON_DAEMON'',''SYSTEM'') AND `source` <> ''eop''', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @src := 'eop_allowed_domains';
+SET @sql := (SELECT IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = 'eop_antispam_db' AND TABLE_NAME = @src AND COLUMN_NAME = 'source') = 0,
+    'ALTER TABLE `eop_antispam_db`.`eop_allowed_domains` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+SET @sql := (SELECT IF(1=1, 'UPDATE `eop_antispam_db`.`eop_allowed_domains` SET `source` = ''eop'' WHERE `added_by` IN (''CRON_DAEMON'',''SYSTEM'') AND `source` <> ''eop''', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @src := 'eop_blocked_domains';
+SET @sql := (SELECT IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = 'eop_antispam_db' AND TABLE_NAME = @src AND COLUMN_NAME = 'source') = 0,
+    'ALTER TABLE `eop_antispam_db`.`eop_blocked_domains` ADD COLUMN `source` VARCHAR(16) NOT NULL DEFAULT ''local'' AFTER `added_by`', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+SET @sql := (SELECT IF(1=1, 'UPDATE `eop_antispam_db`.`eop_blocked_domains` SET `source` = ''eop'' WHERE `added_by` IN (''CRON_DAEMON'',''SYSTEM'') AND `source` <> ''eop''', 'DO 0'));
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- Insert default policies
 INSERT INTO `eop_antispam_db`.`eop_policies` (`policy_name`, `description`, `sync_status`)
@@ -249,11 +300,13 @@ ON DUPLICATE KEY UPDATE `password_hash` = VALUES(`password_hash`), `is_active` =
 -- ----------------------------------------------------------------------------
 -- Table 9: Withheld Deletion Confirmations
 -- A cron pull that returns an EMPTY remote list cannot be distinguished from a
--- policy that genuinely has no entries. Because the reconciler deletes local
--- rows absent from the remote list, one bad pull would empty a populated list.
--- Cron therefore withholds the deletion and records what is at risk here, and an
--- administrator accepts or denies it in the web UI. The decision is stored, not
--- acted on: the next cron run for that policy consumes it.
+-- policy that genuinely has no entries. Because the reconciler deletes the
+-- EOP-owned local rows absent from the remote list, one bad pull would empty
+-- every row Exchange Online owns. Rows added in this UI carry source='local' and
+-- are never in scope. Cron therefore withholds the deletion and records what is
+-- at risk here, and an administrator accepts or denies it in the web UI. The
+-- decision is stored, not acted on: the next cron run for that policy consumes
+-- it.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `eop_antispam_db`.`eop_sync_confirmations` (
     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
